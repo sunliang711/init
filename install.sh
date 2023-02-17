@@ -67,7 +67,7 @@ install() {
     _require_command vimdiff
     _require_command zsh
     _require_command curl
-    _require_command nvim
+    # _require_command nvim
 
     local dest="$home/.local/apps"
     if [ ! -e "${dest}" ]; then
