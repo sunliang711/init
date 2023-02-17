@@ -1,0 +1,41 @@
+##在Dockerfile中添加代理（讨厌的GFW）
+当从Dockerfile构造docker image的时候，而这个dockerfile是基于其他的image来构造的时候，假设这个image是基于debian的时候，
+首行会这样写:
+FROM debian：jessie
+然后后面跟一些自己的一些RUN ENV COPY ENTRYPOINT等指令
+当存在RUN apt-get update的时候，它会到debian的官网源更新源，在国内的网络会很慢，解决办法有两个：
+一个是在/etc/apt/sources.list中加入对应版本的国内源，比如163源，所以在RUN apt-get update之前加入以下这些行即可:
+RUN echo 'deb http://mirrors.163.com/debian/ jessie main non-free contrib'>/etc/apt/sources.list
+RUN echo 'deb http://mirrors.163.com/debian/ jessie-updates main non-free contrib'>>/etc/apt/sources.list
+RUN echo 'deb http://mirrors.163.com/debian/ jessie-backports main non-free contrib'>>/etc/apt/sources.list
+RUN echo 'deb-src http://mirrors.163.com/debian/ jessie main non-free contrib'>>/etc/apt/sources.list
+RUN echo 'deb-src http://mirrors.163.com/debian/ jessie-updates main non-free contrib'>>/etc/apt/sources.list
+RUN echo 'deb-src http://mirrors.163.com/debian/ jessie-backports main non-free contrib'>>/etc/apt/sources.list
+RUN echo 'deb http://mirrors.163.com/debian-security/ jessie/updates main non-free contrib'>>/etc/apt/sources.list
+RUN echo 'deb-src http://mirrors.163.com/debian-security/ jessie/updates main non-free contrib'>>/etc/apt/sources.list
+RUN apt-get update
+
+第二个办法就是给apt-get设置proxy，方法是在/etc/apt/apt.conf中加入
+Acquire::http::Proxy "http://ip:port";
+把ip和port换成实际的proxy ip和port
+
+一个栗子：我是在本地有shadowsocks的socks5代理，然后用provoxy转成http代理，监听地址是*:8118(在privoxy的配置文件中配置：listen-address *:8118)
+在运行docker的机器上输入ifconfig，发现docker0的ip地址是172.17.0.1
+所以在Dockerfile中加入如下：
+RUN echo 'Acquire::http::Proxy "http://172.17.0.1:8118";' >> /etc/apt/apt.conf
+RUN echo 'Acquire::socks::Proxy "socks5://172.17.0.1:1080";' >> /etc/apt/apt.conf (本行还没测试)
+注意：代理前面的http://不要忘记了
+
+然后在编译Docker的时候，发现apt-get很快，但是到后面发现git clone github上面一个repo的时候很慢，原因也是git clone在国内的速度很慢，因此可以给git 设置http代理
+RUN git config --global http.proxy "172.17.0.1:8118"
+RUN git config --global https.proxy "172.17.0.1:8118"
+ 注意点：上面的语句要放到Dockerfile中安装完git之后，不然发现找不到git命令
+
+ 同理：如果Dockerfile中有用到curl到国外下载东西的，也要加上proxy设置：
+ 在curl后面加上--proxy 172.17.0.1:8118
+
+ 我在编译docker的时候修改了三个文件，一个是Dockerfile，一个是contrib/download-frozen-image-v2.sh还有一个是hack/dockerfile/install-binaries.sh
+ 这三个文件中有git就要设置git代理，有curl就要设置curl代理，有apt-get就要设置apt-get代理。
+
+
+ 当然如果在国外的vps里构建docker image的话，就不需要设置代理了。

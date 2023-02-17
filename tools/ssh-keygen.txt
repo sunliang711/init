@@ -1,0 +1,7 @@
+本机上
+ssh-keygen -t rsa -b 4096 -C "sunliang711@163.com"
+scp -P 2022 ~/.ssh/id_rsa.pub someuser@remote-ip:/home/someuser/.ssh
+
+远程机器上
+cd /home/someuser/.ssh
+cat id_rsa.pub >> authorized_keys

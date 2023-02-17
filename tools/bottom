@@ -1,0 +1,4 @@
+#!/bin/bash
+#ubuntu 16 把unity启动器移动到底部，$1是Left还原到左边
+position=${1:-"Bottom"}
+gsettings set com.canonical.Unity.Launcher launcher-position $position

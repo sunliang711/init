@@ -1,0 +1,171 @@
+#!/bin/bash
+logfile=install-logfile
+app(){
+    version=$(bash -c "$(curl -fsSL https://raw.githubusercontent.com/sunliang711/tools/master/version.sh)")
+    if [ -n "$version" ];then
+        echo "Your OS is: $version"
+    else
+        echo "Cannot detect your OS version."
+        exit 1
+    fi
+    case $version in
+        ubuntu-1*)
+            ;;
+        *)
+            echo "Not support your OS."
+            exit 1
+    esac
+    apt update && apt install -y samba samba-common || { echo "installl samba samba-common failed!"; exit 1; }
+}
+install(){
+
+    if [[ $EUID -ne 0 ]];then
+        echo "Need root privilege!"
+        exit 1
+    fi
+
+    app
+
+    echo "backup /etc/samba/smb.conf -> /etc/samba/smb.conf.bak" >> $logfile
+    mv /etc/samba/smb.conf{,.bak}
+
+    echo "add group smbadmin..." >> $logfile
+    groupadd smbadmin -f
+    echo "add group smbuser..." >> $logfile
+    groupadd smbuser -f
+
+    echo "mkdir /home/public..." >> $logfile
+    mkdir -p /home/public
+    echo "chown root:smbadmin /home/public..." >> $logfile
+    chown root:smbadmin /home/public
+    echo "chmod 775 /home/public..." >>$logfile
+    chmod 775 /home/public
+
+    echo "mkdir /home/share..." >> $logfile
+    mkdir -p /home/share
+    echo "chown root:smbadmin /home/share..." >> $logfile
+    chown root:smbadmin /home/share
+    echo "chmod 1777 /home/share..." >>$logfile
+    chmod 1777 /home/share
+
+    echo "create /etc/samba/smb.conf..." >> $logfile
+    cat>/etc/samba/smb.conf<<EOF
+[global]
+workgroup = WORKGROUP
+server string = Samba Server %v
+netbios name = debian samba
+security = user
+map to guest = never
+dns proxy = no
+
+[homes]
+comment = Home Directories
+browsable = no
+valid users = %S
+writable = yes
+create mask = 0700
+directory mask = 0700
+
+[public]
+comment = All Users can access
+path = /home/public
+valid users = @smbuser, @smbadmin
+force group = smbuser
+create mask = 0744
+directory mask = 0755
+writable = no
+write list = @smbadmin
+
+[share]
+comment = All Users can access and write,set sbit
+path = /home/share
+valid users = @smbuser, @smbadmin
+force group = smbuser
+create mask = 0744
+directory mask = 0755
+writable = yes
+EOF
+
+    echo "restart smbd.service..." >>$logfile
+    systemctl restart smbd.service
+
+    add admin
+    add normal
+#reference https://www.howtoforge.com/tutorial/debian-samba-server/
+#https://www.samba.org/samba/docs/man/manpages-3/smb.conf.5.html
+}
+addSmbUser(){
+    if [[ $# -ne 2 ]];then
+        echo "Usage: $(basename $0) user group"
+        return
+    fi
+    userlist=$(awk -F: '{print $1}' /etc/passwd)
+    user=$1
+    group=$2
+    if grep -q $user <<< $userlist;then
+        echo "$user already exists,add it to group $group..." >>$logfile
+        usermod -a -G $group $user
+    else
+        echo "$user doesn't exist,create it and add it to group $group.." >>$logfile
+        useradd $user -m -G $group
+        echo "Enter password for user: $user" >>$logfile
+        passwd $user
+    fi
+    echo "Enter smb password for user: $user" >>$logfile
+    smbpasswd -a $user
+}
+
+add(){
+    local userType=${1}
+    if [ -z "$userType" ];then
+        read -p "Add admin or normal user? [admin/normal] " userType
+    fi
+    case $userType in
+        admin)
+            user=${SUDO_USER:-$(whoami)}
+            read -p "add user to group smbadmin: [default: $user]" admin
+            if [ -n $admin ];then
+                addSmbUser $admin smbadmin
+            else
+                addSmbUser $user smbadmin
+            fi
+            ;;
+        normal)
+            #add normal user
+            while true;do
+                read -p " Enter user to add to group smbuser: (new user or exist user are all ok) " normalUser
+                if [ -n "$normalUser" ];then
+                    addSmbUser $normalUser smbuser
+                else
+                    break
+                fi
+            done
+            ;;
+        *)
+            echo "input error."
+            return 1
+    esac
+
+}
+usage(){
+    cat<<EOF
+Usage: $(basename $0) CMD
+
+CMD:
+    add
+    install
+    help
+EOF
+    exit 1
+}
+case $1 in
+    add)
+        add
+        ;;
+    install)
+        install
+        ;;
+    *)
+        usage
+        ;;
+esac

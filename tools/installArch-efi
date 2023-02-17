@@ -1,0 +1,157 @@
+#!/bin/bash
+#RUN THIS using the command: bash -c "$(curl -fsSL https://raw.githubusercontent.com/sunliang711/init/master/tools/installArch)"
+if [ -e /dev/sda ];then
+    disk=sda
+elif [ -e /dev/vda ];then
+    disk=vda
+else
+    echo "**Error**    Can't find /dev/sda or /dev/vda disk"
+    exit 1
+fi
+
+if [ ! -d /sys/firmware/efi ];then
+    echo "Not in efi mode"
+    exit 1
+fi
+
+timedatectl set-ntp true
+read -p "use Chinese linux source? [Y/n] " useChinese
+if [[ "$useChinese" != [nN] ]];then
+    sed -i.bak '1iServer = http://mirrors.163.com/archlinux/$repo/os/$arch' /etc/pacman.d/mirrorlist
+    sed -i.bak '1iServer = https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch' /etc/pacman.d/mirrorlist
+fi
+
+while read -p "boot partition size: (default:512M) " bootSize;do
+    if echo "$bootSize" | grep -qP '^\s*$';then
+        bootSize=512M
+    fi
+
+    if echo "$bootSize" | grep -qP '^\s*\d+[gGmM]\s*$';then
+        echo "boot size is: $bootSize"
+        break
+    else
+        echo "input error,try again! (valid input example: 512m 1g 2g)"
+    fi
+done
+
+while read -p "swap partition size: (default:2G) " swapSize;do
+    if echo "$swapSize" | grep -qP '^\s*$';then
+        swapSize=2G
+    fi
+
+    if echo "$swapSize" | grep -qP '^\s*\d+[gGmG]\s*$';then
+        echo "swap size is: $swapSize"
+        break
+    else
+        echo "input error,try again! (valid input example: 512m 2g 8g)"
+    fi
+done
+
+if echo "$bootSize" | grep -qP '^\s*\d+[gG]\s*$';then
+    bootSize=$(echo "$bootSize" | grep -oP '\d+')
+    bootSize=$((bootSize*1024))
+fi
+if echo "$swapSize" | grep -qP '^\s*\d+[gG]\s*$';then
+    swapSize=$(echo "$swapSize" | grep -oP '\d+')
+    swapSize=$((swapSize*1024))
+fi
+
+bootSize=$(echo $bootSize | grep -oP '\d+')
+swapSize=$(echo $swapSize | grep -oP '\d+')
+#now bootSize and swapSize are in unit 'MiB'
+wipefs -a /dev/${disk}
+parted /dev/${disk} -a optimal -s \
+    mklabel gpt \
+    mkpart primary 1MiB ${bootSize}MiB \
+    set 1 esp on \
+    mkpart primary ${bootSize}MiB $((bootSize+swapSize))MiB \
+    mkpart primary $((bootSize+swapSize))MiB 100%
+
+#boot
+mkfs.vfat -F32 /dev/${disk}1
+#swap
+mkswap /dev/${disk}2
+#root
+mkfs.ext4 -F /dev/${disk}3
+
+mount /dev/${disk}3 /mnt
+mkdir /mnt/boot
+mount /dev/${disk}1 /mnt/boot
+
+pacstrap /mnt base base-devel --needed
+# pacstrap /mnt base --needed
+genfstab -U /mnt >>/mnt/etc/fstab
+#swap config to fstab
+echo "# /dev/${disk}2 for swap" >>/mnt/etc/fstab
+echo "UUID=$(lsblk -no UUID /dev/${disk}2) none swap defaults 0 0" >>/mnt/etc/fstab
+
+
+#'EOF2' can avoid variable expanding
+cat>/mnt/installArch.sh<<'EOF2'
+ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+hwclock --systohc
+sed -i 's/^#\(en_US.UTF-8 UTF-8\)/\1/' /etc/locale.gen
+locale-gen
+echo "LANG=en_US.UTF-8" >>/etc/locale.conf
+
+read -p "Enter hostname: " hostname
+if [ -z "$hostname" ];then
+    hostname="ArchLinux"
+fi
+echo "$hostname">>/etc/hostname
+
+echo "set password for root:"
+passwd
+
+#if need default password ,uncomment the following
+##passwd<<EOF3
+##sl580226
+##sl580226
+##EOF3
+
+#grub
+pacman -S grub --noconfirm --needed
+pacman -S efibootmgr --noconfirm --needed
+EOF2
+
+cat>>/mnt/installArch.sh<<EOF3
+#grub-install --target=i386-pc /dev/${disk}
+grub-install --target=x86_64-efi --efi-directory=boot --bootloader-id=GRUB
+EOF3
+
+cat>>/mnt/installArch.sh<<'EOF4'
+#set timeout of grub to 0 second
+sed -i 's/^\(GRUB_TIMEOUT=\)[0-9]\+/\10/' /etc/default/grub
+grub-mkconfig -o /boot/grub/grub.cfg
+
+echo "Now exit,then reboot, after reboot execute /afterReboot.sh"
+
+#'afterReboot' can avoid variable expanding
+cat>afterReboot.sh<<'afterReboot'
+#get ip address
+systemctl enable dhcpcd
+systemctl start dhcpcd
+
+echo '%sudo ALL=(ALL:ALL) NOPASSWD:ALL' >/etc/sudoers.d/custom-sudoers
+groupadd sudo
+read -p "add new user: " user
+useradd -m -G sudo $user
+echo "set password for $user"
+passwd $user
+
+#set time
+sudo timedatectl set-ntp true
+
+#install git
+pacman -S git --noconfirm --needed
+
+rm /installArch.sh
+rm /afterReboot.sh
+afterReboot
+EOF4
+
+chmod +x /mnt/installArch.sh
+echo "-------------------------------"
+echo "Next,execute /installArch.sh"
+echo "-------------------------------"
+arch-chroot /mnt

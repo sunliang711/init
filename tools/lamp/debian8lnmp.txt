@@ -1,0 +1,58 @@
+#need root privilege
+
+apt-get update
+apt-get install nginx mysql-server php5-fpm php5-mysql unzip vim -y
+mysql_secure_installation
+
+#edit /etc/php5/fpm/php.ini
+#change cgi.fix_pathinfo to 0
+cp -n /etc/php5/fpm/php.ini{,.bak}
+sed -ri 's/^;(cgi.fix_pathinfo=)1/\10/' /etc/php5/fpm.php.ini
+
+systemctl restart php5-fpm
+
+vi /etc/nginx/sites-available/default
+server{
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    #设置wordpress根目录
+    root /var/www/html/wordpress;
+    index index.php index.html index.htm index.nginx-debian.html;
+
+    server_name your_server_ip;
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php5-fpm.sock;
+    }
+    location ~ /\.ht {
+        deny all;
+    }
+
+    #如果需要设置wordpress自定义固定链接
+    #1.wordpress装在网站根目录下
+    location / {
+        if (!-e $request_filename) {
+            rewrite (.*) /index.php;
+        }
+    }
+    #2.wordpress装在网站子目录下
+    location /wordpress/ {
+        if (!-e $request_filename) {
+            rewrite (.*) /wordpress/index.php;
+        }
+    }
+    #比如wordpress下面还有个english文件夹用作英文网站
+    location /english/ {
+        if (!-e $request_filename) {
+            rewrite (.*) /english/index.php;
+        }
+    }
+
+}
+
+如果安装phpmyadmin：apt-get install phpmyadmin -y
+可以把phpmyadmin的web目录做个软链接到/var/www/html/wordpress下
+它的配置文件在/etc/phpmyadmin/config.inc.php中(在这里面可以设置不需要密码登录(mysql没有设置root密码的时候)AllowNoPassword)
+这样可以通过domain/phpmyadmin来访问

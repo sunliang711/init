@@ -1,0 +1,181 @@
+#!/bin/bash
+if [ -e /dev/sda ];then
+    disk=sda
+elif [ -e /dev/vda ];then
+    disk=vda
+else
+    echo "**Error**    Can't find /dev/sda or /dev/vda disk"
+    exit 1
+fi
+
+timedatectl set-ntp true
+read -p "use Chinese linux source? [Y/n] " useChinese
+if [[ "$useChinese" != [nN] ]];then
+    cat<<-'EOF' >/tmp/china.mirror
+	# China
+	Server = http://mirrors.163.com/archlinux/$repo/os/$arch
+	Server = http://mirror.lzu.edu.cn/archlinux/$repo/os/$arch
+	Server = http://mirrors.neusoft.edu.cn/archlinux/$repo/os/$arch
+	Server = https://mirrors.neusoft.edu.cn/archlinux/$repo/os/$arch
+	Server = http://mirrors.shu.edu.cn/archlinux/$repo/os/$arch
+	Server = https://mirrors.shu.edu.cn/archlinux/$repo/os/$arch
+	Server = https://mirrors.sjtug.sjtu.edu.cn/archlinux/$repo/os/$arch
+	Server = http://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch
+	Server = https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch
+	Server = http://mirrors.ustc.edu.cn/archlinux/$repo/os/$arch
+	Server = https://mirrors.ustc.edu.cn/archlinux/$repo/os/$arch
+	Server = http://mirrors.xjtu.edu.cn/archlinux/$repo/os/$arch
+	Server = https://mirrors.xjtu.edu.cn/archlinux/$repo/os/$arch
+	Server = http://mirrors.zju.edu.cn/archlinux/$repo/os/$arch
+	EOF
+    cat /tmp/china.mirror /etc/pacman.d/mirrorlist > /tmp/full.mirror
+    mv /tmp/full.mirror /etc/pacman.d/mirrorlist
+fi
+
+while read -p "boot partition size: (default:512M) " bootSize;do
+    if echo "$bootSize" | grep -qP '^\s*$';then
+        bootSize=512M
+    fi
+
+    if echo "$bootSize" | grep -qP '^\s*\d+[gGmM]\s*$';then
+        echo "boot size is: $bootSize"
+        break
+    else
+        echo "input error,try again! (valid input example: 512m 1g 2g)"
+    fi
+done
+
+while read -p "swap partition size: (default:2G) " swapSize;do
+    if echo "$swapSize" | grep -qP '^\s*$';then
+        swapSize=2G
+    fi
+
+    if echo "$swapSize" | grep -qP '^\s*\d+[gGmG]\s*$';then
+        echo "swap size is: $swapSize"
+        break
+    else
+        echo "input error,try again! (valid input example: 512m 2g 8g)"
+    fi
+done
+if echo "$bootSize" | grep -qP '^\s*\d+[gG]\s*$';then
+    bootSize=$(echo "$bootSize" | grep -oP '\d+')
+    bootSize=$((bootSize*1024))
+fi
+if echo "$swapSize" | grep -qP '^\s*\d+[gG]\s*$';then
+    swapSize=$(echo "$swapSize" | grep -oP '\d+')
+    swapSize=$((swapSize*1024))
+fi
+
+bootSize=$(echo $bootSize | grep -oP '\d+')
+swapSize=$(echo $swapSize | grep -oP '\d+')
+#now bootSize and swapSize are in unit 'MiB'
+wipefs -af /dev/${disk}
+parted /dev/${disk} -a optimal -s \
+    mklabel msdos \
+    mkpart primary 1MiB ${bootSize}MiB \
+    set 1 boot on \
+    mkpart primary ${bootSize}MiB 100% \
+    set 2 lvm on
+#boot
+mkfs.ext4 -F /dev/${disk}1
+
+pvcreate /dev/${disk}2
+
+VG=arch_vg
+SWAP=lvm_swap
+ROOT=lvm_root
+
+vgcreate ${VG} /dev/${disk}2
+lvcreate -L ${swapSize}M ${VG} -n $SWAP
+lvcreate -l 100%FREE ${VG} -n $ROOT
+
+mkswap /dev/${VG}/$SWAP
+mkfs.ext4 -F /dev/${VG}/$ROOT
+mount /dev/${VG}/$ROOT /mnt
+mkdir /mnt/boot
+mount /dev/${disk}1 /mnt/boot
+mount /dev/${VG}/lvmboot /mnt/boot
+
+pacstrap /mnt base base-devel --needed
+genfstab -U /mnt >>/mnt/etc/fstab
+#swap config to fstab
+#echo "UUID=$(lsblk -no UUID /dev/${disk}2) none swap defaults 0 0" >>/mnt/etc/fstab
+echo "/dev/${VG}/$SWAP none swap defaults 0 0" >>/mnt/etc/fstab
+mkdir /mnt/hostrun
+mount --bind /run /mnt/hostrun
+
+#'EOF2' can avoid variable expanding
+cat>/mnt/installArch.sh<<'EOF2'
+mkdir /run/lvm
+mount --bind /hostrun/lvm /run/lvm
+
+ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+hwclock --systohc
+sed -i 's/^#\(en_US.UTF-8 UTF-8\)/\1/' /etc/locale.gen
+locale-gen
+echo "LANG=en_US.UTF-8" >>/etc/locale.conf
+
+read -p "Enter hostname: " hostname
+if [ -z "$hostname" ];then
+    hostname="ArchLinux"
+fi
+echo "$hostname">>/etc/hostname
+
+# echo "set password for root:"
+# passwd
+
+#if need default password ,uncomment the following
+passwd<<eop
+root
+root
+eop
+
+#grub
+pacman -S grub --noconfirm --needed
+EOF2
+
+cat>>/mnt/installArch.sh<<EOF3
+grub-install --target=i386-pc /dev/${disk}
+EOF3
+
+cat>>/mnt/installArch.sh<<'EOF4'
+#set timeout of grub to 0 second
+sed -i 's/^\(GRUB_TIMEOUT=\)[0-9]\+/\10/' /etc/default/grub
+grub-mkconfig -o /boot/grub/grub.cfg
+#HOOKS lvm2
+perl -iold -pe "s/(^HOOKS\s*=\s*.+block )(filesystems.*)/\1lvm2 \2/" /etc/mkinitcpio.conf
+mkinitcpio -p linux
+
+echo 'default root password: root'
+echo "Now exit,then reboot, after reboot execute /afterReboot.sh"
+umount /run/lvm
+
+#'afterReboot' can avoid variable expanding
+cat>afterReboot.sh<<'afterReboot'
+#get ip address
+systemctl enable dhcpcd
+systemctl start dhcpcd
+
+echo '%sudo ALL=(ALL:ALL) NOPASSWD:ALL' >/etc/sudoers.d/custom-sudoers
+groupadd sudo
+read -p "add new user: " user
+useradd -m -G sudo $user
+echo "set password for $user"
+passwd $user
+
+#set time
+sudo timedatectl set-ntp true
+
+#install git
+pacman -S git --noconfirm --needed
+
+rm /installArch.sh
+rm /afterReboot.sh
+afterReboot
+EOF4
+
+chmod +x /mnt/installArch.sh
+echo "-------------------------------"
+echo "Next,execute /installArch.sh"
+echo "-------------------------------"
+arch-chroot /mnt

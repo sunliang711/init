@@ -1,0 +1,17 @@
+#如果有的安装脚本使用的是非root身份,需要一部分当前安装用户的身份,又需要一部分root的身份
+#那么只有在需要root权限的时候加上sudo,其他时候正常身份
+#这时候就需要检测,当使用非root身份的时候,自己是否可以使用sudo命令(使用sudo true)
+if (($EUID!=0));then
+    #非root用户的时候,需要检测是否有sudo命令,如果有还要检测当前用户可以使用sudo命令
+    #因为下面需要把shellrc复制到/etc,这要求root权限
+    if command -v sudo >/dev/null 2>&1;then
+        sudo true || { echo "Error: Current user cannot use sudo cmd!";exit 1; }
+    else
+        echo "Error: Current user is not root,and can not find sudo cmd!"
+        exit 1
+    fi
+fi
+
+如果要删除一个目录下除了某个(或某些)文件之外的其他文件:
+find dest-directory -maxdepth 1 ! -name "no-delete" ! -name "." |xargs -d '\n' rm -rf
+在dest-directory目录下只查找本目录下,不递归(-maxdepth 1) 文件名不是no-delete也不是.(当前目录)的所有文件以及目录,传递给xargs,xargs再把这些文件名或目录名传递给rm命令来删除.如果文件名或者目录名中有空格的话,会被拆分成多个传递给rm,导致错误,所以使用-d '\n'来用换行符当做分隔符.如果是目录的话,删除它要用-r选项删除

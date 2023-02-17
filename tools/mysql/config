@@ -1,0 +1,23 @@
+# mysql config
+# dbHost="localhost"
+# dbPort=3306
+# dbName="aaa"
+# dbUser="eagle"
+# dbPass="eagle"
+
+dbUser="za_dev_tcrab"
+dbName="tech_crab_00"
+dbHost="rm-bp1dp71y66b0r97gj708.mysql.rds.aliyuncs.com"
+dbPort=3306
+dbPass="za_dev_tcrab_1e5b32"
+#
+cat<<EOF
+--------------------------------------------------
+mysql config:
+    host:       $dbHost
+    port:       $dbPort
+    db name:    $dbName
+    user:       $dbUser
+    pass:       $dbPass
+--------------------------------------------------
+EOF

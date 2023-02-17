@@ -1,0 +1,9 @@
+#!/bin/bash
+if [[ $(uname) != "Darwin" ]];then
+    echo "This only works on os x,quit!"
+    exit 1
+fi
+inputfile=${1:?"missing input file!"}
+datetime=$(date +%Y%m%d-%H%M%S)
+outfile=${2:-"${datetime}.gif"}
+ffmpeg -i $inputfile -s 1920*1080 -pix_fmt rgb24 -r 18 -f gif - | gifsicle --optimize=3 --delay=3 >$outfile

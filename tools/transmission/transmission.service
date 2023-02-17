@@ -1,0 +1,30 @@
+[Unit]
+Description=transmission
+After=network.target
+
+[Service]
+#Type=forking
+#PIDFile=
+#ExecStart=
+#ExecStop=
+
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=<ROOT>/transmission.sh start
+ExecStop=<ROOT>/transmission.sh stop
+
+#Type=simple
+#ExecStartPre=
+#ExecStart=
+#ExecStartPost=
+
+#ExecStop=
+#ExecStopPost=
+
+#User=USER
+#WorkingDirectory=/path/to/wd
+#Restart=always
+#Environment=
+[Install]
+WantedBy=multi-user.target
+

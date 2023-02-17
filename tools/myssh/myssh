@@ -1,0 +1,206 @@
+#!/bin/bash
+if [ -z "${BASH_SOURCE}" ]; then
+    this=${PWD}
+else
+    rpath="$(readlink ${BASH_SOURCE})"
+    if [ -z "$rpath" ]; then
+        rpath=${BASH_SOURCE}
+    elif echo "$rpath" | grep -q '^/'; then
+        # absolute path
+        echo
+    else
+        # relative path
+        rpath="$(dirname ${BASH_SOURCE})/$rpath"
+    fi
+    this="$(cd $(dirname $rpath) && pwd)"
+fi
+
+if [ -r ${SHELLRC_ROOT}/shellrc.d/shelllib ];then
+    source ${SHELLRC_ROOT}/shellrc.d/shelllib
+elif [ -r /tmp/shelllib ];then
+    source /tmp/shelllib
+else
+    # download shelllib then source
+    shelllibURL=https://gitee.com/sunliang711/init2/raw/master/shell/shellrc.d/shelllib
+    (cd /tmp && curl -s -LO ${shelllibURL})
+    if [ -r /tmp/shelllib ];then
+        source /tmp/shelllib
+    fi
+fi
+
+
+###############################################################################
+# write your code below (just define function[s])
+# function is hidden when begin with '_'
+
+# write your code above
+###############################################################################
+expectPath=/usr/bin/expect
+credentialFile=$home/.ssh/.credential
+decryptedCredentialFile=${credentialFile}.dec
+opensslPassword="secret"
+
+to(){
+    if [ ! -e ${expectPath} ];then
+        echo "Need expect command" 1>&2
+        return 1
+    fi
+    host=${1}
+    if [ -z "${host}" ];then
+        echo "${RED}missing host${NORMAL}" 1>&2
+        return 1
+    fi
+
+    if [ ! -e ${credentialFile} ];then
+        echo "> ${RED}no credential file(${credentialFile}), please edit to create it${NORMAL}" 1>&2
+    else
+        # 1. decrypt file
+        # 2. get password
+        _dec
+
+        # get password for ${host}
+        echo "> ${GREEN}get password from file ${credentialFile}..${NORMAL}"
+        # NOTE: xargs is for trim
+        password=$(grep "^${host}:" ${decryptedCredentialFile} | awk -F: '{print $2}' | xargs)
+        if [ -z ${password} ];then
+            echo "> ${RED}cannot find password for host ${host}, get default password..${NORMAL}" 1>&2
+            password=$(grep "^DEFAULT:" ${decryptedCredentialFile} | awk -F: '{print $2}' | xargs)
+            if [ -z ${password} ];then
+                echo "> ${RED}cannot find default password${NORMAL}" 1>&2
+                return 1
+            else
+                echo "> ${GREEN}use default password for host $host${NORMAL}"
+            fi
+        fi
+        /bin/rm -rf ${decryptedCredentialFile}
+        #echo "password: ${password}"
+    fi
+
+
+
+    expectScript=/tmp/myssh-expect
+    cat<<-EOF>${expectScript}
+#!${expectPath}
+set timeout 5
+
+spawn ssh $host
+
+expect {
+    "Connection refused" exit
+    "Name or service not known" exit
+    "continue connecting" {send "yes\r";exp_continue}
+    "password:" {send "$password\r"}
+}
+interact
+EOF
+
+    # ${expectPath} -d -f ${expectScript}
+    ${expectPath} -f ${expectScript}
+    rm ${expectScript}
+}
+
+_enc(){
+    if ! command -v openssl >/dev/null 2>&1;then
+        echo "${RED}Need openssl${NORMAL}" 1>&2
+        return 1
+    fi
+    echo "> encrypt ${decryptedCredentialFile} to ${credentialFile}.."
+    case $(uname) in
+        Linux)
+            openssl enc -aes-256-cbc -in ${decryptedCredentialFile} -out ${credentialFile} -pass "pass:${opensslPassword}" -pbkdf2
+            ;;
+        Darwin)
+            openssl enc -aes-256-cbc -in ${decryptedCredentialFile} -out ${credentialFile} -pass "pass:${opensslPassword}"
+            ;;
+        *)
+            echo "only support linux and macos"
+            ;;
+
+    esac
+}
+
+_dec(){
+    if ! command -v openssl >/dev/null 2>&1;then
+        echo "${RED}Need openssl${NORMAL}" 1>&2
+        return 1
+    fi
+    echo "> decrypt ${credentialFile} to ${decryptedCredentialFile}.."
+    case $(uname) in
+        Linux)
+            openssl enc -d -aes-256-cbc -in ${credentialFile} -out ${decryptedCredentialFile} -pass "pass:${opensslPassword}" -pbkdf2
+            ;;
+        Darwin)
+            openssl enc -d -aes-256-cbc -in ${credentialFile} -out ${decryptedCredentialFile} -pass "pass:${opensslPassword}"
+            ;;
+        *)
+            echo "only support linux and macos"
+            ;;
+    esac
+
+}
+
+list(){
+    grep '^Host' ${home}/.ssh/config
+}
+
+config(){
+    local sshDir=${home}/.ssh
+	if [ ! -d ${sshDir} ]
+	then
+		mkdir -p ${sshDir}
+	fi
+	local cfgFile=${sshDir}/config
+	if [ ! -e ${cfgFile} ]
+	then
+		cat <<EOF > ${cfgFile}
+# Host <custom>
+    # HostName <hostname>
+    # Port    <port>
+    # User    <user>
+EOF
+	fi
+	$ed ${cfgFile}
+}
+
+password(){
+    # 如果不存在密文文件,则先新建明文文件;否则解密密文文件;
+    if [ ! -e ${credentialFile} ];then
+        cat<<-EOF>${decryptedCredentialFile}
+DEFAULT:defaultPassword
+#myhost1:some_password
+EOF
+    else
+        _dec
+    fi
+
+    # 编辑明文文件
+    $ed ${decryptedCredentialFile}
+
+    # 加密明文文件
+    _enc
+
+    # 删除明文文件
+    /bin/rm -rf ${decryptedCredentialFile}
+}
+
+em(){
+    $ed $0
+}
+
+function _help(){
+    cd "${this}"
+    cat<<EOF2
+Usage: $(basename $0) ${bold}CMD${reset}
+
+${bold}CMD${reset}:
+EOF2
+    perl -lne 'print "\t$2" if /^\s*(function)?\s*(\S+)\s*\(\)\s*\{$/' $(basename ${BASH_SOURCE}) | perl -lne "print if /^\t[^_]/"
+}
+
+case "$1" in
+     ""|-h|--help|help)
+        _help
+        ;;
+    *)
+        "$@"
+esac

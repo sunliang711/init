@@ -1,0 +1,8 @@
+version: '3.7'
+services:
+  yacd:
+      image:  ghcr.io/haishanh/yacd:master
+      ports:
+        - 1234:80
+      restart: unless-stopped
+# clash dashboard

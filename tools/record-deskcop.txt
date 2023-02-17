@@ -1,0 +1,11 @@
+linux屏幕录制软件
+sudo apt-get install recordmydesktop
+
+Mac OS
+#makegif 脚本
+#把视频文件转换成gif文件
+#!/bin/bash
+inputfile=${1:?"missing input file!"}
+datetime=$(date +%Y%m%d-%H%M%S)
+outfile=${2:-"${datetime}.gif"}
+ffmpeg -i $inputfile -s 1920*1080 -pix_fmt rgb24 -r 18 -f gif - | gifsicle --optimize=3 --delay=3 >$outfile

@@ -1,0 +1,1 @@
+#如果某个容器启动失败,说是iptables的某个错误,是因为docker有的容器需要开启iptables服务才行,默认的archlinux是不开启的,执行enableIptablesOfArch.sh,然后重启docker 重启容器即可

@@ -1,0 +1,52 @@
+#!/bin/bash
+if [[ $EUID -ne 0 ]];then
+    echo "Need root privilege!"
+    exit 1
+fi
+
+if ! command -v pacman >/dev/null 2>&1;then
+    echo "Only support archlinux currently!"
+    exit 1
+fi
+
+SCRIPTDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPTDIR"
+
+install(){
+    echo "Install docker..."
+    pacman -S docker --noconfirm --needed >/dev/null 2>&1
+    #set docker
+    #add user to docker group
+    if command -v docker>/dev/null 2>&1;then
+        if [[ -n $SUDO_USER ]];then
+            usermod -a -G docker $SUDO_USER
+        fi
+        systemctl enable docker
+    fi
+    read -p "Set docker proxy?[Y/n]"  proxy
+    if [[ "$proxy"!=[nN] ]];then
+        /bin/bash docker-proxy@arch.sh
+    fi
+}
+
+uninstall(){
+    pacman -R docker --noconfirm
+}
+
+usage(){
+    echo "Uage: $(basename $0) install|uninstall"
+    exit 1
+}
+
+case "$1" in
+    install)
+        install
+        ;;
+    uninstall)
+        uninstall
+        ;;
+    *)
+        usage
+        ;;
+esac
+# vim: set filetype=sh

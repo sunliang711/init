@@ -1,0 +1,35 @@
+#!/bin/bash
+
+if [ $EUID -ne 0 ];then
+    echo "Need root privilege!"
+    exit 1
+fi
+
+version=19.03.5
+url="https://download.docker.com/linux/static/stable/x86_64/docker-${version}.tgz"
+dest=/usr/local/bin
+
+if [ ! -d "${dest}" ];then
+    mkdir -pv "${dest}"
+fi
+
+cd /tmp
+curl -LO "${url}" || { echo "download docker release failed!"; exit 1; }
+tar xvf docker-${version}.tgz && cd docker && cp * ${dest}
+
+cat<<EOF>/etc/systemd/system/dockerd.service
+[Unit]
+Description=docker daemon
+#After=network.target
+
+[Service]
+Type=simple
+ExecStart=${dest}/dockerd
+#ExecStop=
+
+#Restart=on-failure
+#Environment=
+[Install]
+WantedBy=multi-user.target
+EOF
+
