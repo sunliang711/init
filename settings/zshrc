@@ -106,9 +106,6 @@ export SHELLRC_ROOT=${HOME}/.local/apps/init/shellConfigs
 source ${SHELLRC_ROOT}/index
 ##CUSTOM END v3
 
-#BEGIN FZF function
-source ${HOME}/.local/apps/init/tools/fzffunctions.sh
-#END FZF function
 #
 bindkey ',,' autosuggest-accept
 

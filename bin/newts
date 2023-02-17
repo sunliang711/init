@@ -15,26 +15,28 @@ else
     this="$(cd $(dirname $rpath) && pwd)"
 fi
 
-if [ -r ${SHELLRC_ROOT}/shellrc.d/shelllib ];then
-    source ${SHELLRC_ROOT}/shellrc.d/shelllib
-elif [ -r /tmp/shelllib ];then
+if [ -r ${SHELLRC_ROOT}/shelllib ]; then
+    source ${SHELLRC_ROOT}/shelllib
+elif [ -r /tmp/shelllib ]; then
     source /tmp/shelllib
 else
     # download shelllib then source
     shelllibURL=https://gitee.com/sunliang711/init2/raw/master/shell/shellrc.d/shelllib
     (cd /tmp && curl -s -LO ${shelllibURL})
-    if [ -r /tmp/shelllib ];then
+    if [ -r /tmp/shelllib ]; then
         source /tmp/shelllib
     fi
 fi
 
-
 ###############################################################################
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
-new(){
+new() {
     local projectName="${1:?'missing typescript project name'}"
-    [ -d "${projectName}" ] && { echo "Already exists project ${name}"; return 1; }
+    [ -d "${projectName}" ] && {
+        echo "Already exists project ${name}"
+        return 1
+    }
 
     _require_command npm
 
@@ -42,7 +44,7 @@ new(){
 
     mkdir ${projectName} && cd ${projectName}
     mkdir src
-    if _command_exists yarn;then
+    if _command_exists yarn; then
         yarn init -y
         yarn add typescript@next ts-node @types/node
     else
@@ -50,20 +52,20 @@ new(){
         npm install typescript@next ts-node @types/node --save-dev
     fi
     npx tsc --init --rootDir src --outDir dist --esModuleInterop \
-            --target esnext --lib esnext --module commonjs --allowJs true \
-            --noImplicitAny true --resolveJsonModule true \
-            --experimentalDecorators true \
-            --emitDecoratorMetadata true \
-            --inlineSourceMap true \
-            --strictPropertyInitialization false \
-            --sourceMap true --allowSyntheticDefaultImports true
+        --target esnext --lib esnext --module commonjs --allowJs true \
+        --noImplicitAny true --resolveJsonModule true \
+        --experimentalDecorators true \
+        --emitDecoratorMetadata true \
+        --inlineSourceMap true \
+        --strictPropertyInitialization false \
+        --sourceMap true --allowSyntheticDefaultImports true
 
     set +x
     # perl -i -p -e 's/"outDir": "dist"/"outDir": ".\/dist"/' tsconfig.json
     touch src/index.ts
     mkdir dist
     git init .
-    cat<<EOF >.gitignore
+    cat <<EOF >.gitignore
 .DS_Store
 *.swp
 .idea/
@@ -74,7 +76,7 @@ EOF
     # package.json scripts
     tmpFile=/tmp/newtsTmpfile
     sed -n -e '1,/"main"/p' package.json >${tmpFile}
-    cat<<EOF2 >>${tmpFile}
+    cat <<EOF2 >>${tmpFile}
   "scripts": {
       "build": "npx tsc",
         "start": "node dist/index.js"
@@ -88,13 +90,13 @@ EOF2
 # write your code above
 ###############################################################################
 
-em(){
+em() {
     $ed $0
 }
 
-function _help(){
+function _help() {
     cd "${this}"
-    cat<<EOF2
+    cat <<EOF2
 Usage: $(basename $0) ${bold}CMD${reset}
 
 ${bold}CMD${reset}:
@@ -103,10 +105,10 @@ EOF2
 }
 
 case "$1" in
-     ""|-h|--help|help)
-        _help
-        ;;
-    *)
-        "$@"
-        ;;
+"" | -h | --help | help)
+    _help
+    ;;
+*)
+    "$@"
+    ;;
 esac

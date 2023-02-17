@@ -15,21 +15,21 @@ else
     this="$(cd $(dirname $rpath) && pwd)"
 fi
 
-if [ -r ${SHELLRC_ROOT}/shellrc.d/shelllib ];then
-    source ${SHELLRC_ROOT}/shellrc.d/shelllib
-elif [ -r /tmp/shelllib ];then
+if [ -r ${SHELLRC_ROOT}/shelllib ]; then
+    source ${SHELLRC_ROOT}/shelllib
+elif [ -r /tmp/shelllib ]; then
     source /tmp/shelllib
 else
     # download shelllib then source
     shelllibURL=https://gitee.com/sunliang711/init2/raw/master/shell/shellrc.d/shelllib
     (cd /tmp && curl -s -LO ${shelllibURL})
-    if [ -r /tmp/shelllib ];then
+    if [ -r /tmp/shelllib ]; then
         source /tmp/shelllib
     fi
 fi
 
 # available VARs: user, home, rootID
-# available functions: 
+# available functions:
 #    _err(): print "$*" to stderror
 #    _command_exists(): check command "$1" existence
 #    _require_command(): exit when command "$1" not exist
@@ -57,13 +57,12 @@ fi
 #    _errorln(): error log with \n
 #    _checkService(): check $1 exist in systemd
 
-
 ###############################################################################
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
 solanaRoot=~/.config/solana
 
-installcli(){
+installcli() {
     # install solana cli
     local version=${version:-1.14.2}
     set -xe
@@ -73,69 +72,78 @@ installcli(){
     cargo install spl-token-cli
 }
 
-devnet(){
+devnet() {
     set -xe
     solana config set --url devnet
 }
 
-testnet(){
+testnet() {
     set -xe
     solana config set --url testnet
 }
 
-mainnet(){
+mainnet() {
     set -xe
     solana config set --url mainnet-beta #https://api.mainnet-beta.solana.com
 }
 
-network(){
+network() {
     solana config get | grep 'RPC'
 }
 
-newAccount(){
+newAccount() {
     # create system account
     local account=${1:?'missing account name'}
     cd ${solanaRoot}
-    [ -e ${account}.json ] && { echo "already exists such account"; return 1; }
+    [ -e ${account}.json ] && {
+        echo "already exists such account"
+        return 1
+    }
     solana-keygen new -o ${account}.json
 }
 
-getAddress(){
+getAddress() {
     cd ${solanaRoot}
     account=${1:?'missing acocunt name'}
     solana address -k ${account}.json
 }
 
-airdrop(){
+airdrop() {
     amount=${1:?'missing amount'}
     receiver=${2:?'missing receiver name'}
 
     cd ${solanaRoot}
-    [ ! -e ${receiver}.json ] && { echo "no such account"; return 1; }
+    [ ! -e ${receiver}.json ] && {
+        echo "no such account"
+        return 1
+    }
     solana airdrop $amount ${receiver}.json
 }
 
-balance(){
+balance() {
     account=${1:?'missing account name'}
     cd ${solanaRoot}
-    [ ! -e ${account}.json ] && { echo "no such account"; return 1; }
+    [ ! -e ${account}.json ] && {
+        echo "no such account"
+        return 1
+    }
     solana balance ${account}.json
 }
 
-accountInfo(){
+accountInfo() {
     cd ${solanaRoot}
     account=${1:?'missing account name'}
     solana account ${account}.json
 }
 
-tokenAccountInfo(){
+tokenAccountInfo() {
     cd ${solanaRoot}
     tokenAccount=${1:?'missing token account'}
 
     spl-token account-info --address ${tokenAccount}
 }
 
-newNft(){
+newNft() {
     cd ${solanaRoot}
     mintAuth=${1:?'missing mint auth account name'}
     feePayer=${2:?'missing fee payer account name'}
@@ -144,7 +152,7 @@ newNft(){
     mintAuthAddress="$(solana address -k ${mintAuth}.json)"
     feePayerAddress="$(solana address -k ${feePayer}.json)"
 
-    cat<<-EOF
+    cat <<-EOF
 	create new nft(mint account) with the following info:
 	    mintAuth: ${mintAuthAddress}
 	    feePayer: ${feePayerAddress}
@@ -152,17 +160,17 @@ newNft(){
 	EOF
 
     spl-token create-token --mint-authority ${mintAuth}.json \
-                           --fee-payer ${feePayer}.json \
-                           --decimals ${decimals}
+        --fee-payer ${feePayer}.json \
+        --decimals ${decimals}
 }
 
-nftSupply(){
+nftSupply() {
     cd ${solanaRoot}
     nft=${1:?'missing nft address'}
     spl-token supply $nft
 }
 
-newNftAccount(){
+newNftAccount() {
     cd ${solanaRoot}
 
     owner=${1:?'mssing account owner(system account) name'}
@@ -175,7 +183,7 @@ newNftAccount(){
         ${nftAddress}
 }
 
-mintNft(){
+mintNft() {
     cd ${solanaRoot}
 
     mintAuth=${1:?'missing mint auth account name'}
@@ -184,11 +192,11 @@ mintNft(){
     amount=${4:?'missing amount'}
     receiver=${5:?'missing receiver account name'}
 
-    tokenAccount="$(spl-token create-account --owner ${receiver}.json --fee-payer ${feePayer}.json ${nftAddress} 2>/dev/null | perl -lne 'print $1 if /Creating account (.+)/'  )"
+    tokenAccount="$(spl-token create-account --owner ${receiver}.json --fee-payer ${feePayer}.json ${nftAddress} 2>/dev/null | perl -lne 'print $1 if /Creating account (.+)/')"
     mintAuthAddress="$(solana address -k ${mintAuth}.json)"
     feePayerAddress="$(solana address -k ${feePayer}.json)"
 
-    cat<<-EOF
+    cat <<-EOF
 	mint nft with the following info:
 	    mintAuth: ${mintAuthAddress}
 	    feePayer: ${feePayerAddress}
@@ -197,21 +205,20 @@ mintNft(){
 	EOF
 
     spl-token mint ${nftAddress} ${amount} ${tokenAccount} \
-            --fee-payer ${feePayer}.json \
-            --mint-authority ${mintAuth}.json
+        --fee-payer ${feePayer}.json \
+        --mint-authority ${mintAuth}.json
 }
-
 
 # write your code above
 ###############################################################################
 
-em(){
+em() {
     $ed $0
 }
 
-function _help(){
+function _help() {
     cd "${this}"
-    cat<<EOF2
+    cat <<EOF2
 Usage: $(basename $0) ${bold}CMD${reset}
 
 ${bold}CMD${reset}:
@@ -220,9 +227,10 @@ EOF2
 }
 
 case "$1" in
-     ""|-h|--help|help)
-        _help
-        ;;
-    *)
-        "$@"
+"" | -h | --help | help)
+    _help
+    ;;
+*)
+    "$@"
+    ;;
 esac

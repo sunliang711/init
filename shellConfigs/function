@@ -8,7 +8,7 @@ function halt() {
 }
 
 function functions() {
-    functionFile=$SHELLRC_ROOT/shellrc.d/function
+    functionFile=$SHELLRC_ROOT/function
     if [ ! -f $functionFile ]; then
         echo "No file $functionFile"
         return 1
@@ -50,29 +50,6 @@ function addremote() {
 # sudo cmd with current PATH
 function sudop() {
     sudo env "PATH=$PATH" "${@}"
-}
-
-function newbuild() {
-    local ed=vi
-    if command -v vim >/dev/null 2>&1; then
-        ed=vim
-    fi
-    if command -v nvim >/dev/null 2>&1; then
-        ed=nvim
-    fi
-    if [ -n "${editor}" ]; then
-        ed=${editor}
-    fi
-    local line1="# function is hidden"
-    local line2="# write your code above"
-    (
-        sed -n "1,/${line1}/p" "${SHELLRC_ROOT}/shellrc.d/newsh"
-        cat "${SHELLRC_ROOT}/shellrc.d/newbuild"
-        sed -n "/${line2}/,\$p" "${SHELLRC_ROOT}/shellrc.d/newsh"
-    ) >build.sh
-
-    "$ed" "build.sh"
-    chmod +x "build.sh"
 }
 
 function newhardhat() {
@@ -2241,7 +2218,7 @@ function editService() {
 
 function detectBin() {
     local root=${1:?'missing detect root'}
-    local dest="${SHELLRC_ROOT}/shellrc.d/local"
+    local dest="${SHELLRC_ROOT}/local"
     if [ ! -d ${root} ]; then
         echo "${root} not exist"
         return 1
@@ -2378,7 +2355,8 @@ function clearall() {
     clearinput
 }
 
-source ${SHELLRC_ROOT}/shellrc.d/function-snippets
+source "${SHELLRC_ROOT}/fzffunctions.sh"
+
 #END function
 
 # vim: set ft=sh:

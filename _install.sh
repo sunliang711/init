@@ -15,8 +15,8 @@ else
     this="$(cd $(dirname $rpath) && pwd)"
 fi
 
-if [ -r ${SHELLRC_ROOT}/shellrc.d/shelllib ]; then
-    source ${SHELLRC_ROOT}/shellrc.d/shelllib
+if [ -r ${SHELLRC_ROOT}/shelllib ]; then
+    source ${SHELLRC_ROOT}/shelllib
 elif [ -r /tmp/shelllib ]; then
     source /tmp/shelllib
 else
@@ -62,13 +62,6 @@ fi
 # function is hidden when begin with '_'
 
 install() {
-    # requires: git vimdiff tmux zsh
-    _require_command git
-    _require_command tmux
-    _require_command vimdiff
-    _require_command zsh
-    _require_command curl
-    _require_command nvim
 
     # git
     (cd settings && bash setGit.sh set)

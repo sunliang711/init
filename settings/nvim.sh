@@ -15,7 +15,7 @@ else
     this="$(cd $(dirname $rpath) && pwd)"
 fi
 
-if [ -r ${SHELLRC_ROOT}/shellrc.d/shelllib ]; then
+if [ -r ${SHELLRC_ROOT}/shelllib ]; then
     source ${SHELLRC_ROOT}/shellrc.d/shelllib
 elif [ -r /tmp/shelllib ]; then
     source /tmp/shelllib
