@@ -61,6 +61,14 @@ fi
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
 install() {
+    # requires: git vimdiff tmux zsh
+    _require_command git
+    _require_command tmux
+    _require_command vimdiff
+    _require_command zsh
+    _require_command curl
+    _require_command nvim
+
     local dest="$home/.local/apps"
     if [ ! -e "${dest}" ]; then
         mkdir -p "${dest}"
@@ -76,12 +84,11 @@ install() {
         "echo download init repo failed"
         exit 1
     }
-    # git clone git@github.com:sunliang711/init2.git
     cd init
     ./_install.sh install
 
     cat <<EOF
-    run: 'git remote set-url origin git@github.com:sunliang711/init2.git' to use ssh
+    run: 'git remote set-url origin git@github.com:sunliang711/init.git' to use ssh
 EOF
 }
 
