@@ -109,3 +109,5 @@ source ${SHELLRC_ROOT}/index
 #
 bindkey ',,' autosuggest-accept
 
+
+[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh

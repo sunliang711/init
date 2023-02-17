@@ -60,11 +60,7 @@ fi
 ###############################################################################
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
-new() {
-    local name=${1}
-    cp "${this}/shTmpl" "${name}"
-    $ed "${name}"
-}
+
 # write your code above
 ###############################################################################
 
