@@ -1,0 +1,317 @@
+#!/bin/bash
+rpath=$(readlink ${BASH_SOURCE})
+if [ -z "$rpath" ];then
+    rpath=${BASH_SOURCE}
+fi
+root="$(cd $(dirname $rpath) && pwd)"
+cd $root
+user=${SUDO_USER:-$(whoami)}
+home=$(eval echo ~$user)
+red=$(tput setaf 1)
+green=$(tput setaf 2)
+yellow=$(tput setaf 3)
+blue=$(tput setaf 4)
+cyan=$(tput setaf 5)
+bold=$(tput bold)
+reset=$(tput sgr0)
+runAsRoot(){
+    cmd="$@"
+    if [ -z "$cmd" ];then
+        echo "${red}Need cmd${reset}"
+        exit 1
+    fi
+
+    if (($EUID==0));then
+        sh -c "$cmd"
+    else
+        if ! command -v sudo >/dev/null 2>&1;then
+            echo "Need sudo cmd"
+            exit 1
+        fi
+        sudo sh -c "$cmd"
+    fi
+}
+
+if [ "$(uname)" != "Darwin" ];then
+    echo "Only on MacOS" >&2
+    exit 1
+fi
+enX="$(route -n get 8.8.8.8 | perl -ne 'print $2 if /(interface:\s*)(\w+)/')"
+
+cnw="$(networksetup -listnetworkserviceorder | grep $enX |perl -ne 'print $2 if /(Hardware Port: )([^,]+)/')"
+
+host=localhost
+
+defaultPacServerPort=28989
+# defaultPacServerDirectory=$(pwd)
+pacfile=gfwlist.pac
+
+
+msg(){
+    echo "enX: $enX"
+    echo  "cnw: $cnw"
+    echo "host: $host"
+}
+
+usage(){
+    cat<<-EOF
+	Usage: $(basename $0) ${bold}CMD${reset}
+
+		${bold}CMD${reset}:
+		    ${green}http${reset}    [-h <host>] [-u <user> -p <password> ] <port>
+		    ${green}https${reset}   [-h <host>] [-u <user> -p <password> ] <port>
+		    ${green}all${reset}     [-h <host>] [-u <user> -p <password> ] <port>
+
+		    ${green}socks${reset}   [-h <host>] [-u <user> -p <password> ] <port>
+
+		    ${green}list${reset} | ${green}status${reset}
+
+		    ${green}unset${reset} | ${green}clear${reset}   [http | https | socks | pac] (empty for all)
+
+		    pac     [upstream:default: localhost:1080] [protocol: default: SOCKS5] <${bold}Deprecated!!${reset}>
+		    editPac <${bold}Deprecated!!${reset}>
+
+	EOF
+    exit 1
+}
+
+setProxy(){
+    proxyCmd=$1
+    shift
+
+    while getopts ":h:u:p:" opt;do
+        case "$opt" in
+            h)
+                host=$OPTARG
+                ;;
+            u)
+                user=$OPTARG
+                ;;
+            p)
+                password=$OPTARG
+                ;;
+            :)
+                echo "Missing option for option '$OPTARG'"
+                return 1
+                ;;
+            \?)
+                echo "Unknown option '$OPTARG'"
+                ;;
+        esac
+    done
+    shift $((OPTIND-1))
+
+    port=${1:?'missing port'}
+    # msg
+    if [ -n "$user" ] && [ -n "$password" ];then
+        echo "networksetup -$proxyCmd $cnw $host $port on $user $password"
+        networksetup -$proxyCmd $cnw $host $port on $user $password
+    else
+        echo "networksetup -$proxyCmd $cnw $host $port"
+        networksetup -$proxyCmd $cnw $host $port
+    fi
+}
+
+setHttpProxy(){
+    setProxy setwebproxy "$@"
+}
+
+setHttpsProxy(){
+    setProxy setsecurewebproxy "$@"
+}
+
+
+setSocksProxy(){
+    setProxy setsocksfirewallproxy "$@"
+}
+
+setPac(){
+    if networksetup -getautoproxyurl $cnw | grep Enabled | grep -qi Yes;then
+        echo 'Pac has already set.'
+        exit 1
+    fi
+    pacServerHost=$host
+    upstream=${1:-"localhost:1080"}
+    protocol=${2:-"SOCKS5"}
+    cat>pacUpstream<<-EOF
+    upstream=$upstream
+    protocol=$protocol
+EOF
+    pacServerPort=${defaultPacServerPort}
+    while lsof -iTCP -sTCP:LISTEN -P | grep -q ":\<${pacServerPort}\>";do
+        echo "Port: $pacServerPort is in use,try next..."
+        pacServerPort=$(($pacServerPort+1))
+    done
+    cat<<-EOF
+		pacServerHost: $pacServerHost
+		pacServerPort: $pacServerPort
+	EOF
+    if [ ! -d pacDirectory ];then
+        mkdir pacDirectory
+    fi
+    pythonMajorVer=$(python -V 2>&1|awk '{print $2}'|awk -F. '{print $1}')
+    case $pythonMajorVer in
+        2)
+            module=SimpleHTTPServer
+            ;;
+        3)
+            module=http.server
+            ;;
+        *)
+            echo "python major version invalid!!"
+            exit 1
+            ;;
+    esac
+    sed -e "s|PACDIRECTORY|$root/pacDirectory|g" \
+        -e "s|PYTHON|$(which python)|g" \
+        -e "s|MODULE|$module|g" \
+        -e "s|PORT|$pacServerPort|g" pacServer.plist > $home/Library/LaunchAgents/pacServer.plist
+
+    sed -e "s|UPSTREAM|$upstream|g" \
+        -e "s|PROTOCOL|$protocol|g" \
+        $pacfile > pacDirectory/proxy.pac
+
+    launchctl unload -w $home/Library/LaunchAgents/pacServer.plist 2>/dev/null
+    launchctl load -w $home/Library/LaunchAgents/pacServer.plist
+    networksetup -setautoproxyurl $cnw "http://$host:$pacServerPort/proxy.pac"
+}
+
+unsetHttpProxy(){
+    networksetup -setwebproxystate $cnw off
+}
+
+unsetHttpsProxy(){
+    networksetup -setsecurewebproxystate $cnw off
+}
+
+unsetSocksProxy(){
+    networksetup -setsocksfirewallproxystate $cnw off
+}
+
+unsetPac(){
+    launchctl unload -w $home/Library/LaunchAgents/pacServer.plist 2>/dev/null
+    networksetup -setautoproxystate $cnw off
+    rm pacDirectory/proxy.pac 2>/dev/null
+    rm pacUpstream 2>/dev/null
+}
+
+clearset(){
+    typ=${1}
+    if [ -z "$typ" ];then
+        unsetHttpProxy
+        unsetHttpsProxy
+        unsetSocksProxy
+        unsetPac
+        exit 0
+    fi
+    case "$typ" in
+        http)
+            unsetHttpProxy
+            ;;
+        https)
+            unsetHttpsProxy
+            ;;
+        socks)
+            unsetSocksProxy
+            ;;
+        pac)
+            unsetPac
+            ;;
+        *)
+            usage
+            ;;
+
+    esac
+}
+
+editPac(){
+    editor=vi
+    if command -v vim >/dev/null 2>&1;then
+        editor=vim
+    fi
+    oldmd5sum="$(python ../md5.py $pacfile)"
+    $editor $pacfile
+    newmd5sum="$(python ../md5.py $pacfile)"
+
+    if [ "$oldmd5sum" != "$newmd5sum" ];then
+        echo "Pac file changed."
+        echo "Restart pac server if needed."
+    else
+        echo "Pac file not change."
+    fi
+
+}
+
+list(){
+    autoproxyurl="$(networksetup -getautoproxyurl $cnw)"
+    webproxy="$(networksetup -getwebproxy $cnw)"
+    securewebproxy="$(networksetup -getsecurewebproxy $cnw)"
+    socksproxy="$(networksetup -getsocksfirewallproxy $cnw)"
+
+    if  echo "$autoproxyurl"| grep '^Enabled:' | grep -iq 'Yes';then
+        url="$(networksetup -getautoproxyurl $cnw | perl -ne 'print $2 if /(URL:\s*)(.+)/')"
+        printf "Pac   enabled at url: $green$url$reset"
+        protocol=$(perl -ne 'print $2 if /(protocol=)(.+)/' pacUpstream)
+        upstream=$(perl -ne 'print $2 if /(upstream=)(.+)/' pacUpstream)
+        printf "\tupstream: \"${green}$protocol://$upstream${reset}\".\n"
+    else
+        printf "Pac   ${red}disabled${reset}.\n"
+    fi
+
+    if echo "$webproxy" | grep '^Enabled:' | grep -iq 'Yes';then
+        server="$(networksetup -getwebproxy $cnw | grep Server | perl -ne 'print $2 if /(Server:\s*)(.+)/')"
+        port="$(networksetup -getwebproxy $cnw | grep Port| perl -ne 'print $2 if /(Port:\s*)(.+)/')"
+        printf "Http  proxy enabled at $green'$server:$port'$reset.\n"
+    else
+        printf "Http  proxy ${red}disabled${reset}.\n"
+    fi
+
+    if echo "$securewebproxy" | grep '^Enabled:' | grep -iq 'Yes';then
+        server="$(networksetup -getsecurewebproxy $cnw | grep Server | perl -ne 'print $2 if /(Server:\s*)(.+)/')"
+        port="$(networksetup -getsecurewebproxy $cnw | grep Port| perl -ne 'print $2 if /(Port:\s*)(.+)/')"
+        printf "Https proxy enabled at $green'$server:$port'$reset.\n"
+    else
+        printf "Https proxy ${red}disabled${reset}.\n"
+    fi
+
+    if echo "$socksproxy" | grep '^Enabled:' | grep -iq 'Yes';then
+        server="$(networksetup -getsocksfirewallproxy $cnw | grep Server | perl -ne 'print $2 if /(Server:\s*)(.+)/')"
+        port="$(networksetup -getsocksfirewallproxy $cnw | grep Port| perl -ne 'print $2 if /(Port:\s*)(.+)/')"
+        printf "Socks proxy enabled at $green'$server:$port'$reset.\n"
+    else
+        printf "Socks proxy ${red}disabled${reset}.\n"
+    fi
+}
+
+cmd=$1
+shift
+case $cmd in
+    http)
+        setHttpProxy "$@"
+        ;;
+    https)
+        setHttpsProxy "$@"
+        ;;
+    socks)
+        setSocksProxy "$@"
+        ;;
+    all)
+        setHttpProxy "$@"
+        setHttpsProxy "$@"
+        ;;
+    # pac)
+    #     setPac "$@"
+    #     ;;
+    unset|clear)
+        clearset "$@"
+        ;;
+    # editPac)
+    #     editPac "$@"
+    #     ;;
+    list|status)
+        list "$@"
+        ;;
+    *)
+        usage
+        ;;
+esac

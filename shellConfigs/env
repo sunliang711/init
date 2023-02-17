@@ -1,0 +1,83 @@
+export LC_CTYPE=en_US.UTF-8
+export LC_ALL=en_US.UTF-8
+export TZ='Asia/Shanghai'
+
+export GO111MODULE=on
+# export GOPROXY=https://goproxy.io
+export GOPROXY=https://goproxy.cn,direct
+
+user=${SUDO_USER:-$(whoami)}
+home=$(eval echo ~$user)
+
+#BEGIN environment variable
+export workspace=$HOME/Workspace
+export ws=$workspace
+
+export GOPATH=$HOME/.go
+export GOBIN=$GOPATH/bin
+
+[ ! -d $workspace ] && mkdir -p $workspace
+[ ! -d $GOPATH ] && mkdir -p $GOPATH
+[ ! -d $GOBIN ] && mkdir -p $GOBIN
+
+export gopath=${GOPATH}
+export gobin=${GOBIN}
+
+#default editor for `systemctl edit --full <service>`
+#sudo -E systemctl edit --full <service>
+if command -v vim >/dev/null 2>&1; then
+    export SYSTEMD_EDITOR=vim
+else
+    export SYSTEMD_EDITOR=vi
+fi
+
+if command -v clang >/dev/null 2>&1; then
+    export CC=$(command -v clang)
+fi
+
+if command -v clang++ >/dev/null 2>&1; then
+    export CXX=$(command -v clang++)
+fi
+
+#解决git log乱码
+#因为git log调用less命令
+export LESSCHARSET=utf-8
+#END environment variable
+# 设置下面三个环境变量会让macos下终端显示文件名乱码(中文文件名变成一堆问号，虽然可以在终端输入中文)
+# export LANG="en_US.utf8"
+# export LC_ALL="en_US.utf8"
+# export LC_CTYPE="en_US.utf8"
+
+export PROXY_FILE="${home}/.PROXY_FILE"
+export LOCAL_APP_ROOT="${home}/.local/apps"
+detectProxyEnv
+#BEGIN PATH
+# export PATH=""
+append_path "$HOME/.bin"
+# detectBin $HOME/.local
+append_path "$HOME/.local/bin"
+
+append_path /usr/local/sbin
+append_path /usr/local/bin
+
+append_path /usr/sbin
+append_path /usr/bin
+
+append_path /sbin
+append_path /bin
+
+append_path "$HOME/.npm/bin"
+append_path "$HOME/.cargo/bin"
+append_path "$GOPATH/bin"
+append_path "${SHELLRC_ROOT}/bin"
+
+#BEGIN custom PATH
+
+#END custom PATH
+#END PATH
+
+#BEGIN proxy setting
+# proxyoff_ >/dev/null
+#END proxy setting
+
+# vim: set ft=sh:

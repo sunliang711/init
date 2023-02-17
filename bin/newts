@@ -1,0 +1,112 @@
+#!/bin/bash
+if [ -z "${BASH_SOURCE}" ]; then
+    this=${PWD}
+else
+    rpath="$(readlink ${BASH_SOURCE})"
+    if [ -z "$rpath" ]; then
+        rpath=${BASH_SOURCE}
+    elif echo "$rpath" | grep -q '^/'; then
+        # absolute path
+        echo
+    else
+        # relative path
+        rpath="$(dirname ${BASH_SOURCE})/$rpath"
+    fi
+    this="$(cd $(dirname $rpath) && pwd)"
+fi
+
+if [ -r ${SHELLRC_ROOT}/shellrc.d/shelllib ];then
+    source ${SHELLRC_ROOT}/shellrc.d/shelllib
+elif [ -r /tmp/shelllib ];then
+    source /tmp/shelllib
+else
+    # download shelllib then source
+    shelllibURL=https://gitee.com/sunliang711/init2/raw/master/shell/shellrc.d/shelllib
+    (cd /tmp && curl -s -LO ${shelllibURL})
+    if [ -r /tmp/shelllib ];then
+        source /tmp/shelllib
+    fi
+fi
+
+
+###############################################################################
+# write your code below (just define function[s])
+# function is hidden when begin with '_'
+new(){
+    local projectName="${1:?'missing typescript project name'}"
+    [ -d "${projectName}" ] && { echo "Already exists project ${name}"; return 1; }
+
+    _require_command npm
+
+    set -xe
+
+    mkdir ${projectName} && cd ${projectName}
+    mkdir src
+    if _command_exists yarn;then
+        yarn init -y
+        yarn add typescript@next ts-node @types/node
+    else
+        npm init -y
+        npm install typescript@next ts-node @types/node --save-dev
+    fi
+    npx tsc --init --rootDir src --outDir dist --esModuleInterop \
+            --target esnext --lib esnext --module commonjs --allowJs true \
+            --noImplicitAny true --resolveJsonModule true \
+            --experimentalDecorators true \
+            --emitDecoratorMetadata true \
+            --inlineSourceMap true \
+            --strictPropertyInitialization false \
+            --sourceMap true --allowSyntheticDefaultImports true
+
+    set +x
+    # perl -i -p -e 's/"outDir": "dist"/"outDir": ".\/dist"/' tsconfig.json
+    touch src/index.ts
+    mkdir dist
+    git init .
+    cat<<EOF >.gitignore
+.DS_Store
+*.swp
+.idea/
+node_modules/
+dist/
+EOF
+
+    # package.json scripts
+    tmpFile=/tmp/newtsTmpfile
+    sed -n -e '1,/"main"/p' package.json >${tmpFile}
+    cat<<EOF2 >>${tmpFile}
+  "scripts": {
+      "build": "npx tsc",
+        "start": "node dist/index.js"
+  },
+EOF2
+    sed -n -e '/"license"/,$p' package.json >>${tmpFile}
+    mv ${tmpFile} package.json
+
+}
+
+# write your code above
+###############################################################################
+
+em(){
+    $ed $0
+}
+
+function _help(){
+    cd "${this}"
+    cat<<EOF2
+Usage: $(basename $0) ${bold}CMD${reset}
+
+${bold}CMD${reset}:
+EOF2
+    perl -lne 'print "\t$2" if /^\s*(function)?\s*(\S+)\s*\(\)\s*\{$/' $(basename ${BASH_SOURCE}) | perl -lne "print if /^\t[^_]/"
+}
+
+case "$1" in
+     ""|-h|--help|help)
+        _help
+        ;;
+    *)
+        "$@"
+        ;;
+esac

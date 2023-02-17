@@ -1,0 +1,73 @@
+#!/usr/bin/env python
+# -*- encoding: utf-8 -*-
+
+import argparse
+import subprocess
+import os
+import logging
+
+LOG_FORMAT = "[%(asctime)s - %(levelname)s - %(message)s]"
+DATE_FORMAT = "%Y/%m%d %H:%M:%S %p"
+
+
+DefaultHost = "socks5://localhost"
+DefaultPort = 1080
+DefaultMTime = 3
+
+logging.basicConfig(
+        level = logging.DEBUG,
+        format = LOG_FORMAT,
+        datefmt=DATE_FORMAT
+        )
+me=os.path.realpath(__file__)
+
+def main():
+    parser = argparse.ArgumentParser(description = "find out ip address of wan")
+    parser.add_argument("--host",help = "proxy host,ie: socks5://proxyHost or http://proxyHost")
+    parser.add_argument("-p","--port",type = int,help = "proxy port")
+    parser.add_argument("-m","--max-time",dest = "mtime",type = int,help = "curl max-time option")
+    parser.add_argument("-e","--edit",action="store_true",help="edit this script")
+    # parser.add_argument("-v","--verbose",action="store_true",help = "verbose mode")
+    parser.add_argument("-q","--quiet",action="store_true",help = "quiet mode")
+
+    args = parser.parse_args()
+
+    edit = args.edit
+    if edit:
+        ret = subprocess.call(['which','vim'])
+        if ret == 0:
+            subprocess.call(["vim",me])
+        else:
+            subprocess.call(['vi',me])
+        return 0
+
+    host = args.host
+    port = args.port
+    mtime = args.mtime
+
+    if host is None:
+        if not args.quiet:
+            logging.info("use default host: {}".format(DefaultHost))
+        host = DefaultHost
+    if port is None:
+        port = DefaultPort
+        if not args.quiet:
+            logging.info("use default port: {}".format(DefaultPort))
+    if mtime is None:
+        mtime = DefaultMTime
+        if not args.quiet:
+            logging.info("use default mtime: {}".format(DefaultMTime))
+    proxy = "{}:{}".format(host,port)
+    if not args.quiet:
+        logging.info("use proxy: {}".format(proxy))
+
+    sources = ['cip.cc','ipinfo.io','myip.ipip.net','ifconfig.me']
+
+    for s in sources:
+        logging.info("try to get ip from: {}".format(s))
+        subprocess.call(["curl","-m","{}".format(mtime),"-x",proxy,s])
+        print("\n")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,142 @@
+#!/bin/bash
+rpath="$(readlink ${BASH_SOURCE})"
+if [ -z "$rpath" ];then
+    rpath=${BASH_SOURCE}
+fi
+root="$(cd $(dirname $rpath) && pwd)"
+cd "$root"
+_runAsRoot(){
+    cmd="${*}"
+    local rootID=0
+    if [ "${EUID}" -ne "${rootID}" ];then
+        echo -n "Not root, try to run as root.."
+        # or sudo sh -c ${cmd} ?
+        if eval "sudo ${cmd}";then
+            echo "ok"
+            return 0
+        else
+            echo "failed"
+            return 1
+        fi
+    else
+        # or sh -c ${cmd} ?
+        eval "${cmd}"
+    fi
+}
+# write your code below
+usage(){
+    cat<<-EOF
+	Usage: $(basename $0) cmd
+
+	cmd:
+		list      [-r ROOT] [-t e|a]     e for enabled,a for available
+		enable    [-r ROOT] [siteName]
+		disable   [-r ROOT] [siteName]
+		em
+		edit     <siteName>
+EOF
+exit 1
+}
+
+dest=/etc/nginx
+typ=
+
+list(){
+    case $typ in
+        e)
+            ls "$dest/sites-enabled" 2>/dev/null
+            ;;
+        a)
+            ls "$dest/sites-available" 2>/dev/null
+            ;;
+        *)
+            echo "${green}available sites:${reset}"
+            ls "$dest/sites-available" 2>/dev/null
+            echo
+            echo "${green}enabled sites:${reset}"
+            ls "$dest/sites-enabled" 2>/dev/null
+	    echo
+            ;;
+    esac
+}
+
+enable(){
+    siteName=${1:?"missing siteName"}
+    _runAsRoot "ln -sf $dest/sites-available/$siteName $dest/sites-enabled"
+}
+
+disable(){
+    siteName=${1:?"missing siteName"}
+    if [ -e "$dest/sites-enabled/$siteName" ];then
+        _runAsRoot "rm -rf $dest/sites-enabled/$siteName"
+    fi
+}
+
+em(){
+    editor=vi
+    if command -v vim >/dev/null 2>&1;then
+        editor=vim
+    fi
+    $editor ${BASH_SOURCE}
+}
+
+edit(){
+    siteName=${1:?"missing siteName in available directory."}
+    editor=vi
+    if command -v vim >/dev/null 2>&1;then
+        editor=vim
+    fi
+    if command -v nvim >/dev/null 2>&1;then
+        editor=nvim
+    fi
+    local fullPath="$dest/sites-available/$siteName"
+    if [ ! -e "$fullPath" ];then
+        echo "No $siteName configure file."
+        exit 1
+    fi
+    $editor "$fullPath"
+}
+
+cmd=$1
+shift
+
+while getopts ":r:t:" opt;do
+    case "$opt" in
+        r)
+            dest=$OPTARG
+            ;;
+        t)
+            typ=$OPTARG
+            ;;
+        :)
+            echo "$OPTARG need param"
+            exit 1
+            ;;
+        \?)
+            echo "Unknown option: $OPTARG"
+            exit 1
+            ;;
+    esac
+done
+
+shift $((OPTIND-1))
+
+case $cmd in
+    l|li|lis|list)
+        list "$@"
+        ;;
+    e|en|ena|enab|enabl|enable)
+        enable "$@"
+        ;;
+    d|di|dis|disa|disab|disabl|disable)
+        disable "$@"
+        ;;
+    em)
+        em
+        ;;
+    edit)
+        edit "$@"
+        ;;
+    *)
+        usage
+esac

@@ -1,0 +1,9 @@
+set -o vi
+#用法:echo ${red}red text${reset}
+red=$(tput setaf 1)
+yellow=$(tput setaf 3)
+blue=$(tput setaf 4)
+cyan=$(tput setaf 5)
+reset=$(tput sgr0)
+
+# vim: set ft=sh:

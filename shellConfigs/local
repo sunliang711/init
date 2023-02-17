@@ -1,0 +1,2 @@
+append_path ~/.npm/bin
+append_path ~/.cargo/bin

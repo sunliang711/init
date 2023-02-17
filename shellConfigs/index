@@ -1,0 +1,18 @@
+#load basic
+source "${SHELLRC_ROOT}/basic"
+
+#load function
+source "${SHELLRC_ROOT}/function"
+
+#load env
+Source "${SHELLRC_ROOT}/env"
+
+#load alias
+Source "${SHELLRC_ROOT}/alias"
+
+#other
+Source "${SHELLRC_ROOT}/other"
+
+#local
+Source "${SHELLRC_ROOT}/local"
+# vim: set ft=sh:

@@ -1,0 +1,228 @@
+#!/bin/bash
+if [ -z "${BASH_SOURCE}" ]; then
+    this=${PWD}
+else
+    rpath="$(readlink ${BASH_SOURCE})"
+    if [ -z "$rpath" ]; then
+        rpath=${BASH_SOURCE}
+    elif echo "$rpath" | grep -q '^/'; then
+        # absolute path
+        echo
+    else
+        # relative path
+        rpath="$(dirname ${BASH_SOURCE})/$rpath"
+    fi
+    this="$(cd $(dirname $rpath) && pwd)"
+fi
+
+if [ -r ${SHELLRC_ROOT}/shellrc.d/shelllib ];then
+    source ${SHELLRC_ROOT}/shellrc.d/shelllib
+elif [ -r /tmp/shelllib ];then
+    source /tmp/shelllib
+else
+    # download shelllib then source
+    shelllibURL=https://gitee.com/sunliang711/init2/raw/master/shell/shellrc.d/shelllib
+    (cd /tmp && curl -s -LO ${shelllibURL})
+    if [ -r /tmp/shelllib ];then
+        source /tmp/shelllib
+    fi
+fi
+
+# available VARs: user, home, rootID
+# available functions: 
+#    _err(): print "$*" to stderror
+#    _command_exists(): check command "$1" existence
+#    _require_command(): exit when command "$1" not exist
+#    _runAsRoot():
+#                  -x (trace)
+#                  -s (run in subshell)
+#                  --nostdout (discard stdout)
+#                  --nostderr (discard stderr)
+#    _insert_path(): insert "$1" to PATH
+#    _run():
+#                  -x (trace)
+#                  -s (run in subshell)
+#                  --nostdout (discard stdout)
+#                  --nostderr (discard stderr)
+#    _ensureDir(): mkdir if $@ not exist
+#    _root(): check if it is run as root
+#    _require_root(): exit when not run as root
+#    _linux(): check if it is on Linux
+#    _require_linux(): exit when not on Linux
+#    _wait(): wait $i seconds in script
+#    _must_ok(): exit when $? not zero
+#    _info(): info log
+#    _infoln(): info log with \n
+#    _error(): error log
+#    _errorln(): error log with \n
+#    _checkService(): check $1 exist in systemd
+
+
+###############################################################################
+# write your code below (just define function[s])
+# function is hidden when begin with '_'
+solanaRoot=~/.config/solana
+
+installcli(){
+    # install solana cli
+    local version=${version:-1.14.2}
+    set -xe
+    sh -c "$(curl -sSfL https://release.solana.com/v${version}/install)"
+    solana-install update
+    # install spl-token
+    cargo install spl-token-cli
+}
+
+devnet(){
+    set -xe
+    solana config set --url devnet
+}
+
+testnet(){
+    set -xe
+    solana config set --url testnet
+}
+
+mainnet(){
+    set -xe
+    solana config set --url mainnet-beta #https://api.mainnet-beta.solana.com
+}
+
+network(){
+    solana config get | grep 'RPC'
+}
+
+newAccount(){
+    # create system account
+    local account=${1:?'missing account name'}
+    cd ${solanaRoot}
+    [ -e ${account}.json ] && { echo "already exists such account"; return 1; }
+    solana-keygen new -o ${account}.json
+}
+
+getAddress(){
+    cd ${solanaRoot}
+    account=${1:?'missing acocunt name'}
+    solana address -k ${account}.json
+}
+
+airdrop(){
+    amount=${1:?'missing amount'}
+    receiver=${2:?'missing receiver name'}
+
+    cd ${solanaRoot}
+    [ ! -e ${receiver}.json ] && { echo "no such account"; return 1; }
+    solana airdrop $amount ${receiver}.json
+}
+
+balance(){
+    account=${1:?'missing account name'}
+    cd ${solanaRoot}
+    [ ! -e ${account}.json ] && { echo "no such account"; return 1; }
+    solana balance ${account}.json
+}
+
+accountInfo(){
+    cd ${solanaRoot}
+    account=${1:?'missing account name'}
+    solana account ${account}.json
+}
+
+tokenAccountInfo(){
+    cd ${solanaRoot}
+    tokenAccount=${1:?'missing token account'}
+
+    spl-token account-info --address ${tokenAccount}
+}
+
+newNft(){
+    cd ${solanaRoot}
+    mintAuth=${1:?'missing mint auth account name'}
+    feePayer=${2:?'missing fee payer account name'}
+    decimals=${3:-9}
+
+    mintAuthAddress="$(solana address -k ${mintAuth}.json)"
+    feePayerAddress="$(solana address -k ${feePayer}.json)"
+
+    cat<<-EOF
+	create new nft(mint account) with the following info:
+	    mintAuth: ${mintAuthAddress}
+	    feePayer: ${feePayerAddress}
+	    decimals: ${decimals}
+	EOF
+
+    spl-token create-token --mint-authority ${mintAuth}.json \
+                           --fee-payer ${feePayer}.json \
+                           --decimals ${decimals}
+}
+
+nftSupply(){
+    cd ${solanaRoot}
+    nft=${1:?'missing nft address'}
+    spl-token supply $nft
+}
+
+newNftAccount(){
+    cd ${solanaRoot}
+
+    owner=${1:?'mssing account owner(system account) name'}
+    feePayer=${2:?'missing feepayer account name'}
+    nftAddress=${3:?'missing nft address'}
+
+    spl-token create-account \
+        --owner ${owner}.json \
+        --fee-payer ${feePayer}.json \
+        ${nftAddress}
+}
+
+mintNft(){
+    cd ${solanaRoot}
+
+    mintAuth=${1:?'missing mint auth account name'}
+    feePayer=${2:?'missing fee payer account name'}
+    nftAddress=${3:?'missing nft address'}
+    amount=${4:?'missing amount'}
+    receiver=${5:?'missing receiver account name'}
+
+    tokenAccount="$(spl-token create-account --owner ${receiver}.json --fee-payer ${feePayer}.json ${nftAddress} 2>/dev/null | perl -lne 'print $1 if /Creating account (.+)/'  )"
+    mintAuthAddress="$(solana address -k ${mintAuth}.json)"
+    feePayerAddress="$(solana address -k ${feePayer}.json)"
+
+    cat<<-EOF
+	mint nft with the following info:
+	    mintAuth: ${mintAuthAddress}
+	    feePayer: ${feePayerAddress}
+	    decimals: ${decimals}
+	tokenAccount: ${tokenAccount}
+	EOF
+
+    spl-token mint ${nftAddress} ${amount} ${tokenAccount} \
+            --fee-payer ${feePayer}.json \
+            --mint-authority ${mintAuth}.json
+}
+
+
+# write your code above
+###############################################################################
+
+em(){
+    $ed $0
+}
+
+function _help(){
+    cd "${this}"
+    cat<<EOF2
+Usage: $(basename $0) ${bold}CMD${reset}
+
+${bold}CMD${reset}:
+EOF2
+    perl -lne 'print "\t$2" if /^\s*(function)?\s*(\S+)\s*\(\)\s*\{$/' $(basename ${BASH_SOURCE}) | perl -lne "print if /^\t[^_]/"
+}
+
+case "$1" in
+     ""|-h|--help|help)
+        _help
+        ;;
+    *)
+        "$@"
+esac
