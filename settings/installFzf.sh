@@ -38,27 +38,27 @@ install() {
 
     if [ ! -d ~/.fzf ]; then
         git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf
-    ~/.fzf/install --all
+        ~/.fzf/install --all
     else
         echo "~/.fzf exists, skip ..."
     fi
 
     if ! grep -q '#BEGIN FZF function' ~/.zshrc; then
         echo "add source $(pwd)/fzffunction.sh in .zshrc"
-        cat <<-EOF >>~/.zshrc
-            #BEGIN FZF function
-            source $(pwd)/fzffunctions.sh
-            #END FZF function
-        EOF
+        cat <<EOF >>~/.zshrc
+#BEGIN FZF function
+source $(pwd)/fzffunctions.sh
+#END FZF function
+EOF
     fi
 
     if ! grep -q '#BEGIN FZF function' ~/.bashrc; then
         echo "add source $(pwd)/fzffunction.sh in .bashrc"
-        cat <<-EOF >>~/.bashrc
-            #BEGIN FZF function
-            source $(pwd)/fzffunctions.sh
-            #END FZF function
-        EOF
+        cat <<EOF2 >>~/.bashrc
+#BEGIN FZF function
+source $(pwd)/fzffunctions.sh
+#END FZF function
+EOF2
     fi
 
     if ! command -v fd >/dev/null 2>&1; then
