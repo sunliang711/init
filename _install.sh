@@ -69,8 +69,8 @@ install() {
     # tmux
     (cd settings && bash tmux.sh install)
 
-    # nvim
-    (cd settings && bash nvim.sh install)
+    # # nvim
+    # (cd settings && bash nvim.sh install)
 
     #shell
     (cd settings && bash zsh.sh install)
