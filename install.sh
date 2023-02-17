@@ -79,6 +79,7 @@ install() {
         exit
     fi
 
+    echo "clone init to ${dest}.."
     cd "${dest}"
     git clone https://github.com/sunliang711/init || {
         "echo download init repo failed"
