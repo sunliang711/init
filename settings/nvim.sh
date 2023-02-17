@@ -62,7 +62,7 @@ fi
 # function is hidden when begin with '_'
 install() {
     _require nvim
-    git clone https://github.com/sunliang711/nvim ~/.config/nvim
+    git clone -b lazy https://github.com/sunliang711/nvim ~/.config/nvim
     nvim
 }
 
