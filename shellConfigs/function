@@ -2355,7 +2355,9 @@ function clearall() {
     clearinput
 }
 
-source "${SHELLRC_ROOT}/fzffunctions.sh"
+for s in "${SHELLRC_ROOT}"/autoSource/*; do
+    source "$s"
+done
 
 #END function
 
