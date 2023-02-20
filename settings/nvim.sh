@@ -16,7 +16,7 @@ else
 fi
 
 if [ -r ${SHELLRC_ROOT}/shelllib ]; then
-    source ${SHELLRC_ROOT}/shellrc.d/shelllib
+    source ${SHELLRC_ROOT}/shelllib
 elif [ -r /tmp/shelllib ]; then
     source /tmp/shelllib
 else
