@@ -80,12 +80,18 @@ install() {
     fi
 
     echo "clone init to ${dest}.."
-    cd "${dest}"
-    git clone https://github.com/sunliang711/init || {
-        "echo download init repo failed"
+    cd "${dest}" || {
+        echo "cd to $dest failed!"
         exit 1
     }
-    cd init
+    git clone https://github.com/sunliang711/init || {
+        echo "download init repo failed!"
+        exit 1
+    }
+    cd init || {
+        echo "cd to init failed!"
+        exit 1
+    }
     ./_install.sh install
 
     cat <<EOF

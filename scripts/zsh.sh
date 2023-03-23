@@ -82,23 +82,23 @@ install() {
         RUNZSH=no bash ${installer}
     )
 
-    ln -sf ${this}/zshrc ~/.zshrc || {
+    ln -sf "${this}"/../softlinks/zshrc ~/.zshrc || {
         echo "Please fork the repo first"
         exit 1
     }
 
     # omz plugins
     # zsh-autosuggestions
-    git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM}/plugins/zsh-autosuggestions
+    git clone https://github.com/zsh-users/zsh-autosuggestions "${ZSH_CUSTOM}"/plugins/zsh-autosuggestions
     # zsh-syntax-highlighting
-    git clone https://github.com/zsh-users/zsh-syntax-highlighting.git ${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting
+    git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "${ZSH_CUSTOM}"/plugins/zsh-syntax-highlighting
 
     # custom theme
-    ln -svf ${this}/*.zsh-theme "${ZSH_CUSTOM}/themes"
+    ln -svf "${this}"/../softlinks/*.zsh-theme "${ZSH_CUSTOM}/themes"
 
     # soft link sshconfig
     [ ! -d ~/.ssh ] && mkdir ~/.ssh
-    ln -svf ${this}/sshconfig $HOME/.ssh/config
+    ln -svf "${this}"/../softlinks/sshconfig "$HOME"/.ssh/config
 }
 
 uninstall() {

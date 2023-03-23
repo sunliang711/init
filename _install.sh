@@ -64,19 +64,19 @@ fi
 install() {
 
     # git
-    (cd settings && bash setGit.sh set)
+    (cd scripts && bash setGit.sh set)
 
     # tmux
-    (cd settings && bash tmux.sh install)
+    (cd scripts && bash tmux.sh install)
 
     # # nvim
-    # (cd settings && bash nvim.sh install)
+    # (cd scripts && bash nvim.sh install)
 
     #shell
-    (cd settings && bash zsh.sh install)
+    (cd scripts && bash zsh.sh install)
 
     # fzf
-    (cd settings && bash installFzf.sh install)
+    (cd scripts && bash installFzf.sh install)
 
 }
 

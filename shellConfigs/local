@@ -1,2 +1,5 @@
 append_path ~/.npm/bin
 append_path ~/.cargo/bin
+
+export NVM_DIR=~/.nvm
+source /usr/share/nvm/nvm.sh
