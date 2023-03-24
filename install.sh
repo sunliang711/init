@@ -89,11 +89,11 @@ install() {
 }
 
 uninstall() {
-    (cd shell && bash installZsh.sh uninstall)
+    (cd scripts && bash zsh.sh uninstall)
 
     (./tools/installFzf.sh uninstall)
 
-    (cd tmux && bash tmux.sh uninstall)
+    (cd scripts && bash tmux.sh uninstall)
 }
 
 # write your code above
