@@ -15,46 +15,50 @@ else
     this="$(cd $(dirname $rpath) && pwd)"
 fi
 
-if [ -r ${SHELLRC_ROOT}/shellrc.d/shelllib ];then
+if [ -r ${SHELLRC_ROOT}/shellrc.d/shelllib ]; then
     source ${SHELLRC_ROOT}/shellrc.d/shelllib
-elif [ -r /tmp/shelllib ];then
+elif [ -r /tmp/shelllib ]; then
     source /tmp/shelllib
 else
     # download shelllib then source
     shelllibURL=https://gitee.com/sunliang711/init2/raw/master/shell/shellrc.d/shelllib
     (cd /tmp && curl -s -LO ${shelllibURL})
-    if [ -r /tmp/shelllib ];then
+    if [ -r /tmp/shelllib ]; then
         source /tmp/shelllib
     fi
 fi
 
-
 ###############################################################################
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
-usedVersion=${version:-'0.39.1'}
-install(){
-    link="https://raw.githubusercontent.com/nvm-sh/nvm/v${usedVersion}/install.sh"
+version=${version:-'0.39.1'}
+link="https://raw.githubusercontent.com/nvm-sh/nvm/v${version}/install.sh"
+configFile=$HOME/.local/apps/init/shellConfigs/local
+install() {
     _require_command curl
-    curl -o- ${link} | bash
+    echo "nvm link: $link"
 
-    cat<<EOF>> $HOME/.zshrc
-export NVM_DIR="\$([ -z "\${XDG_CONFIG_HOME-}" ] && printf %s "\${HOME}/.nvm" || printf %s "\${XDG_CONFIG_HOME}/nvm")"
-[ -s "\$NVM_DIR/nvm.sh" ] && \. "\$NVM_DIR/nvm.sh" # This loads nvm
-EOF
+    if [ ! -e "$configFile" ]; then
+        touch "$configFile"
+    fi
+    echo "add config to: $configFile"
+
+    curl -o- "$link" | PROFILE="$configFile" bash
+
+    echo "use 'nvm install --lts' to install lts node"
 
 }
 
 # write your code above
 ###############################################################################
 
-em(){
+em() {
     $ed $0
 }
 
-function _help(){
+function _help() {
     cd "${this}"
-    cat<<EOF2
+    cat <<EOF2
 Usage: $(basename $0) ${bold}CMD${reset}
 
 ${bold}CMD${reset}:
@@ -63,9 +67,10 @@ EOF2
 }
 
 case "$1" in
-     ""|-h|--help|help)
-        _help
-        ;;
-    *)
-        "$@"
+"" | -h | --help | help)
+    _help
+    ;;
+*)
+    "$@"
+    ;;
 esac
