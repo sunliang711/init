@@ -15,155 +15,134 @@ else
     this="$(cd $(dirname $rpath) && pwd)"
 fi
 
-if [ -r ${SHELLRC_ROOT}/shellrc.d/shelllib ];then
-    source ${SHELLRC_ROOT}/shellrc.d/shelllib
-elif [ -r /tmp/shelllib ];then
+if [ -r ${SHELLRC_ROOT}/shelllib ]; then
+    source ${SHELLRC_ROOT}/shelllib
+elif [ -r /tmp/shelllib ]; then
     source /tmp/shelllib
 else
     # download shelllib then source
     shelllibURL=https://gitee.com/sunliang711/init2/raw/master/shell/shellrc.d/shelllib
     (cd /tmp && curl -s -LO ${shelllibURL})
-    if [ -r /tmp/shelllib ];then
+    if [ -r /tmp/shelllib ]; then
         source /tmp/shelllib
     fi
 fi
 
+# available VARs: user, home, rootID
+# available functions:
+#    _err(): print "$*" to stderror
+#    _command_exists(): check command "$1" existence
+#    _require_command(): exit when command "$1" not exist
+#    _runAsRoot():
+#                  -x (trace)
+#                  -s (run in subshell)
+#                  --nostdout (discard stdout)
+#                  --nostderr (discard stderr)
+#    _insert_path(): insert "$1" to PATH
+#    _run():
+#                  -x (trace)
+#                  -s (run in subshell)
+#                  --nostdout (discard stdout)
+#                  --nostderr (discard stderr)
+#    _ensureDir(): mkdir if $@ not exist
+#    _root(): check if it is run as root
+#    _require_root(): exit when not run as root
+#    _linux(): check if it is on Linux
+#    _require_linux(): exit when not on Linux
+#    _wait(): wait $i seconds in script
+#    _must_ok(): exit when $? not zero
+#    _info(): info log
+#    _infoln(): info log with \n
+#    _error(): error log
+#    _errorln(): error log with \n
+#    _checkService(): check $1 exist in systemd
+
 ###############################################################################
 # write your code below (just define function[s])
-# function with 'function' is hidden when run help, without 'function' is show
-###############################################################################
-# TODO
-function need(){
-    if ! command -v $1 >/dev/null 2>&1;then
-        echo "need $1"
+# function is hidden when begin with '_'
+function _args() {
+    options=$(getopt -o dv --long debug --long name: -- "$@")
+    [ $? -eq 0 ] || {
+        echo "Incorrect option provided"
         exit 1
-    fi
+    }
+    eval set -- "$options"
+    while true; do
+        case "$1" in
+        -v)
+            VERBOSE=1
+            ;;
+        -d)
+            DEBUG=1
+            ;;
+        --debug)
+            DEBUG=1
+            ;;
+        --name)
+            shift # The arg is next in position args
+            NAME=$1
+            ;;
+        --)
+            shift
+            break
+            ;;
+        esac
+        shift
+    done
 }
 
-version=${version:-"0.6.0"}
-if [ -n "${local_app_root}" ];then
-    prefix=${local_app_root}
-else
-    prefix=$HOME/.local/apps
-fi
+_example() {
+    _args "$0" "$@"
+    # TODO
+}
+version="${version:-v0.8.3}"
+link="https://github.com/neovim/neovim/releases/download/${version}/nvim.appimage"
+binary="${link##*/}"
+dest=/usr/local/nvim/"${version}"
 
-dest=${prefix}/nvim/$version
+install() {
+    _require_root
+    _require_linux
+    set -e
 
-install(){
-    need curl
-    need tar
-    cat<<EOF
-supported env vars:
-version, local_app_root(install location)
-EOF
-    if [ ! -d $dest ];then
-        mkdir -p $dest
-    fi
-    case $(uname) in
-        Linux)
-            case $(uname -m) in
-                x86_64)
-                    local nvimURL="https://source711.oss-cn-shanghai.aliyuncs.com/neovim/$version/nvim-linux64.tar.gz"
-                    ;;
-                aarch64)
-                    local nvimURL="https://source711.oss-cn-shanghai.aliyuncs.com/neovim/$version/nvim-linuxarm64.tar.bz2"
-                    ;;
-                aarch64)
-                    local nvimURL="https://source711.oss-cn-shanghai.aliyuncs.com/neovim/0.5.0/nvim-linuxarm64.tar.bz2"
-                    ;;
-            esac
-            ;;
-        Darwin)
-            local nvimURL="https://source711.oss-cn-shanghai.aliyuncs.com/neovim/$version/nvim-macos.tar.gz"
-            ;;
-    esac
-    local tarFile="${nvimURL##*/}"
-    local name="${tarFile%.tar.*}"
     cd /tmp
-    if [ ! -e ${tarFile} ];then
-        curl -LO "$nvimURL"
+    if [ ! -e "$binary" ]; then
+        curl -LO "$link"
+    fi
+    chmod +x "$binary"
+    ./"$binary" --appimage-extract
+
+    if [ ! -e "$dest" ]; then
+        mkdir -p "$dest"
     fi
 
-    cmd="tar -C $dest -xvf ${tarFile}"
-    echo "$cmd ..."
-    bash -c "$cmd >/dev/null"  || { echo "extract ${tarFile} failed."; exit 1; }
+    mv squashfs-root/* "$dest"
+    ln -s "$dest/usr/bin/nvim" /usr/local/bin/nvim
 
-    echo "nvim $version has been installed to $dest/$name/bin"
-    # linkDest="${home}/.local/bin"
-    # if [ -d "${linkDest}" ]; then
-    #     # find all executable
-    #     for f in $(find ${dest}/$name/bin ! -type d);do
-    #         ln -sf ${f} "${linkDest}"
-    #     done
-    # fi
-
-    # DELETE later
-    # local localFile="${SHELLRC_ROOT}/shellrc.d/local"
-    # local binPath="${dest}/$name/bin"
-    # if [ -e "${localFile}" ];then
-    #     if ! grep -q "${binPath}" "${localFile}";then
-    #         echo "append_path ${binPath}" >> "${localFile}"
-    #     fi
-    # else
-    #     echo "nvim $version has been installed to $dest, add ${binPath} to PATH manually"
-    # fi
 }
 
-uninstall(){
-    if [ -d $dest ];then
-        echo "remove $dest..."
-        /bin/rm -rf $dest && { echo "Done."; }
-    fi
-}
-
-
-
-###############################################################################
 # write your code above
 ###############################################################################
-function help(){
-    cat<<EOF2
+
+em() {
+    $ed $0
+}
+
+function _help() {
+    cd "${this}"
+    cat <<EOF2
 Usage: $(basename $0) ${bold}CMD${reset}
 
 ${bold}CMD${reset}:
 EOF2
-    perl -lne 'print "\t$1" if /^\s*(\w+)\(\)\{$/' $(basename ${BASH_SOURCE}) | grep -v runAsRoot
+    perl -lne 'print "\t$2" if /^\s*(function)?\s*(\S+)\s*\(\)\s*\{$/' $(basename ${BASH_SOURCE}) | perl -lne "print if /^\t[^_]/"
 }
-function loadENV(){
-    if [ -z "$INIT_HTTP_PROXY" ];then
-        echo "INIT_HTTP_PROXY is empty"
-        echo -n "Enter http proxy: (if you need) "
-        read INIT_HTTP_PROXY
-    fi
-    if [ -n "$INIT_HTTP_PROXY" ];then
-        echo "set http proxy to $INIT_HTTP_PROXY"
-        export http_proxy=$INIT_HTTP_PROXY
-        export https_proxy=$INIT_HTTP_PROXY
-        export HTTP_PROXY=$INIT_HTTP_PROXY
-        export HTTPS_PROXY=$INIT_HTTP_PROXY
-        git config --global http.proxy $INIT_HTTP_PROXY
-        git config --global https.proxy $INIT_HTTP_PROXY
-    else
-        echo "No use http proxy"
-    fi
-}
-
-function unloadENV(){
-    if [ -n "$https_proxy" ];then
-        unset http_proxy
-        unset https_proxy
-        unset HTTP_PROXY
-        unset HTTPS_PROXY
-        git config --global --unset-all http.proxy
-        git config --global --unset-all https.proxy
-    fi
-}
-
 
 case "$1" in
-     ""|-h|--help|help)
-        help
-        ;;
-    *)
-        "$@"
+"" | -h | --help | help)
+    _help
+    ;;
+*)
+    "$@"
+    ;;
 esac
