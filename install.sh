@@ -60,47 +60,40 @@ fi
 ###############################################################################
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
+
+repo="https://github.com/sunliang711/init"
+dest="$HOME/.local/apps/init"
+
 install() {
-    # requires: git vimdiff tmux zsh
-    _require_command git
-    _require_command tmux
-    _require_command vimdiff
-    _require_command zsh
-    _require_command curl
-    # _require_command nvim
-
-    local dest="$home/.local/apps"
-    if [ ! -e "${dest}" ]; then
-        mkdir -p "${dest}"
+    if [ "$this" != "$dest" ]; then
+        echo "Please clone this to $dest"
+        echo "Run git clone $repo $dest"
+        exit 1
     fi
 
-    if [ -e "${dest}/init" ]; then
-        echo "Already exists ${dest}/init"
-        exit
-    fi
+    # git
+    (cd scripts && bash setGit.sh set)
 
-    echo "clone init to ${dest}.."
-    cd "${dest}" || {
-        echo "cd to $dest failed!"
-        exit 1
-    }
-    git clone https://github.com/sunliang711/init || {
-        echo "download init repo failed!"
-        exit 1
-    }
-    cd init || {
-        echo "cd to init failed!"
-        exit 1
-    }
-    ./_install.sh install
+    # tmux
+    (cd scripts && bash tmux.sh install)
 
-    cat <<EOF
-    run: 'git remote set-url origin git@github.com:sunliang711/init.git' to use ssh
-EOF
+    # # nvim
+    # (cd scripts && bash nvim.sh install)
+
+    #shell
+    (cd scripts && bash zsh.sh install)
+
+    # fzf
+    (cd scripts && bash installFzf.sh install)
+
 }
 
 uninstall() {
-    ./_install.sh uninstall
+    (cd shell && bash installZsh.sh uninstall)
+
+    (./tools/installFzf.sh uninstall)
+
+    (cd tmux && bash tmux.sh uninstall)
 }
 
 # write your code above
