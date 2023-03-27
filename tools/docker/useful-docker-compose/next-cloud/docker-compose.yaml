@@ -1,4 +1,4 @@
-version: '2'
+version: "2"
 
 volumes:
   nextcloud:
@@ -31,8 +31,8 @@ services:
       - MYSQL_DATABASE=nextcloud
       - MYSQL_USER=nextcloud
       - MYSQL_HOST=db
-      - NEXTCLOUD_TRUSTED_DOMAINS=cloud.gitez.cc
-      - NEXTCLOUD_TRUSTED_PROXIES=cloud.gitez.cc
-      - OVERWRITECLIURL=https://cloud.gitez.cc
-      - OVERWRITEPROTOCOL=https
-      - OVERWRITEHOST=cloud.gitez.cc
+      # - NEXTCLOUD_TRUSTED_DOMAINS=cloud.gitez.cc
+      # - NEXTCLOUD_TRUSTED_PROXIES=cloud.gitez.cc
+      # - OVERWRITECLIURL=https://cloud.gitez.cc
+      # - OVERWRITEPROTOCOL=https
+      # - OVERWRITEHOST=cloud.gitez.cc
