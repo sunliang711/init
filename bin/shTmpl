@@ -42,8 +42,8 @@ fi
 #    _run():
 #                  -x (trace)
 #                  -s (run in subshell)
-#                  --nostdout (discard stdout)
-#                  --nostderr (discard stderr)
+#                  --no-stdout (discard stdout)
+#                  --no-stderr (discard stderr)
 #    _ensureDir(): mkdir if $@ not exist
 #    _root(): check if it is run as root
 #    _require_root(): exit when not run as root
@@ -61,7 +61,7 @@ fi
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
 function _args() {
-    if [ $(uname) != "Linux" ];then
+    if [ $(uname) != "Linux" ]; then
         echo "getopt only on Linux"
         exit 1
     fi
