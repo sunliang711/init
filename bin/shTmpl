@@ -62,7 +62,7 @@ fi
 # function is hidden when begin with '_'
 function _args() {
     if [ $(uname) != "Linux" ];then
-        echo "Only on Linux"
+        echo "getopt only on Linux"
         exit 1
     fi
 
