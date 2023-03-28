@@ -61,6 +61,11 @@ fi
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
 function _args() {
+    if [ $(uname) != "Linux" ];then
+        echo "Only on Linux"
+        exit 1
+    fi
+
     options=$(getopt -o dv --long debug --long name: -- "$@")
     [ $? -eq 0 ] || {
         echo "Incorrect option provided"
@@ -91,7 +96,7 @@ function _args() {
     done
 }
 
-example() {
+_example() {
     _args "$0" "$@"
     # TODO
 }
