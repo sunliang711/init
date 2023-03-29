@@ -65,10 +65,25 @@ repo="https://github.com/sunliang711/init"
 dest="$HOME/.local/apps/init"
 
 install() {
+    proxy=${1}
     if [ "$this" != "$dest" ]; then
         echo "Please clone this to $dest"
         echo "Run git clone $repo $dest"
         exit 1
+    fi
+
+    if [ -n "$proxy" ]; then
+        echo "set proxy.."
+        set -x
+        git config --global http.proxy "$proxy"
+        git config --global https.proxy "$proxy"
+        export http_proxy="$proxy"
+        export HTTP_PROXY="$proxy"
+        export https_proxy="$proxy"
+        export HTTPS_PROXY="$proxy"
+        set +x
+    else
+        echo "to use proxy, pass http proxy as first argument"
     fi
 
     # git
