@@ -321,7 +321,7 @@ fi
 # _draw_progress_bar 40 <- advance progress bar
 # _block_progress_bar 45 <- turns the progress bar yellow to indicate some action is requested from the user
 # _draw_progress_bar 90 <- advance progress bar
-# destroy_scroll_area <- remove progress bar
+# _destroy_scroll_area <- remove progress bar
 
 # Constants
 CODE_SAVE_CURSOR="\033[s"
@@ -365,7 +365,7 @@ _setup_scroll_area() {
     _draw_progress_bar 0
 }
 
-destroy_scroll_area() {
+_destroy_scroll_area() {
     lines=$(tput lines)
     # Save cursor
     echo -en "$CODE_SAVE_CURSOR"
@@ -490,7 +490,7 @@ _trap_on_interrupt() {
 }
 
 _cleanup_on_interrupt() {
-    destroy_scroll_area
+    _destroy_scroll_area
     exit
 }
 
