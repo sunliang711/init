@@ -2043,6 +2043,14 @@ cdnvim() {
     cd $HOME/.config/nvim
 }
 
+cdclash(){
+    cd $HOME/.local/apps/clash
+}
+
+cdxray(){
+    cd $HOME/.local/apps/xrelay
+}
+
 cdinit() {
     cd ${SHELLRC_ROOT}/..
 }
