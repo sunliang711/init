@@ -537,7 +537,7 @@ _printf_new() {
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
 install() {
-    _require nvim
+    _require_command nvim
     git clone https://github.com/sunliang711/nvim ~/.config/nvim
     cp ~/.config/nvim/lua/{config-example.lua,config.lua}
     nvim
