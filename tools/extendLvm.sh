@@ -582,11 +582,14 @@ add() {
     _require_root
     _require_command parted
     _require_command pvcreate
+
+    alias echo='{ set +x; } 2> /dev/null; builtin echo'
+
     disk=${1:?'missing new disk: eg. /dev/sdX'}
     lv=${2:?'missing lv name: eg. /dev/VG_NAME/LV_NAME'}
-    vg=${3}
+    vgName=${3}
 
-    set -e
+    set -ex
 
     # create partition
     echo "create partition.."
@@ -598,18 +601,18 @@ add() {
     echo "create pv ${disk}1.."
     pvcreate "${disk}1"
 
-    if [ -z "$vg" ]; then
+    if [ -z "$vgName" ]; then
         echo "no vg provied, try to get vg name.."
-        vg=$(vgdisplay | perl -lne 'print $1 if /VG Name\s+(.+)/')
-        if [ -z "$vg" ]; then
+        vgName=$(vgdisplay | perl -lne 'print $1 if /VG Name\s+(.+)/')
+        if [ -z "$vgName" ]; then
             echo "cannot find vg"
             exit 1
         fi
-        echo "Find vg: ${vg}"
+        echo "Find vg: ${vgName}"
     fi
 
-    echo "extend vg: ${vg} by add new disk: ${disk}1 to vg.."
-    vgextend "${vg}" "${disk}1"
+    echo "extend vg: ${vgName} by add new disk: ${disk}1 to vg.."
+    vgextend "${vgName}" "${disk}1"
 
     echo "extend lv: ${lv}.."
     lvextend -l +100%FREE "$lv"
