@@ -95,19 +95,22 @@ _example() {
     _args "$0" "$@"
     # TODO
 }
-version="${version:-v0.8.3}"
-link="https://github.com/neovim/neovim/releases/download/${version}/nvim.appimage"
-binary="${link##*/}"
-dest=/usr/local/nvim/"${version}"
 
 install() {
     _require_root
     _require_linux
+
+    version="${1:-v0.8.3}"
+    link="https://github.com/neovim/neovim/releases/download/${version}/nvim.appimage"
+    binary="${link##*/}"
+    dest=/usr/local/nvim/"${version}"
+
     set -e
 
     cd /tmp
     if [ ! -e "$binary" ]; then
-        curl -LO "$link"
+        echo "download $link to /tmp .."
+        curl -LO "$link" || { echo "download failed!"; exit 1; }
     fi
     chmod +x "$binary"
     ./"$binary" --appimage-extract
@@ -116,8 +119,9 @@ install() {
         mkdir -p "$dest"
     fi
 
+    echo "install nvim ${version} to ${dest}.."
     mv squashfs-root/* "$dest"
-    ln -s "$dest/usr/bin/nvim" /usr/local/bin/nvim
+    ln -sf "$dest/usr/bin/nvim" /usr/local/bin/nvim
 
 }
 
