@@ -694,7 +694,8 @@ datefromtimestamp() {
 
 }
 
-rm() {
+# safe rm
+srm() {
     local pre=/tmp/recycle
     if [ ! -d "${pre}" ]; then
         mkdir -p "${pre}"
@@ -2043,11 +2044,11 @@ cdnvim() {
     cd $HOME/.config/nvim
 }
 
-cdclash(){
+cdclash() {
     cd $HOME/.local/apps/clash
 }
 
-cdxray(){
+cdxray() {
     cd $HOME/.local/apps/xrelay
 }
 
