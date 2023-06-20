@@ -148,9 +148,28 @@ if command -v git >/dev/null 2>&1; then
         fi
         if (($# > 1)); then
             newname=${2}
+            set -x
             git clone "https://github.com/$user_proj" "$newname"
         else
+            set -x
             git clone "https://github.com/$user_proj"
+        fi
+    }
+
+    function ghclone2() {
+        p=${1:?"Usage: ghclone2 githubAccount/xx.git [newDir]"}
+        local user_proj="$(echo $p | perl -lne 'print $2 if /^\s*(https:\/\/github.com\/)?([^\/]+\/[^\/]+)/')"
+        if [ -z "${user_proj}" ]; then
+            echo "Usage: ghclone2 [https://github.com/]USER/PROJ [newDIR]" >&2
+            return 1
+        fi
+        if (($# > 1)); then
+            newname=${2}
+            set -x
+            git clone "git@github.com:${user_proj}.git" "$newname"
+        else
+            set -x
+            git clone "git@github.com:${user_proj}.git"
         fi
     }
 
