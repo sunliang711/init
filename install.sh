@@ -566,9 +566,6 @@ install() {
     # git
     (cd scripts && bash setGit.sh set)
 
-    # tmux
-    (cd scripts && bash tmux.sh install)
-
     # # nvim
     # (cd scripts && bash nvim.sh install)
 
@@ -577,6 +574,9 @@ install() {
 
     # fzf
     (cd scripts && bash installFzf.sh install)
+
+    # tmux
+    (cd scripts && bash tmux.sh install)
 
 }
 
