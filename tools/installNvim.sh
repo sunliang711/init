@@ -100,7 +100,7 @@ install() {
     _require_root
     _require_linux
 
-    version="${1:-v0.8.3}"
+    version="${1:?'missing version,eg: v0.8.3 v0.9.1'}"
     link="https://github.com/neovim/neovim/releases/download/${version}/nvim.appimage"
     binary="${link##*/}"
     dest=/usr/local/nvim/"${version}"
@@ -110,7 +110,10 @@ install() {
     cd /tmp
     if [ ! -e "$binary" ]; then
         echo "download $link to /tmp .."
-        curl -LO "$link" || { echo "download failed!"; exit 1; }
+        curl -LO "$link" || {
+            echo "download failed!"
+            exit 1
+        }
     fi
     chmod +x "$binary"
     ./"$binary" --appimage-extract
