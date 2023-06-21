@@ -27,6 +27,8 @@ elif command -v proxychains5 >/dev/null 2>&1; then
     alias pc='proxychains5'
 fi
 
+alias dcp='docker compose'
+
 case $(uname) in
 "Linux")
     alias lA='ls -aF --color=auto'
