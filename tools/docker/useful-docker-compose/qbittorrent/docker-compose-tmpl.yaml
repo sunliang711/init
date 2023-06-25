@@ -4,13 +4,13 @@ services:
     image: linuxserver/qbittorrent:latest
     container_name: qbittorrent
     environment:
-      - PUID=1000
-      - PGID=1000
+      - PUID=<PUID>
+      - PGID=<PGID>
       - TZ=Asia/Shanghai
       - WEBUI_PORT=8080
     volumes:
-      # - /path/to/appdata/config:/config
-      - /home/eagle/downloads:/downloads
+      - <CONFIG_DIR>:/config
+      - <DOWNLOADS_DIR>:/downloads
     ports:
       - 8080:8080
       - 6881:6881
