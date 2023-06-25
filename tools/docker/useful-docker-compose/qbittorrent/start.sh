@@ -581,13 +581,14 @@ _example() {
 source ./env
 
 _mount_smb(){
-    if dkpg -L cifs-utils >/dev/null 2>&1;then
+    if ! dkpg -L cifs-utils >/dev/null 2>&1;then
         echo "Install cifs-utils.."
         sudo apt install -y cifs-utils || { echo "Install cifs-utils failed"; exit 1; }
     fi
 
     if ! mount | grep -q "${smbDir}";then
         echo "mount ${smbDir}.."
+	[ ! -d "${smbDest}" ] && mkdir -p "${smbDest}"
         sudo mount -t cifs "${smbDir}" "${smbDest}" -o user="${smbUser}",pass="${smbPass}",uid="${mountAsUser}",gid="${mountAsGroup}"
     else
         echo "${smbDir} already mounted,skip.."
