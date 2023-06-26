@@ -7,6 +7,10 @@ function halt() {
     runAsRoot -x shutdown -h now
 }
 
+function iface(){
+    ip r | grep default | awk '{print $5}' | xargs ip a s
+}
+
 function functions() {
     functionFile=$SHELLRC_ROOT/function
     if [ ! -f $functionFile ]; then
