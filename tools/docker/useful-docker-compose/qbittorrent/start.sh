@@ -622,9 +622,10 @@ restart(){
     start
 }
 
-log(){
+logs(){
+    flags="${@}"
     set -x
-    docker compose logs -f
+    docker compose logs ${flags}
 }
 
 # write your code above
