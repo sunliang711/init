@@ -3,3 +3,8 @@
 .idea/
 
 /shellConfigs/local
+
+/tools/docker/useful-docker-compose/qbittorrent/docker-compose.yaml
+/tools/docker/useful-docker-compose/qbittorrent/downloads
+/tools/docker/useful-docker-compose/qbittorrent/config
+/tools/docker/useful-docker-compose/qbittorrent/env

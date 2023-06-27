@@ -533,14 +533,93 @@ _printf_new() {
 #    _error(): error log
 #    _errorln(): error log with \n
 #    _checkService(): check $1 exist in systemd
+
 ###############################################################################
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
-install() {
-    _require_command nvim
-    git clone https://github.com/sunliang711/nvim ~/.config/nvim
-    cp ~/.config/nvim/lua/{config-example.lua,config.lua}
-    nvim
+function _parseOptions() {
+    if [ $(uname) != "Linux" ]; then
+        echo "getopt only on Linux"
+        exit 1
+    fi
+
+    options=$(getopt -o dv --long debug --long name: -- "$@")
+    [ $? -eq 0 ] || {
+        echo "Incorrect option provided"
+        exit 1
+    }
+    eval set -- "$options"
+    while true; do
+        case "$1" in
+        -v)
+            VERBOSE=1
+            ;;
+        -d)
+            DEBUG=1
+            ;;
+        --debug)
+            DEBUG=1
+            ;;
+        --name)
+            shift # The arg is next in position args
+            NAME=$1
+            ;;
+        --)
+            shift
+            break
+            ;;
+        esac
+        shift
+    done
+}
+
+_example() {
+    _parseOptions "$0" "$@"
+    # TODO
+}
+
+add() {
+    _require_root
+    _require_command parted
+    _require_command pvcreate
+
+    alias echo='{ set +x; } 2> /dev/null; builtin echo'
+
+    disk=${1:?'missing new disk: eg. /dev/sdX'}
+    lv=${2:?'missing lv name: eg. /dev/VG_NAME/LV_NAME'}
+    vgName=${3}
+
+    set -ex
+
+    # create partition
+    echo "create partition.."
+    parted "${disk}" -a optimal -s \
+        mklabel msdos \
+        mkpart primary 1MiB 100% \
+        set 1 lvm on
+
+    echo "create pv ${disk}1.."
+    pvcreate "${disk}1"
+
+    if [ -z "$vgName" ]; then
+        echo "no vg provied, try to get vg name.."
+        vgName=$(vgdisplay | perl -lne 'print $1 if /VG Name\s+(.+)/')
+        if [ -z "$vgName" ]; then
+            echo "cannot find vg"
+            exit 1
+        fi
+        echo "Find vg: ${vgName}"
+    fi
+
+    echo "extend vg: ${vgName} by add new disk: ${disk}1 to vg.."
+    vgextend "${vgName}" "${disk}1"
+
+    echo "extend lv: ${lv}.."
+    lvextend -l +100%FREE "$lv"
+
+    echo "resize2fs lv: ${lv}.."
+    resize2fs "$lv"
+
 }
 
 # write your code above

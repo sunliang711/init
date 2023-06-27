@@ -533,14 +533,99 @@ _printf_new() {
 #    _error(): error log
 #    _errorln(): error log with \n
 #    _checkService(): check $1 exist in systemd
+
 ###############################################################################
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
-install() {
-    _require_command nvim
-    git clone https://github.com/sunliang711/nvim ~/.config/nvim
-    cp ~/.config/nvim/lua/{config-example.lua,config.lua}
-    nvim
+function _parseOptions() {
+    if [ $(uname) != "Linux" ]; then
+        echo "getopt only on Linux"
+        exit 1
+    fi
+
+    options=$(getopt -o dv --long debug --long name: -- "$@")
+    [ $? -eq 0 ] || {
+        echo "Incorrect option provided"
+        exit 1
+    }
+    eval set -- "$options"
+    while true; do
+        case "$1" in
+        -v)
+            VERBOSE=1
+            ;;
+        -d)
+            DEBUG=1
+            ;;
+        --debug)
+            DEBUG=1
+            ;;
+        --name)
+            shift # The arg is next in position args
+            NAME=$1
+            ;;
+        --)
+            shift
+            break
+            ;;
+        esac
+        shift
+    done
+}
+
+_example() {
+    _parseOptions "$0" "$@"
+    # TODO
+}
+
+source ./env
+
+_mount_smb(){
+    if ! dkpg -L cifs-utils >/dev/null 2>&1;then
+        echo "Install cifs-utils.."
+        sudo apt install -y cifs-utils || { echo "Install cifs-utils failed"; exit 1; }
+    fi
+
+    if ! mount | grep -q "${smbDir}";then
+        echo "mount ${smbDir}.."
+	[ ! -d "${smbDest}" ] && mkdir -p "${smbDest}"
+        sudo mount -t cifs "${smbDir}" "${smbDest}" -o user="${smbUser}",pass="${smbPass}",uid="${mountAsUser}",gid="${mountAsGroup}"
+    else
+        echo "${smbDir} already mounted,skip.."
+    fi
+}
+
+_umount_smb(){
+    sudo umount "${smbDest}"
+}
+
+start(){
+    _mount_smb
+    sed -e "s|<PUID>|$(id -u ${mountAsUser})|" \
+        -e "s|<PGID>|$(id -g ${mountAsGroup})|" \
+        -e "s|<CONFIG_DIR>|${configDir}|" \
+        -e "s|<DOWNLOADS_DIR>|${smbDest}|" \
+        ./docker-compose-tmpl.yaml > docker-compose.yaml
+
+    set -x
+    docker compose up -d
+}
+
+stop(){
+    _umount_smb
+    set -x
+    docker compose down
+}
+
+restart(){
+    stop
+    start
+}
+
+logs(){
+    flags="${@}"
+    set -x
+    docker compose logs ${flags}
 }
 
 # write your code above

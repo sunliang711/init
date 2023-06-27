@@ -1,0 +1,8 @@
+smbUser=eagle
+smbPass="<PASSWORD>"
+smbDir="//10.1.1.160/qdownload"
+smbDest=${this}/downloads
+mountAsUser=eagle
+mountAsGroup=eagle
+configDir=${this}/config
+

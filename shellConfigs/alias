@@ -1,4 +1,3 @@
-
 #BEGIN alias
 # alias dell='ssh -p 2001 eagle@sh.eagle711.win'
 # alias ikev2='ssh -p 2002 eagle@sh.eagle711.win'
@@ -9,9 +8,6 @@
 # alias 101='ssh -p 7010 eagle@aliyun.eagle711.win'
 # alias 102='ssh -p 7020 eagle@aliyun.eagle711.win'
 
-
-#original rm
-alias orm='/bin/rm'
 alias cl='clear'
 alias prettyjson='python -m json.tool'
 #TODO hard coded
@@ -23,41 +19,43 @@ alias prettyjson='python -m json.tool'
 # alias pushall='git remote | xargs -L1 -t -IR git push R'
 # alias fetchall='git remote | xargs -L1 -t -IR git fetch R'
 
-if command -v proxychains >/dev/null 2>&1;then
+if command -v proxychains >/dev/null 2>&1; then
     alias pc='proxychains'
-elif command -v proxychains4 >/dev/null 2>&1;then
+elif command -v proxychains4 >/dev/null 2>&1; then
     alias pc='proxychains4'
-elif command -v proxychains5 >/dev/null 2>&1;then
+elif command -v proxychains5 >/dev/null 2>&1; then
     alias pc='proxychains5'
 fi
 
+alias dcp='docker compose'
+
 case $(uname) in
-    "Linux")
-        alias lA='ls -aF --color=auto'
-        alias la='ls -AF --color=auto'
-        alias ll='ls -lF --color=auto'
-        alias l='ls -F --color=auto'
-        alias ls='ls -F --color=auto'
-        ;;
-    "Darwin")
-        alias lA='ls -aFG'
-        alias la='ls -AFG'
-        alias ll='ls -lFG'
-        #alias l='ls -FG'
-        #alias ls='ls -FG'
-        alias l='ls -G'
-        alias ls='ls -G'
-        #brew with local proxy
-        # alias brewlp='echo "Using socks5 proxy: ALL_PROXY=socks5://localhost:1080"&&ALL_PROXY=socks5://localhost:1080 brew'
-        # export PATH=/usr/local/Cellar/privoxy/3.0.26/sbin:$PATH
-        ;;
+"Linux")
+    alias lA='ls -aF --color=auto'
+    alias la='ls -AF --color=auto'
+    alias ll='ls -lF --color=auto'
+    alias l='ls -F --color=auto'
+    alias ls='ls -F --color=auto'
+    ;;
+"Darwin")
+    alias lA='ls -aFG'
+    alias la='ls -AFG'
+    alias ll='ls -lFG'
+    #alias l='ls -FG'
+    #alias ls='ls -FG'
+    alias l='ls -G'
+    alias ls='ls -G'
+    #brew with local proxy
+    # alias brewlp='echo "Using socks5 proxy: ALL_PROXY=socks5://localhost:1080"&&ALL_PROXY=socks5://localhost:1080 brew'
+    # export PATH=/usr/local/Cellar/privoxy/3.0.26/sbin:$PATH
+    ;;
 esac
 alias cd..='cd ..'
 alias cd-='cd -'
 alias grep='grep --color=auto'
 alias cdapp="cd ${LOCAL_APP_ROOT}"
 
-if command -v emacs >/dev/null 2>&1;then
+if command -v emacs >/dev/null 2>&1; then
     alias emacs='emacs -nw'
 fi
 
@@ -69,17 +67,17 @@ fi
 #     alias vim='nvim'
 # fi
 
-if command -v free >/dev/null 2>&1;then
-    if command -v pacman >/dev/null 2>&1;then
+if command -v free >/dev/null 2>&1; then
+    if command -v pacman >/dev/null 2>&1; then
         alias free='free -hw'
     else
         alias free='free -h'
     fi
 fi
 
-if command -v proxychains >/dev/null 2>&1;then
+if command -v proxychains >/dev/null 2>&1; then
     alias pc='proxychains'
-elif command -v proxychains4 >/dev/null 2>&1;then
+elif command -v proxychains4 >/dev/null 2>&1; then
     alias pc='proxychains4'
 fi
 
