@@ -23,6 +23,7 @@ mappings=(
 
 "udp|51850|10.1.1.185||wireguard vpn server4"
 "tcp|6001|10.1.1.160||dsm website"
+"udp|51860|10.1.1.18||wireguard vpn server"
 )
 
 # "udp|51830|10.1.1.18||wireguard vpn server2"
