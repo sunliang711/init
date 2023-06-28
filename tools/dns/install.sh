@@ -616,6 +616,9 @@ _installHttpsDnsProxy() {
     # sed -e "s|<proxyPort>|${proxyPort}|" \
     #     -e "s|<resolver>|${resolver}|" \
     #     ./https_dns_proxy.service >/tmp/https_dns_proxy.service
+    #
+    #     TODO proxy flag
+    #     -t socks5://10.1.1.177:4020
 
     cat <<EOF >/tmp/https_dns_proxy.service
 [Unit]
