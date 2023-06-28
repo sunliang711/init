@@ -593,6 +593,7 @@ _installDnsmasq() {
     sudo apt-get install dnsmasq -y >/dev/null
     sed -e "s|<PORT>|${proxyPort}|" ./dnsmasq.conf >/tmp/dnsmasq.conf
     sudo mv /tmp/dnsmasq.conf /etc/dnsmasq.conf
+    sudo cp ./dnsmasq.hosts /etc/dnsmasq.hosts
     updateConf
     sudo systemctl enable --now dnsmasq >/dev/null
 }
@@ -627,7 +628,7 @@ Description=https-dns-proxy
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/https_dns_proxy -p $proxyPort -u nobody -g nogroup -r $resolver -b 8.8.8.8,8.8.4.4,1.1.1.1
+ExecStart=${this}/start.sh start
 
 
 #User=nobody
