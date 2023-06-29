@@ -1,0 +1,5 @@
+proxyPort=5053
+resolver="https://dns.google/dns-query"
+# optional
+proxy=socks5://10.1.1.177:4020
+

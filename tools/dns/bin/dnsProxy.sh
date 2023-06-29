@@ -577,102 +577,82 @@ _example() {
     _parseOptions "$0" "$@"
     # TODO
 }
+# proxyPort=5053
+# resolver="https://dns.google/dns-query"
+# proxy=socks5://10.1.1.177:4020
 
-proxyPort=5053
-resolver="https://dns.google/dns-query"
-environmentFile="${this}/env"
-
-install() {
-    _installDnsmasq
-    _installHttpsDnsProxy
-
-}
-
-_installDnsmasq() {
-    set -xe
-    sudo apt-get update >/dev/null
-    sudo apt-get install dnsmasq -y >/dev/null
-    sed -e "s|<PORT>|${proxyPort}|" ./dnsmasq.conf >/tmp/dnsmasq.conf
-    sudo mv /tmp/dnsmasq.conf /etc/dnsmasq.conf
-    sudo cp ./dnsmasq.hosts /etc/dnsmasq.hosts
-    updateConf
-    sudo systemctl enable --now dnsmasq >/dev/null
-}
-
-updateConf() {
-    set -ex
-    cd /tmp && curl -s -LO https://anti-ad.net/anti-ad-for-dnsmasq.conf && curl -s -LO https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf
-    sudo cp anti-ad-for-dnsmasq.conf /etc/dnsmasq.d >/dev/null
-    sudo cp accelerated-domains.china.conf /etc/dnsmasq.d >/dev/null
-
-}
-
-_installHttpsDnsProxy() {
-    cd /tmp
-    if [ ! -e /usr/local/bin/https_dns_proxy ] && [ ! -e https_dns_proxy/https_dns_proxy ]; then
-        sudo apt-get install cmake libc-ares-dev libcurl4-openssl-dev libev-dev build-essential git -y >/dev/null
-        git clone https://github.com/aarond10/https_dns_proxy >/dev/null
-        cd https_dns_proxy
-        cmake . && make && sudo cp https_dns_proxy /usr/local/bin
+# be used by service file
+# env var read from env file
+_start() {
+    set -x
+    if [ -z "${proxy}" ]; then
+        /usr/local/bin/https_dns_proxy -p "${proxyPort}" -u nobody -g nogroup -r "${resolver}" -b "8.8.8.8,8.8.4.4,1.1.1.1"
+    else
+        /usr/local/bin/https_dns_proxy -p "${proxyPort}" -u nobody -g nogroup -r "${resolver}" -b "8.8.8.8,8.8.4.4,1.1.1.1" -t "${proxy}"
     fi
+}
 
-    # start="/usr/local/bin/https_dns_proxy -p ${proxyPort} -b 8.8.8.8,8.8.4.4,1.1.1.1 -r \"${resolver}\""
-    # sed -e "s|<proxyPort>|${proxyPort}|" \
-    #     -e "s|<resolver>|${resolver}|" \
-    #     ./https_dns_proxy.service >/tmp/https_dns_proxy.service
-    #
-    #     TODO proxy flag
-    #     -t socks5://10.1.1.177:4020
+start() {
+    startf
+    startb
+}
 
-    cat <<EOF >/tmp/https_dns_proxy.service
-[Unit]
-Description=https-dns-proxy
-#After=network.target
+stop() {
+    stopf
+    stopb
+}
 
-[Service]
-Type=simple
-ExecStart=${this}/bin/dnsProxy.sh _start
+restart() {
+    stop
+    start
+}
 
-EnvironmentFile=${environmentFile}
-
-
-#User=nobody
-Restart=always
-#Environment=
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    sudo mv /tmp/https_dns_proxy.service /etc/systemd/system/https_dns_proxy.service
-    sudo systemctl daemon-reload >/dev/null
-    sudo systemctl enable --now https_dns_proxy >/dev/null
+logf() {
+    sudo journalctl -u dnsmasq -f
 
 }
 
-uninstall() {
-    sudo systemctl stop https_dns_proxy
+logb() {
+    sudo journalctl -u https_dns_proxy -f
+}
+
+startf() {
+    { set -x; } >/dev/null
+    sudo systemctl start dnsmasq
+}
+
+startb() {
+    { set -x; } >/dev/null
+    sudo systemctl start https_dns_proxy
+}
+
+stopf() {
+    { set -x; } >/dev/null
     sudo systemctl stop dnsmasq
-    sudo rm -rf /etc/systemd/system/https_dns_proxy.service
-    sudo rm -rf /usr/local/bin/https_dns_proxy
-
-    sudo systemctl disable https_dns_proxy
-    sudo systemctl disable dnsmasq
-
-    sudo systemctl daemon-reload
-    clean
-
 }
 
-clean() {
-    cd /tmp
-    sudo rm -rf https_dns_proxy
-    sudo rm -rf accelerated-domains.china.conf
-    sudo rm -rf anti-ad-for-dnsmasq.conf
-    sudo rm -rf https_dns_proxy.service
+stopb() {
+    { set -x; } >/dev/null
+    sudo systemctl stop https_dns_proxy
 }
 
-# write your code above
-###############################################################################
+restartf() {
+    stopf
+    startf
+}
+
+restartb() {
+    stopb
+    startb
+}
+
+configf() {
+    sudo vi /etc/dnsmasq.conf
+}
+
+configb() {
+    vi ${this}/../env
+}
 
 em() {
     $ed $0
