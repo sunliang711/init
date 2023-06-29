@@ -643,6 +643,8 @@ Restart=always
 WantedBy=multi-user.target
 EOF
 
+    cp env-example env
+
     sudo mv /tmp/https_dns_proxy.service /etc/systemd/system/https_dns_proxy.service
     sudo systemctl daemon-reload >/dev/null
     sudo systemctl enable --now https_dns_proxy >/dev/null
