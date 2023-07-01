@@ -586,9 +586,9 @@ _example() {
 _start() {
     set -x
     if [ -z "${proxy}" ]; then
-        /usr/local/bin/https_dns_proxy -p "${proxyPort}" -u nobody -g nogroup -r "${resolver}" -b "8.8.8.8,8.8.4.4,1.1.1.1"
+        /usr/local/bin/https_dns_proxy -p "${proxyPort}" -u nobody -g nogroup -r "${resolver}" -b "8.8.8.8,8.8.4.4,1.1.1.1" -vvv
     else
-        /usr/local/bin/https_dns_proxy -p "${proxyPort}" -u nobody -g nogroup -r "${resolver}" -b "8.8.8.8,8.8.4.4,1.1.1.1" -t "${proxy}"
+        /usr/local/bin/https_dns_proxy -p "${proxyPort}" -u nobody -g nogroup -r "${resolver}" -b "8.8.8.8,8.8.4.4,1.1.1.1" -vvv -t "${proxy}"
     fi
 }
 
