@@ -7,7 +7,7 @@ function halt() {
     runAsRoot -x shutdown -h now
 }
 
-function iface(){
+function iface() {
     ip r | grep default | awk '{print $5}' | xargs ip a s
 }
 
@@ -661,6 +661,18 @@ function mkcddir() {
         return 1
     fi
     mkdir -p "$1" && cd $_
+}
+
+clearSystemdLog() {
+    if ! command -v journalctl; then
+        ehco "no journalctl command!"
+        return 1
+    fi
+
+    set -x
+    sudo journalctl --rotate
+    sudo journalctl --vacuum-time=1s
+    { set +x; } >/dev/null 2>&1
 }
 
 date2timestamp() {
