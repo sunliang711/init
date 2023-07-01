@@ -662,6 +662,18 @@ configb() {
     vi ${this}/../env
 }
 
+updateConf() {
+    upstreamDns="${1}"
+    set -ex
+    cd /tmp && curl -s -LO https://anti-ad.net/anti-ad-for-dnsmasq.conf && curl -s -LO https://raw.githubusercontent.com/felixonmars/dnsmasq-china-list/master/accelerated-domains.china.conf
+    sudo cp anti-ad-for-dnsmasq.conf /etc/dnsmasq.d >/dev/null
+    if [ -n "${upstreamDns}" ]; then
+        sed -i "s|114.114.114.114|${upstreamDns}|" accelerated-domains.china.conf
+    fi
+    sudo cp accelerated-domains.china.conf /etc/dnsmasq.d >/dev/null
+
+}
+
 em() {
     $ed $0
 }
