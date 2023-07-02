@@ -1,0 +1,43 @@
+version: '2'
+services:
+  dns:
+    restart: always
+    image: strm/dnsmasq
+    volumes:
+      - ./dnsmasq.conf:/etc/dnsmasq.conf
+      - ./dnsmasq.d:/etc/dnsmasq.d
+      - ./dnsmasq.hosts:/etc/dnsmasq.hosts
+    ports:
+      - "53:53/udp"
+    cap_add:
+      - NET_ADMIN
+    networks:
+      net1:
+        ipv4_address: 10.8.1.2
+      
+
+  dnsproxy:
+    restart: always
+    image: bwmoran/https-dns-proxy
+
+    ports:
+      - "5053:5053/udp"
+
+    command: -vvv
+
+    environment:
+      DNS_SERVERS: "94.140.14.14,94.140.15.15"
+      RESOLVER_URL: "https://dns.adguard.com/dns-query"
+      PROXY_SERVER: socks5://10.1.1.172:4020
+
+    networks:
+      net1:
+        ipv4_address: 10.8.1.3
+
+networks:
+  net1:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.8.1.0/24
