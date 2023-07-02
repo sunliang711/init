@@ -585,11 +585,12 @@ _example() {
 # env var read from env file
 _start() {
     set -x
-    if [ -z "${proxy}" ]; then
-        /usr/local/bin/https_dns_proxy -p "${proxyPort}" -u nobody -g nogroup -r "${resolver}" -b "8.8.8.8,8.8.4.4,1.1.1.1" -vvv
-    else
-        /usr/local/bin/https_dns_proxy -p "${proxyPort}" -u nobody -g nogroup -r "${resolver}" -b "8.8.8.8,8.8.4.4,1.1.1.1" -vvv -t "${proxy}"
+    otherFlags="${verbose}"
+    if [ -n "${proxy}" ]; then
+        otherFlags="${otherFlags} -t ${proxy}"
     fi
+
+    /usr/local/bin/https_dns_proxy -p "${proxyPort}" -u nobody -g nogroup -r "${resolver}" -b "8.8.8.8,8.8.4.4,1.1.1.1" ${otherFlags}
 }
 
 start() {
