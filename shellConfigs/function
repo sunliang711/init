@@ -665,7 +665,7 @@ function mkcddir() {
 
 clearSystemdLog() {
     if ! command -v journalctl; then
-        ehco "no journalctl command!"
+        echo "no journalctl command!"
         return 1
     fi
 
