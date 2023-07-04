@@ -577,11 +577,6 @@ _example() {
     _parseOptions "$0" "$@"
     # TODO
 }
-# proxyPort=5053
-# resolver="https://dns.google/dns-query"
-# proxy=socks5://10.1.1.177:4020
-
-# be used by service file
 # env var read from env file
 _start() {
     set -x
@@ -590,7 +585,10 @@ _start() {
         otherFlags="${otherFlags} -t ${proxy}"
     fi
 
-    /usr/local/bin/https_dns_proxy -p "${proxyPort}" -u nobody -g nogroup -r "${resolver}" -b "8.8.8.8,8.8.4.4,1.1.1.1" ${otherFlags}
+    runAsUser=${runAsUser:-"nobody"}
+    runAsGroup=${runAsGroup:-"nogroup"}
+
+    /usr/local/bin/https_dns_proxy -a "${listenAddr}" -p "${listenPort}" -u "${runAsUser}" -g "${runAsGroup}" -r "${resolver}" -b "${bootstrapDns}" ${otherFlags}
 }
 
 start() {

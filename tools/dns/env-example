@@ -1,6 +1,20 @@
-proxyPort=5053
-resolver="https://dns.google/dns-query"
-# optional
-proxy=socks5://localhost:4020
-verbose="-v"
+listenAddr=0.0.0.0
+listenPort=5053
 
+#optional
+runAsUser=nobody
+#optional
+runAsGroup=nogroup
+
+# 如果resolver中含有域名(比如dns.google)，则使用bootstrapDns 来解析
+bootstrapDns="8.8.8.8,1.1.1.1"
+
+#resolver="https://dns.google/dns-query"
+#resolver="https://cloudflare-dns.com/dns-query"
+# 直接使用ip，就不需要bootstrapDns了
+resolver="https://1.1.1.1/dns-query"
+
+# optional, 域名查询使用此代理到resolver进行查询
+proxy=socks5://10.1.1.172:4020
+
+verbose="-vvv"
