@@ -623,7 +623,7 @@ startf() {
         echo "no proxyPort found from env file,exit!"
         exit 1
     fi
-    sudo sed -i -e "s|server=127.0.0.1.*|server=127.0.0.1#${proxyPort}|" /etc/dnsmasq.conf
+    sudo sed -i -e "s|server=127.0.0.1.*|server=127.0.0.1#${listenPort}|" /etc/dnsmasq.conf
 
     sudo systemctl start dnsmasq
 }
