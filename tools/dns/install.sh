@@ -647,6 +647,8 @@ Restart=always
 WantedBy=multi-user.target
 EOF
 
+
+    cd ${this}
     cp env-example env
 
     sudo mv /tmp/https_dns_proxy.service /etc/systemd/system/https_dns_proxy.service
