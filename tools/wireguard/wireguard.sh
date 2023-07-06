@@ -53,7 +53,7 @@ configServer(){
     fi
 
     if [ ! -f ${wireguardRoot}/${serverConfigFile} ];then
-        echo -n "Enter client gateway: "
+        echo -n "Enter client gateway( 如果通过clash的tun走代理的话，设置成tun的ip 198.18.0.1,具体地址查看ip a指令): "
         read clientGateway
         interface=$(ip -o -4 route show to default | awk '{print $5}')
         cat<<-EOF>${wireguardRoot}/${serverConfigFile}
@@ -68,6 +68,8 @@ configServer(){
 		PrivateKey = $(cat ${wireguardRoot}/${serverPrikey})
 		
 		EOF
+
+        echo "run wireguard.sh addClient to add client"
     else
         $ed ${wireguardRoot}/${serverConfigFile}
     fi
@@ -79,10 +81,15 @@ addClient(){
     _root
     stop
 
+    if (($# < 4));then
+        echo "usage: addClient <client_name> <host_number(x of ${subnet}.x)> <server_endpoint(ip or domain)> <client_dns( 如果通过clash的tun走代理的话，设置成tun的ip 198.18.0.1,具体地址查看ip a指令)>"
+        exit 1
+    fi
+
     clientName=${1:?'missing client name'}
     hostNumber=${2:?'missing host number(x of ${subnet}.x)'}
     endpoint=${3:?'missing server endpoint(ip or domain)'}
-    clientDNS=${4:?'missing client DNS'}
+    clientDNS=${4:?'missing client DNS( 如果通过clash的tun走代理的话，设置成tun的ip 198.18.0.1,具体地址查看ip a指令)'}
 
     echo "generate client key pair"
     wg genkey | tee ${wireguardRoot}/client-${clientName}.privatekey | wg pubkey | tee ${wireguardRoot}/client-${clientName}.publickey

@@ -38,20 +38,37 @@ install(){
     _root
     cd ${this}
     # install soft
-    echo 'deb http://ftp.debian.org/debian buster-backports main' | tee /etc/apt/sources.list.d/buster-backports.list
-    apt update
+    # echo 'deb http://ftp.debian.org/debian buster-backports main' | tee /etc/apt/sources.list.d/buster-backports.list
+    # apt update
     apt install wireguard qrencode -y
-    case $(uname -m) in
-        x86_64)
-            apt install linux-image-amd64 linux-headers-amd64 -y
-            ;;
-        aarch64)
-            apt install linux-image-arm64 linux-headers-arm64 -y
-            ;;
-    esac
+    # case $(uname -m) in
+    #     x86_64)
+    #         apt install linux-image-amd64 linux-headers-amd64 -y
+    #         ;;
+    #     aarch64)
+    #         apt install linux-image-arm64 linux-headers-arm64 -y
+    #         ;;
+    # esac
 
-    echo -n "Enter server port: "
-    read serverPort
+    while true;do
+        echo -n "Enter server port: "
+        read serverPort
+
+        if [ -z "$serverPort" ];then
+            continue
+        fi
+
+        if ! echo "$serverPort" | grep -q '[0-9][0-9]*';then
+            echo "invalid port"
+            continue
+        fi
+
+        if ((serverPort >=1)) && ((serverPort <= 65535));then
+            break
+        else
+            echo "port range invalid"
+        fi
+    done
     # # install wireguard.sh
     # sed -e "s|<SERVER_PORT>|${serverPort}|g" wireguard.sh >/tmp/wireguard.sh && chmod +x /tmp/wireguard.sh
     # mv /tmp/wireguard.sh /usr/local/bin
