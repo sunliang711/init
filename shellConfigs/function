@@ -1,3 +1,5 @@
+export LOCAL_APP_ROOT="${home}/.local/apps"
+
 function Source() {
     file="${1}"
     [ -e "$file" ] && source "$file"
@@ -32,6 +34,14 @@ function sm() {
     else
         echo "Unknow shell type"
         return 1
+    fi
+}
+
+cdapp() {
+    app=${1}
+    cd ${LOCAL_APP_ROOT}
+    if [ -n "${app}" ]; then
+        cd "${app}"
     fi
 }
 
