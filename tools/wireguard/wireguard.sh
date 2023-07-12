@@ -82,7 +82,7 @@ addClient(){
     stop
 
     if (($# < 4));then
-        echo "usage: addClient <client_name> <host_number(x of ${subnet}.x)> <server_endpoint(ip or domain)> <client_dns( 如果通过clash的tun走代理的话，设置成tun的ip 198.18.0.1,具体地址查看ip a指令)>"
+        echo "usage: addClient <client_name> <host_number(x(from 2 to 254) of ${subnet}.x)> <server_endpoint(ip or domain)> <client_dns( 如果通过clash的tun走代理的话，设置成tun的ip 198.18.0.1,具体地址查看ip a指令)>"
         exit 1
     fi
 
