@@ -33,6 +33,7 @@ fi
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
 wireguardRoot=/etc/wireguard
+clientDir=${wireguardRoot}/clients
 
 source ${wireguardRoot}/settings
 
@@ -79,10 +80,15 @@ configServer(){
 addClient(){
     set -e
     _root
-    stop
 
     if (($# < 4));then
-        echo "usage: addClient <client_name> <host_number(x(from 2 to 254) of ${subnet}.x)> <server_endpoint(ip or domain)> <client_dns( 如果通过clash的tun走代理的话，设置成tun的ip 198.18.0.1,具体地址查看ip a指令)>"
+        cat<<EOF0
+usage: addClient <client_name> <host_number> <server_endpoint> <client_dns>
+
+<host_number>:          x of ${subnet}.x valid range: 2-254
+<server_endpoint>:      ip or domain
+<client_dns>:           dns of client, 如果是clash的tun模式走代理的话，设置成tun的198.18.0.1，具体使用ip a指令查询tun接口i地址
+EOF0
         exit 1
     fi
 
@@ -91,13 +97,19 @@ addClient(){
     endpoint=${3:?'missing server endpoint(ip or domain)'}
     clientDNS=${4:?'missing client DNS( 如果通过clash的tun走代理的话，设置成tun的ip 198.18.0.1,具体地址查看ip a指令)'}
 
-    echo "generate client key pair"
-    wg genkey | tee ${wireguardRoot}/client-${clientName}.privatekey | wg pubkey | tee ${wireguardRoot}/client-${clientName}.publickey
+    [ ! -d "${clientDir}" ] && mkdir -p "${clientDir}"
 
-    echo "generate client config file"
-    cat<<-EOF>${wireguardRoot}/client-${clientName}.conf
+    privKeyFile=${clientDir}/client-${clientName}.privatekey
+    pubKeyFile=${clientDir}/client-${clientName}.publickey
+    configFile=${clientDir}/client-${clientName}.conf
+
+    echo " -- generate client key pair: ${privKeyFile} ${pubKeyFile}"
+    wg genkey | tee ${privKeyFile} | wg pubkey | tee ${pubKeyFile}
+
+    echo "-- generate client config file: ${configFile}"
+    cat<<-EOF>${configFile}
 [Interface]
-  PrivateKey = $(cat ${wireguardRoot}/client-${clientName}.privatekey)
+  PrivateKey = $(cat ${privKeyFile})
   Address = ${subnet}.${hostNumber}/24
   DNS = ${clientDNS}
   MTU = ${MTU}
@@ -110,32 +122,48 @@ addClient(){
 EOF
 
 
-    echo "add client peer to server"
-    cat<<-EOF>>${wireguardRoot}/${serverConfigFile}
-# begin client-${clientName}
-[Peer]
-PublicKey = $(cat ${wireguardRoot}/client-${clientName}.publickey)
-AllowedIPs = ${subnet}.${hostNumber}/32
-# end client-${clientName}
-EOF
-cat<<-EOF
-    run 'wireguard.sh restart to restart server after add client'
-    run 'wireguard.sh exportClientConfig ${clientName} to export client qrcode'
-EOF
+    echo "-- add client peer to server"
+    pubkey=$(cat ${pubKeyFile})
+    # Note: wireguard must be running
+    wg set wg0 peer "${pubkey}" allowed-ips "${subnet}.${hostNumber}/32"
+
+    exportClientConfig ${clientName}
+#     cat<<-EOF2>>${wireguardRoot}/${serverConfigFile}
+# # begin client-${clientName}
+# [Peer]
+# PublicKey = $(cat ${wireguardRoot}/client-${clientName}.publickey)
+# AllowedIPs = ${subnet}.${hostNumber}/32
+# # end client-${clientName}
+# EOF2
+# cat<<-EOF3
+#     run 'wireguard.sh restart to restart server after add client'
+#     run 'wireguard.sh exportClientConfig ${clientName} to export client qrcode'
+# EOF3
+#
+#     reload
+
 }
 
 removeClient(){
     clientName=${1:?'missing client name'}
-    set -e
+    privKeyFile=${clientDir}/client-${clientName}.privatekey
+    pubKeyFile=${clientDir}/client-${clientName}.publickey
+    configFile=${clientDir}/client-${clientName}.conf
     _root
-    rm -rf ${wireguardRoot}/client-${clientName}.privatekey
-    rm -rf ${wireguardRoot}/client-${clientName}.publickey
-    rm -rf ${wireguardRoot}/client-${clientName}.conf
-    sed -i -e "/# begin client-${clientName}/,/# end client-${clientName}/d" ${wireguardRoot}/${serverConfigFile}
+    set -e
+
+    # Note: wireguard must be running
+    pubkey=$(cat ${pubKeyFile})
+    wg set wg0 peer "${pubkey}" remove
+
+    rm -v -rf ${privKeyFile}
+    rm -v -rf ${pubKeyFile}
+    rm -v -rv ${configFile}
+
 }
 
 listClient(){
-    cd ${wireguardRoot}
+    cd ${clientDir}
     ls client-*.conf
 }
 
@@ -157,15 +185,17 @@ stop(){
 }
 
 exportClientConfig(){
+    clientName=${1:?'missing client name'}
     set -e
     _root
-    clientName=${1:?'missing client name'}
-    if [ ! -f ${wireguardRoot}/client-${clientName}.conf ];then
+
+    configFile=${clientDir}/client-${clientName}.conf
+    if [ ! -f ${configFile} ];then
         echo "no such client, add client first!"
         exit 1
     fi
-    cat ${wireguardRoot}/client-${clientName}.conf | qrencode -t ansiutf8
-    cat ${wireguardRoot}/client-${clientName}.conf
+    cat ${configFile} | qrencode -t ansiutf8
+    cat ${configFile}
 }
 
 restart(){
@@ -179,6 +209,14 @@ status(){
 
 statusf(){
     watch -n 1 wg
+}
+
+reload(){
+    interface=wg0
+    echo "reload config.."
+    wg-quick strip ${interface} >/tmp/wireguard.conf
+    wg syncconf ${interface} /tmp/wireguard.conf
+    rm /tmp/wireguard.conf
 }
 
 # write your code above
