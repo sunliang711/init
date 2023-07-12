@@ -204,11 +204,23 @@ restart(){
 }
 
 status(){
-    wg
+    _status
 }
 
+_status(){
+    wg
+    echo
+    echo "---- Client Info ----"
+    for f in ${clientDir}/client-*.publickey;do
+        echo "-- ${f##*/}"
+        cat "$f" #| sed -e "s|\(PrivateKey = \).*|\1 ***|"
+        echo
+    done
+}
+
+
 statusf(){
-    watch -n 1 wg
+    watch -n 1 $0 _status
 }
 
 reload(){
