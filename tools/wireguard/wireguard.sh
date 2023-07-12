@@ -173,6 +173,14 @@ restart(){
     start
 }
 
+status(){
+    wg
+}
+
+statusf(){
+    watch -n 1 wg
+}
+
 # write your code above
 ###############################################################################
 
