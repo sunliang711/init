@@ -291,6 +291,11 @@ addClient(){
 
     clientName=${1:?'missing client name'}
     hostNumber=${2:?'missing host number(x of ${subnet}.x)'}
+    r=`sqlite3 ${dbFile} "select name from clients where name = '${clientName}' or hostnumber = ${hostNumber};"`
+    if [ -n "$r" ];then
+        echo "client name or hostNumber already exists"
+        exit 1
+    fi
 
     privatekey="$(wg genkey)"
     publickey="$(echo ${privatekey} | wg pubkey)"
