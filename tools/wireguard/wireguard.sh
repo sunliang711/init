@@ -177,8 +177,8 @@ _start_post(){
     for r in ${records};do
         IFS=$'|'
         read name hostnumber publickey<<<"$r"
-        echo "add peer: ${name} hostnumber: ${hostnumber} publickey: ${publickey}"
-        _liveAdd ${pubkey} ${hostnumber}
+        echo "add peer: ${name} host: ${subnet}.${hostnumber}/32 publickey: ${publickey}"
+        _liveAdd ${publickey} ${hostnumber}
     done
 
 }
@@ -199,11 +199,53 @@ _isRunning(){
 }
 
 enable(){
-    echo "TODO"
+    clientName="${1:?'missing client name'}"
+    records=`sqlite3 ${dbFile} "select hostnumber,publickey,enable from clients where name = '${clientName}';"`
+    if [ -z "$records" ];then
+        echo "no such client"
+        exit 1
+    fi
+
+    # 只有一条记录，不需要循环
+    local hostnumber publickey enable
+    IFS=$'|'
+    read hostnumber publickey enable<<<"$records"
+
+    if ((enable==1));then
+        echo "already enabled"
+        exit
+    fi
+
+    sqlite3 ${dbFile} "update clients set enable = 1 where name = '${clientName}' "
+    if _isRunning;then
+        echo "-- wireguard is running, add client to it"
+        _liveAdd "${publickey}" "${hostnumber}"
+    fi
 }
 
 disable(){
-    echo "TODO"
+    clientName="${1:?'missing client name'}"
+    records=`sqlite3 ${dbFile} "select hostnumber,publickey,enable from clients where name = '${clientName}';"`
+    if [ -z "$records" ];then
+        echo "no such client"
+        exit 1
+    fi
+
+    # 只有一条记录，不需要循环
+    local hostnumber publickey enable
+    IFS=$'|'
+    read hostnumber publickey enable<<<"$records"
+
+    if ((enable==0));then
+        echo "already disabled"
+        exit
+    fi
+
+    sqlite3 ${dbFile} "update clients set enable = 0 where name = '${clientName}' "
+    if _isRunning;then
+        echo "-- wireguard is running, remove client to it"
+        _liveRm ${publickey}
+    fi
 }
 
 config(){
@@ -226,15 +268,6 @@ addClient(){
 
     clientName=${1:?'missing client name'}
     hostNumber=${2:?'missing host number(x of ${subnet}.x)'}
-
-    # [ ! -d "${clientDir}" ] && mkdir -p "${clientDir}"
-
-    # privKeyFile=client-${clientName}.privatekey
-    # pubKeyFile=client-${clientName}.publickey
-    # configFile=client-${clientName}.conf
-    #
-    # echo " -- generate client key pair: ${privKeyFile} ${pubKeyFile}"
-    # wg genkey | tee ${privKeyFile} | wg pubkey | tee ${pubKeyFile}
 
     privatekey="$(wg genkey)"
     publickey="$(echo ${privatekey} | wg pubkey)"
@@ -360,11 +393,7 @@ _status(){
     wg
     echo
     echo "---- Client Info ----"
-    for f in ${clientDir}/client-*.publickey;do
-        echo "-- ${f##*/}"
-        cat "$f" #| sed -e "s|\(PrivateKey = \).*|\1 ***|"
-        echo
-    done
+    listClient
 }
 
 
