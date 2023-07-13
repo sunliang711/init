@@ -108,6 +108,10 @@ install(){
     sed -e "s|<start_pre>|${startPre}|" \
         -e "s|<start_post>|${startPost}|" \
             override.conf >/tmp/override.conf
+
+    if [ ! -d /etc/systemd/system/wg-quick@wg0.service.d ];then
+        mkdir -p /etc/systemd/system/wg-quick@wg0.service.d
+    fi
     mv /tmp/override.conf ${overrideFile}
 
 
