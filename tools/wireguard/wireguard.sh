@@ -253,8 +253,27 @@ disable(){
 }
 
 config(){
+    set -e
+    settingsFile=${wireguardRoot}/settings
+
+    before="$(md5sum ${settingsFile} | awk '{ print $1}')"
     $ed ${wireguardRoot}/settings
-    # TODO need restart
+    after="$(md5sum ${settingsFile} | awk '{ print $1}')"
+    if [ "$before" != "$after" ];then
+        echo "${wireguardRoot}/settings changed, restart on your needs"
+    fi
+}
+
+rename(){
+    clientName="${1:?'missing client name'}"
+    newName="${2:?'missing new name'}"
+    records=`sqlite3 ${dbFile} "select hostnumber,publickey,enable from clients where name = '${clientName}';"`
+    if [ -z "$records" ];then
+        echo "no such client"
+        exit 1
+    fi
+
+    sqlite3 "${dbFile}" "update clients set name = '${newName}' where name = '${clientName}'"
 }
 
 addClient(){
@@ -330,10 +349,6 @@ listClient(){
 
 }
 
-configClient(){
-    echo "TODO"
-}
-
 start(){
     set -e
     _root
@@ -347,7 +362,7 @@ stop(){
     systemctl stop wg-quick@wg0
 }
 
-exportClientConfig(){
+exportClient(){
     clientName=${1:?'missing client name'}
     set -e
     _root
