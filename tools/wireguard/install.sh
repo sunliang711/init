@@ -33,14 +33,16 @@ fi
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
 wireguardRoot=/etc/wireguard
+dbFile=${wireguardRoot}/db
+
 install(){
     set -e
     _root
     cd ${this}
     # install soft
     # echo 'deb http://ftp.debian.org/debian buster-backports main' | tee /etc/apt/sources.list.d/buster-backports.list
-    # apt update
-    apt install wireguard qrencode iptables -y
+    apt update
+    apt install wireguard qrencode iptables sqlite3 -y
     # case $(uname -m) in
     #     x86_64)
     #         apt install linux-image-amd64 linux-headers-amd64 -y
@@ -69,6 +71,10 @@ install(){
             echo "port range invalid"
         fi
     done
+    echo -n "Enter server endpoint(ip or domain):"
+    read endpoint
+    echo -n "Enter client DNS:"
+    read clientDns
     # # install wireguard.sh
     # sed -e "s|<SERVER_PORT>|${serverPort}|g" wireguard.sh >/tmp/wireguard.sh && chmod +x /tmp/wireguard.sh
     # mv /tmp/wireguard.sh /usr/local/bin
@@ -87,7 +93,18 @@ install(){
 	serverIp=\${subnet}.1/24
 	serverPort=${serverPort}
 	tableNo=10
+    serverEndpoint=${endpoint}
+    clientDns=${clientDns}
 	EOF
+
+
+    echo "-- generate override config file of wg-quick@ service"
+    overrideFile=/etc/systemd/system/wg-quick@wg0.service.d/override.conf
+    startPre="${this}/wireguard.sh _start_pre"
+    sed -e "s|<start_pre>|${startPre}|" override.conf >/tmp/override.conf
+    mv /tmp/override.conf ${overrideFile}
+
+    _initDb
 
     # enable service
     systemctl enable wg-quick@wg0
@@ -96,6 +113,13 @@ install(){
 	run wireguard.sh configServer to config for first time
 	EOF
 
+}
+
+_initDb(){
+    if [ -n "$dbFile" ];then
+        echo "-- generate db file: ${dbFile}"
+        sqlite3 "$dbFile" "create table client(name varchar unique,hostnumber int unique, privatekey varchar,publickey varchar,enable int);"
+    fi
 }
 
 uninstall(){

@@ -33,138 +33,264 @@ fi
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
 wireguardRoot=/etc/wireguard
-clientDir=${wireguardRoot}/clients
+# clientDir=${wireguardRoot}/clients
+dbFile=${wireguardRoot}/db
+interfaceName=wg0
+
+serverPubkey=server-publickey
+serverPrikey=server-privatekey
 
 source ${wireguardRoot}/settings
 
-config(){
-    $ed ${wireguardRoot}/settings
-}
 
-configServer(){
+install(){
     set -e
     _root
+    cd ${this}
+    apt update
+    apt install wireguard qrencode iptables sqlite3 -y
+
+    while true;do
+        echo -n "Enter server port: "
+        read serverPort
+
+        if [ -z "$serverPort" ];then
+            continue
+        fi
+
+        if ! echo "$serverPort" | grep -q '[0-9][0-9]*';then
+            echo "invalid port"
+            continue
+        fi
+
+        if ((serverPort >=1)) && ((serverPort <= 65535));then
+            break
+        else
+            echo "port range invalid"
+        fi
+    done
+
+    echo -n "Enter server endpoint(ip or domain):"
+    read endpoint
+
+    echo -n "Enter client gateway:"
+    read clientGateway
+
+    echo -n "Enter client DNS:"
+    read clientDns
+
+    ln -sf ${this}/wireguard.sh /usr/local/bin
+
+    if [ ! -d ${wireguardRoot} ];then
+        mkdir -p ${wireguardRoot}
+    fi
+
+    cat<<-EOF>${wireguardRoot}/settings
+		serverEndpoint=${endpoint}
+		serverPort=${serverPort}
+		subnet=10.10.10
+		serverIp=\${subnet}.1/24
+		clientDns=${clientDns}
+        clientGateway=${clientGateway}
+		serverPubkey=${serverPubkey}
+		serverPrikey=${serverPrikey}
+		interfaceName=${interfaceName}
+		serverConfigFile=\${interfaceName}.conf
+		MTU=1420
+		tableNo=10
+	EOF
+
+
+    echo "-- generate override config file of wg-quick@ service"
+    overrideFile=/etc/systemd/system/wg-quick@wg0.service.d/override.conf
+    startPre="${this}/wireguard.sh _start_pre"
+    startPost="${this}/wireguard.sh _start_post"
+    sed -e "s|<start_pre>|${startPre}|" \
+        -e "s|<start_post>|${startPost}|" \
+            override.conf >/tmp/override.conf
+    mv /tmp/override.conf ${overrideFile}
+
+
+    # enable service
+    systemctl enable wg-quick@wg0
+
+    _configServer
+
+}
+
+_initDb(){
+    if [ -n "$dbFile" ];then
+        echo "-- generate db file: ${dbFile}"
+        sqlite3 "$dbFile" "create table clients(name varchar unique,hostnumber int unique, privatekey varchar,publickey varchar,enable int);"
+    fi
+}
+
+_configServer(){
     if [ ! -d ${wireguardRoot} ];then
         mkdir -p ${wireguardRoot}
     fi
     # create server key pair when not exist
     if [ ! -f ${wireguardRoot}/${serverPrikey} ];then
-        echo "create server key pair"
+        echo "-- create server key pair file.."
         wg genkey | tee ${wireguardRoot}/${serverPrikey} | wg pubkey | tee ${wireguardRoot}/${serverPubkey}
     fi
+    _initDb
 
-    if [ ! -f ${wireguardRoot}/${serverConfigFile} ];then
-        echo -n "Enter client gateway( 如果通过clash的tun走代理的话，设置成tun的ip 198.18.0.1,具体地址查看ip a指令): "
-        read clientGateway
-        interface=$(ip -o -4 route show to default | awk '{print $5}')
-        cat<<-EOF>${wireguardRoot}/${serverConfigFile}
+}
+
+uninstall(){
+    if ! _root;then
+        exit 1
+    fi
+    /usr/local/bin/wireguard.sh stop
+    if [ -e /usr/local/bin/wireguard.sh ];then
+        rm -rf /usr/local/bin/wireguard.sh
+    fi
+    if [ -d ${wireguardRoot} ];then
+        rm -rf ${wireguardRoot}
+    fi
+}
+
+_start_pre(){
+    # 服务端 [Interface]
+    gwInterface=$(ip -o -4 route show to default | awk '{print $5}')
+    echo "gateway interface: ${gwInterface}"
+    cat<<-EOF>${wireguardRoot}/${serverConfigFile}
 		[Interface]
 		Address = ${serverIp}
 		MTU = ${MTU}
 		SaveConfig = true
 		PreUp = sysctl -w net.ipv4.ip_forward=1
-		PostUp = iptables -t nat -A POSTROUTING -o ${interface} -j MASQUERADE;ip rule add from ${subnet}.0/24 table ${tableNo};ip route add default via ${clientGateway} table ${tableNo};
-		PostDown = iptables -t nat -D POSTROUTING -o ${interface} -j MASQUERADE; ip rule del from ${subnet}.0/24 table ${tableNo};ip route del default table ${tableNo};
+		PostUp = iptables -t nat -A POSTROUTING -o ${gwInterface} -j MASQUERADE;ip rule add from ${subnet}.0/24 table ${tableNo};ip route add default via ${clientGateway} table ${tableNo};
+		PostDown = iptables -t nat -D POSTROUTING -o ${gwInterface} -j MASQUERADE; ip rule del from ${subnet}.0/24 table ${tableNo};ip route del default table ${tableNo};
 		ListenPort = ${serverPort}
 		PrivateKey = $(cat ${wireguardRoot}/${serverPrikey})
-		
-		EOF
+	EOF
+}
 
-        echo "run wireguard.sh addClient to add client"
-    else
-        $ed ${wireguardRoot}/${serverConfigFile}
-    fi
+_start_post(){
+    echo "_start_post()"
+    # 客户端 [Peer]
+    # 查询数据库中所有enable为1的client，把它们加入到wg中
+    records=`sqlite3 ${dbFile} "select name,hostnumber,publickey from clients where enable = 1;"`
+    local name hostnumber privatekey publickey
+    for r in ${records};do
+        IFS=$'|'
+        read name hostnumber publickey<<<"$r"
+        echo "add peer: ${name} hostnumber: ${hostnumber} publickey: ${publickey}"
+        _liveAdd ${pubkey} ${hostnumber}
+    done
 
+}
+
+_liveAdd(){
+    pubkey=$1
+    hostnumber=$2
+    wg set ${interfaceName} peer "${pubkey}" allowed-ips "${subnet}.${hostnumber}/32"
+}
+
+_liveRm(){
+    pubkey=$1
+    wg set ${interfaceName} peer "${pubkey}" remove
+}
+
+_isRunning(){
+    ip a s ${interfaceName} >/dev/null 2>&1
+}
+
+enable(){
+    echo "TODO"
+}
+
+disable(){
+    echo "TODO"
+}
+
+config(){
+    $ed ${wireguardRoot}/settings
+    # TODO need restart
 }
 
 addClient(){
     set -e
     _root
 
-    if (($# < 4));then
-        cat<<EOF0
-usage: addClient <client_name> <host_number> <server_endpoint> <client_dns>
-
-<host_number>:          x of ${subnet}.x valid range: 2-254
-<server_endpoint>:      ip or domain
-<client_dns>:           dns of client, 如果是clash的tun模式走代理的话，设置成tun的198.18.0.1，具体使用ip a指令查询tun接口i地址
-EOF0
+    if (($# < 2));then
+        cat<<-EOF0
+			usage: addClient <client_name> <host_number>
+			
+			<host_number>:          x of ${subnet}.x valid range: 2-254
+		EOF0
         exit 1
     fi
 
     clientName=${1:?'missing client name'}
     hostNumber=${2:?'missing host number(x of ${subnet}.x)'}
-    endpoint=${3:?'missing server endpoint(ip or domain)'}
-    clientDNS=${4:?'missing client DNS( 如果通过clash的tun走代理的话，设置成tun的ip 198.18.0.1,具体地址查看ip a指令)'}
 
-    [ ! -d "${clientDir}" ] && mkdir -p "${clientDir}"
+    # [ ! -d "${clientDir}" ] && mkdir -p "${clientDir}"
 
-    privKeyFile=${clientDir}/client-${clientName}.privatekey
-    pubKeyFile=${clientDir}/client-${clientName}.publickey
-    configFile=${clientDir}/client-${clientName}.conf
+    # privKeyFile=client-${clientName}.privatekey
+    # pubKeyFile=client-${clientName}.publickey
+    # configFile=client-${clientName}.conf
+    #
+    # echo " -- generate client key pair: ${privKeyFile} ${pubKeyFile}"
+    # wg genkey | tee ${privKeyFile} | wg pubkey | tee ${pubKeyFile}
 
-    echo " -- generate client key pair: ${privKeyFile} ${pubKeyFile}"
-    wg genkey | tee ${privKeyFile} | wg pubkey | tee ${pubKeyFile}
+    privatekey="$(wg genkey)"
+    publickey="$(echo ${privatekey} | wg pubkey)"
 
-    echo "-- generate client config file: ${configFile}"
-    cat<<-EOF>${configFile}
-[Interface]
-  PrivateKey = $(cat ${privKeyFile})
-  Address = ${subnet}.${hostNumber}/24
-  DNS = ${clientDNS}
-  MTU = ${MTU}
+    # add to db
+    # values中类型如果是varchar，需要加上单引号
+    # enable 默认为1
+    sqlite3 "${dbFile}" "insert into clients(name,hostnumber,privatekey,publickey,enable) values('${clientName}',$hostNumber,'${privatekey}','${publickey}',1);"
 
-[Peer]
-  PublicKey = $(cat ${wireguardRoot}/${serverPubkey})
-  Endpoint = ${endpoint}:${serverPort}
-  AllowedIPs = 0.0.0.0/0, ::0/0
-  PersistentKeepalive = 25
-EOF
+    # 如果服务正在运行，需要把peer加入到wg0中
+    if _isRunning;then
+        echo "-- wireguard is running, add client to it"
+        _liveAdd "${publickey}" "${hostNumber}"
 
+    fi
 
-    echo "-- add client peer to server"
-    pubkey=$(cat ${pubKeyFile})
-    # Note: wireguard must be running
-    wg set wg0 peer "${pubkey}" allowed-ips "${subnet}.${hostNumber}/32"
-
-    exportClientConfig ${clientName}
-#     cat<<-EOF2>>${wireguardRoot}/${serverConfigFile}
-# # begin client-${clientName}
-# [Peer]
-# PublicKey = $(cat ${wireguardRoot}/client-${clientName}.publickey)
-# AllowedIPs = ${subnet}.${hostNumber}/32
-# # end client-${clientName}
-# EOF2
-# cat<<-EOF3
-#     run 'wireguard.sh restart to restart server after add client'
-#     run 'wireguard.sh exportClientConfig ${clientName} to export client qrcode'
-# EOF3
-#
-#     reload
-
+    exportClientConfig "${clientName}"
 }
 
 removeClient(){
     clientName=${1:?'missing client name'}
-    privKeyFile=${clientDir}/client-${clientName}.privatekey
-    pubKeyFile=${clientDir}/client-${clientName}.publickey
-    configFile=${clientDir}/client-${clientName}.conf
     _root
     set -e
 
-    # Note: wireguard must be running
-    pubkey=$(cat ${pubKeyFile})
-    wg set wg0 peer "${pubkey}" remove
+    publickey=`sqlite3 ${dbFile} "select publickey from clients where name = '${clientName}';"`
+    if [ -z "$publickey" ];then
+        echo "no such client"
+        exit 1
+    fi
 
-    rm -v -rf ${privKeyFile}
-    rm -v -rf ${pubKeyFile}
-    rm -v -rv ${configFile}
+    sqlite3 "${dbFile}" "delete from clients where name = '${clientName}';"
+
+    if _isRunning;then
+        echo "-- wireguard is running, remove client from it"
+        _liveRm "$publickey"
+    fi
 
 }
 
 listClient(){
-    cd ${clientDir}
-    ls client-*.conf
+    records=`sqlite3 ${dbFile} "select name,hostnumber,publickey,enable from clients;"`
+    if [ -z "${records}" ];then
+        echo "no clients"
+        exit 0
+    fi
+
+    local name hostnumber publickey enable
+
+    printf "%-15s %-15s %-50s %-18s\n" "name" "ip" "publickey" "enable"
+    for r in $records;do
+        IFS=$'|'
+        read name hostnumber publickey enable<<<"$r"
+
+        printf "%-15s %-15s %-50s %-18s\n" "$name" "${subnet}.${hostnumber}" "${publickey}" "${enable}"
+    done
+
 }
 
 configClient(){
@@ -189,13 +315,36 @@ exportClientConfig(){
     set -e
     _root
 
-    configFile=${clientDir}/client-${clientName}.conf
-    if [ ! -f ${configFile} ];then
-        echo "no such client, add client first!"
+    records=`sqlite3 ${dbFile} "select hostnumber,privatekey,publickey from clients where name = '${clientName}';"`
+    if [ -z "$records" ];then
+        echo "no such client"
         exit 1
     fi
-    cat ${configFile} | qrencode -t ansiutf8
-    cat ${configFile}
+
+    local name hostnumber privatekey publickey
+    for r in ${records};do
+        IFS=$'|'
+        read hostnumber privatekey publickey<<<"$r"
+        echo "-- generate client ${clientName} config file"
+        clientConfigFile=/tmp/client-${clientName}.conf
+        cat<<-EOF>${clientConfigFile}
+			[Interface]
+			    PrivateKey = ${privatekey}
+			    Address = ${subnet}.${hostnumber}/24
+			    DNS = ${clientDns}
+			    MTU = ${MTU}
+			
+			[Peer]
+			    PublicKey = $(cat ${wireguardRoot}/${serverPubkey})
+			    Endpoint = ${serverEndpoint}:${serverPort}
+			    AllowedIPs = 0.0.0.0/0, ::0/0
+			    PersistentKeepalive = 25
+			
+		EOF
+        cat ${clientConfigFile} | qrencode -t ansiutf8
+        cat ${clientConfigFile}
+    done
+
 }
 
 restart(){
