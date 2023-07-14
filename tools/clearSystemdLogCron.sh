@@ -393,7 +393,7 @@ install() {
     _require_command journalctl
     (
         crontab -l
-        echo "0 0,12 * * * /usr/bin/journalctl --rotate --vacuum=1s"
+        echo "0 0,12 * * * /usr/bin/journalctl --rotate --vacuum-time=1s"
     ) | crontab -
 }
 
