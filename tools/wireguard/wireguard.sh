@@ -91,7 +91,7 @@ install(){
 		subnet=10.10.10
 		serverIp=\${subnet}.1/24
 		clientDns=${clientDns}
-        clientGateway=${clientGateway}
+		clientGateway=${clientGateway}
 		serverPubkey=${serverPubkey}
 		serverPrikey=${serverPrikey}
 		interfaceName=${interfaceName}
@@ -156,6 +156,7 @@ uninstall(){
 }
 
 _start_pre(){
+    echo "_start_pre()"
     # 服务端 [Interface]
     gwInterface=$(ip -o -4 route show to default | awk '{print $5}')
     echo "gateway interface: ${gwInterface}"
@@ -312,7 +313,7 @@ addClient(){
 
     fi
 
-    exportClientConfig "${clientName}"
+    exportClient "${clientName}"
 }
 
 removeClient(){
