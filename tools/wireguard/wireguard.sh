@@ -280,18 +280,35 @@ rename(){
 addClient(){
     set -e
     _root
-
-    if (($# < 2));then
+    if (($#<1));then
         cat<<-EOF0
-			usage: addClient <client_name> <host_number>
+			usage: addClient <client_name> [host_number]
 			
-			<host_number>:          x of ${subnet}.x valid range: 2-254
+			[host_number]:          x of ${subnet}.x valid range: 2-254
 		EOF0
         exit 1
     fi
 
     clientName=${1:?'missing client name'}
-    hostNumber=${2:?'missing host number(x of ${subnet}.x)'}
+    hostNumber=${2}
+    if [ -z "${hostNumber}" ];then
+        # find a host number
+        hostnumbers=`sqlite3 ${dbFile} "select hostnumber from clients;"`
+
+        for ((idx=2;idx<=254;idx++));do
+            if ! printf "%s" "${hostnumbers}" | grep -qw "${idx}";then
+                break
+            fi
+        done
+        if ((idx>254));then
+            echo "no avaiable hostnumber!"
+            exit 1
+        fi
+
+        echo "hostnumber: ${idx}"
+        hostNumber=${idx}
+    fi
+
     r=`sqlite3 ${dbFile} "select name from clients where name = '${clientName}' or hostnumber = ${hostNumber};"`
     if [ -n "$r" ];then
         echo "client name or hostNumber already exists"
