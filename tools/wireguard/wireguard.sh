@@ -354,20 +354,29 @@ removeClient(){
 }
 
 listClient(){
-    records=`sqlite3 ${dbFile} "select name,hostnumber,publickey,enable from clients;"`
+    flag=${1}
+    records=`sqlite3 ${dbFile} "select name,hostnumber,privatekey,publickey,enable from clients;"`
     if [ -z "${records}" ];then
         echo "no clients"
         exit 0
     fi
 
-    local name hostnumber publickey enable
+    local name hostnumber privatekey publickey enable
 
-    printf "%-15s %-15s %-50s %-18s\n" "name" "ip" "publickey" "enable"
+    if [[ "${flag}" == "--insecure" ]];then
+        printf "%-15s %-15s %-50s %-50s %-18s\n" "name" "ip" "privatekey" "publickey" "enable"
+    else
+        printf "%-15s %-15s %-50s %-18s\n" "name" "ip" "publickey" "enable"
+    fi
     for r in $records;do
         IFS=$'|'
-        read name hostnumber publickey enable<<<"$r"
+        read name hostnumber privatekey publickey enable<<<"$r"
 
-        printf "%-15s %-15s %-50s %-18s\n" "$name" "${subnet}.${hostnumber}" "${publickey}" "${enable}"
+        if [[ "${flag}" == "--insecure" ]];then
+            printf "%-15s %-15s %-50s %-50s %-18s\n" "$name" "${subnet}.${hostnumber}" "${privatekey}" "${publickey}" "${enable}"
+        else
+            printf "%-15s %-15s %-50s %-18s\n" "$name" "${subnet}.${hostnumber}" "${publickey}" "${enable}"
+        fi
     done
 
 }
@@ -432,15 +441,52 @@ status(){
 }
 
 _status(){
-    wg
+    flag=${1}
+
+    printf "server endpoint: %s\n" ${serverEndpoint}
+    printf "server port: %s\n" ${serverPort}
+    printf "client gateway: %s\n" ${clientGateway}
+    printf "client DNS: %s\n" ${clientDns}
+    printf "MTU: %s\n" ${MTU}
     echo
-    echo "---- Client Info ----"
-    listClient
+
+    records=`sqlite3 ${dbFile} "select name,privatekey,publickey,enable from clients;"`
+    if [ -z "${records}" ];then
+        echo "no clients"
+    fi
+
+    local name privatekey publickey enable
+    declare -A pubkey2name
+    declare -A pubkey2enable
+
+    for r in $records;do
+        IFS=$'|'
+        read name privatekey publickey enable<<<"$r"
+        pubkey2name[$publickey]=$name
+        pubkey2enable[$publickey]=$enable
+    done
+
+    while read line;do
+        if echo "$line" | grep -q peer;then
+            pubkey=`echo $line | perl -lne 'print $1 if /peer: (.+)$/'`
+            printf "name: %s\n" ${pubkey2name[$pubkey]}
+            printf "enable: %s\n" ${pubkey2enable[$pubkey]}
+
+            if [[ ${flag} == "--insecure" ]];then
+                printf "private key: %s\n" ${privatekey}
+            fi
+        fi
+        echo "$line"
+    done<<<$(wg)
+    # echo
+    # echo "---- Client Info ----"
+    # listClient
 }
 
 
 statusf(){
-    watch -n 1 $0 _status
+    flag=$1
+    watch -n 1 $0 _status ${flag}
 }
 
 reload(){
