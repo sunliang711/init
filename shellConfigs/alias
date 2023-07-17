@@ -53,6 +53,7 @@ esac
 alias cd..='cd ..'
 alias cd-='cd -'
 alias grep='grep --color=auto'
+alias jnc=$(journalctl)
 
 if command -v emacs >/dev/null 2>&1; then
     alias emacs='emacs -nw'
