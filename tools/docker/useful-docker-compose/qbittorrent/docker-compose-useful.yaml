@@ -1,0 +1,30 @@
+version: "2.1"
+services:
+  qbittorrent:
+    image: linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Shanghai
+      - WEBUI_PORT=8080
+    volumes:
+      - ./config:/config
+      - downloads:/downloads
+    ports:
+      - 8080:8080
+      - 6881:6881
+      - 6881:6881/udp
+    restart: unless-stopped
+
+# Note
+# 1. 开启容器后，到webui里面设置options-connection里的random，启用random端口
+# 2. 如果下载目录downloads需要mount局域网内的smb目录，则需要在开启容器之前就要mount好，并且其mount的参数uid和pid和这里的PUID PGID一致
+
+volumes:
+  downloads:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: //10.1.1.160/qdownload
+      o: "username=eagle,password=<PASSWORD>,iocharset=utf8,sec=ntlmssp,vers=3.0,uid=1000,gid=1000,file_mode=0770,dir_mode=0770"
