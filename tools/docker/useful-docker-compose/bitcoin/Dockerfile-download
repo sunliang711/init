@@ -1,0 +1,19 @@
+FROM debian as builder
+WORKDIR /app
+RUN apt-get update && apt-get install curl -y 
+RUN curl -LO https://bitcoincore.org/bin/bitcoin-core-22.0/bitcoin-22.0-x86_64-linux-gnu.tar.gz && tar -xzf bitcoin-22.0*.tar.gz 
+
+
+FROM debian
+WORKDIR /app
+
+COPY --from=builder /app/bitcoin-22.0 /app
+COPY ./bitcoin.conf /app/bitcoin.conf
+
+# rpc
+EXPOSE 8838
+# p2p
+EXPOSE 8890
+
+ENTRYPOINT ["/app/bitcoin-22.0/bin/bitcoind","-datadir=/app/datadir","-conf=/app/bitcoin.conf"]
+
