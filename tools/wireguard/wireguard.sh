@@ -450,7 +450,7 @@ _status(){
     printf "MTU: %s\n" ${MTU}
     echo
 
-    records=`sqlite3 ${dbFile} "select name,privatekey,publickey,enable from clients;"`
+    records=`sqlite3 ${dbFile} "select name,privatekey,publickey,enable from clients where enable=1;"`
     if [ -z "${records}" ];then
         echo "no clients"
     fi
@@ -459,12 +459,14 @@ _status(){
     declare -A pubkey2name
     declare -A pubkey2enable
 
+    oldIFS="$IFS"
     for r in $records;do
         IFS=$'|'
         read name privatekey publickey enable<<<"$r"
         pubkey2name[$publickey]=$name
         pubkey2enable[$publickey]=$enable
     done
+    IFS="$oldIFS"
 
     while read line;do
         if echo "$line" | grep -q peer;then
@@ -478,9 +480,21 @@ _status(){
         fi
         echo "$line"
     done<<<$(wg)
-    # echo
-    # echo "---- Client Info ----"
-    # listClient
+
+    records2=`sqlite3 ${dbFile} "select name,hostnumber,privatekey,publickey,enable from clients where enable=0;"`
+    oldIFS="$IFS"
+    for r in $records2;do
+        IFS=$'|'
+        read name hostnumber privatekey publickey enable<<<"$r"
+        printf "\nname: %s\n" $name
+        printf "enable: %s\n" $enable
+        if [[ ${flag} == "--insecure" ]];then
+            printf "private key: %s\n" $privatekey
+        fi
+        printf "peer: %s\n" $publickey
+        printf "ip: %s\n" $subnet.$hostnumber
+    done
+    IFS="$oldIFS"
 }
 
 
