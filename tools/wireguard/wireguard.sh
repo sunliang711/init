@@ -34,7 +34,8 @@ fi
 # function is hidden when begin with '_'
 wireguardRoot=/etc/wireguard
 # clientDir=${wireguardRoot}/clients
-dbFile=${wireguardRoot}/db
+dbFileOnDisk=${wireguardRoot}/db
+dbFile=/tmp/wireguard_db
 interfaceName=wg0
 
 serverPubkey=server-publickey
@@ -101,30 +102,37 @@ install(){
 	EOF
 
 
+    _drop_in
+
+    _configServer
+
+}
+
+_drop_in(){
     echo "-- generate override config file of wg-quick@ service"
     overrideFile=/etc/systemd/system/wg-quick@wg0.service.d/override.conf
     startPre="${this}/wireguard.sh _start_pre"
     startPost="${this}/wireguard.sh _start_post"
+    stopPost="${this}/wireguard.sh _stop_post"
     sed -e "s|<start_pre>|${startPre}|" \
         -e "s|<start_post>|${startPost}|" \
+        -e "s|<stop_post>|${stopPost}|" \
             override.conf >/tmp/override.conf
 
     if [ ! -d /etc/systemd/system/wg-quick@wg0.service.d ];then
         mkdir -p /etc/systemd/system/wg-quick@wg0.service.d
     fi
     mv /tmp/override.conf ${overrideFile}
-
+    systemctl daemon-reload
 
     # enable service
     systemctl enable wg-quick@wg0
 
-    _configServer
-
 }
 
 _initDb(){
-    if [ -n "$dbFile" ];then
-        echo "-- generate db file: ${dbFile}"
+    if [ -n "$dbFileOnDisk" ];then
+        echo "-- generate db file: ${dbFileOnDisk}"
         sqlite3 "$dbFile" "create table clients(name varchar unique,hostnumber int unique, privatekey varchar,publickey varchar,enable int);"
     fi
 }
@@ -157,7 +165,7 @@ uninstall(){
 
 _start_pre(){
     echo "_start_pre()"
-    # 服务端 [Interface]
+    # 生成服务端配置文件
     gwInterface=$(ip -o -4 route show to default | awk '{print $5}')
     echo "gateway interface: ${gwInterface}"
     cat<<-EOF>${wireguardRoot}/${serverConfigFile}
@@ -171,6 +179,9 @@ _start_pre(){
 		ListenPort = ${serverPort}
 		PrivateKey = $(cat ${wireguardRoot}/${serverPrikey})
 	EOF
+
+    # 把dbFile复制到/tmp中，因为statusf会频繁的读写dbFile，把它移到内存(/tmp)中比较好
+    cp ${dbFileOnDisk} ${dbFile}
 }
 
 _start_post(){
@@ -186,6 +197,17 @@ _start_post(){
         _liveAdd ${publickey} ${hostnumber}
     done
 
+}
+
+_save_db(){
+    cp ${dbFile} ${dbFileOnDisk}
+}
+
+_stop_post(){
+    echo "_stop_post()"
+
+    # 服务关闭后，把db文件写回硬盘
+    _save_db
 }
 
 _liveAdd(){
@@ -226,6 +248,8 @@ enable(){
         echo "-- wireguard is running, add client to it"
         _liveAdd "${publickey}" "${hostnumber}"
     fi
+
+    _save_db
 }
 
 disable(){
@@ -251,6 +275,7 @@ disable(){
         echo "-- wireguard is running, remove client to it"
         _liveRm ${publickey}
     fi
+    _save_db
 }
 
 config(){
@@ -275,6 +300,7 @@ rename(){
     fi
 
     sqlite3 "${dbFile}" "update clients set name = '${newName}' where name = '${clientName}'"
+    _save_db
 }
 
 addClient(){
@@ -329,6 +355,7 @@ addClient(){
         _liveAdd "${publickey}" "${hostNumber}"
 
     fi
+    _save_db
 
     exportClient "${clientName}"
 }
@@ -345,6 +372,7 @@ removeClient(){
     fi
 
     sqlite3 "${dbFile}" "delete from clients where name = '${clientName}';"
+    _save_db
 
     if _isRunning;then
         echo "-- wireguard is running, remove client from it"
