@@ -2385,6 +2385,26 @@ function blockinput() {
     _save_rules
 }
 
+function onlyssh(){
+    sshPort=${1:-22}
+    if ! _command_exists ufw;then
+        echo "need ufw"
+        return
+    fi
+
+    echo "-- set default incoming to deny"
+    sudo ufw default deny incoming
+
+    echo "-- set default outgoing to deny"
+    sudo ufw default deny outgoing
+
+    echo "-- allow ssh (port:${sshPort})"
+    sudo ufw allow ${sshPort}
+
+    echo "-- enable ufw"
+    sudo ufw enable
+}
+
 function clearinput() {
     if ! _command_exists iptables; then
         echo "Need iptables"
