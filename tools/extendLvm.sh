@@ -585,6 +585,10 @@ add() {
 
     alias echo='{ set +x; } 2> /dev/null; builtin echo'
 
+    if (($#<2));then
+        echo "usage: $0 add /dev/sdX /dev/<VG_NAME>/<LV_NAME> [VG_NAME]"
+        exit 1
+    fi
     disk=${1:?'missing new disk: eg. /dev/sdX'}
     lv=${2:?'missing lv name: eg. /dev/VG_NAME/LV_NAME'}
     vgName=${3}
