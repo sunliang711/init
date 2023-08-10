@@ -578,11 +578,18 @@ _example() {
     # TODO
 }
 
-start() {
+install() {
     _require_command nvim
     _require_command make
+    _require_command git
+    _require_command pip
+    _require_command python
+    _require_command npm
+    _require_command node
+    _require_command cargo
 
     LV_BRANCH='release-1.3/neovim-0.9' bash <(curl -s https://raw.githubusercontent.com/LunarVim/LunarVim/release-1.3/neovim-0.9/utils/installer/install.sh)
+    rm -rf ~/.config/lvim.old
     mv ~/.config/lvim{,.old}
     git clone https://github.com/sunliang711/lunarvim ~/.config/lvim
 }

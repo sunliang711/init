@@ -1,0 +1,28 @@
+version: "3"
+
+services:
+  filebrowser:
+    container_name: filebrowser
+    image: filebrowser/filebrowser
+    ports:
+      - "8080:80/tcp"
+    environment:
+      PUID: 1000
+      PGID: 1000
+    volumes:
+      - 'root:/srv'
+      - './data/filebrowser.db:/database/filebrowser.db'
+      - './data/settings.json:/config/settings.json'
+
+    restart: unless-stopped
+# Default user
+# user: admin
+# password: admin
+
+volumes:
+  root:
+    driver: local
+    driver_opts:
+      type: cifs
+      device: //10.1.1.120/eagle
+      o: "username=eagle,password=<password>,iocharset=utf8,sec=ntlmssp,vers=3.0,uid=1000,gid=1000,file_mode=0770,dir_mode=0770"
