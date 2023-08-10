@@ -1,148 +1,75 @@
 # Include 指令必须放在Host指令之前!!
 Include ~/.ssh/local
 
-Host 10.1.9.108
-    HostName 10.1.9.108
-    User eagle
-
-Host sh.gitez.cc
-    HostName sh.gitez.cc
-    Port 2035
-    User eagle
-
-Host sh.gitez.cc
-    HostName sh.gitez.cc
-    Port 30006
-    User eagle
-
-Host 10.1.1.200
-    HostName 10.1.1.200
-
-Host sh.gitez.cc
-    HostName sh.gitez.cc
-    Port 2035
-    User eagle
-
-Host sh.gitez.cc
-    HostName sh.gitez.cc
-    Port 2035
-    User eagle
-
-Host 10.1.1.106
-    HostName 10.1.1.106
-    User eagle
-
-Host chuan
-    HostName gitez.cc
-    Port 7300
-
 Host aliyun
     HostName aliyun.gitez.cc
     User eagle
     Port 2000
 
-Host cw
-    HostName 10.1.1.192
-    User eagle
-    Port 22
 
-Host a8frpc
-    HostName a8.gitez.cc
-    Port 7101
-    User eagle
-
-Host dev35
-    HostName sh.gitez.cc
-    Port 2035
-    User eagle
-
-Host dev26
-    HostName sh.gitez.cc
-    Port 2026
-    User eagle
-
-Host dev28
-    HostName sh.gitez.cc
-    Port 2028
-    User eagle
-
-Host proxy177
-    HostName 10.1.1.177
-    Port 22
-    User eagle
-
-Host portainer185
-    HostName 10.1.1.185
-    Port 22
-    User eagle
-
-# Host proxy18
-#     HostName sh.gitez.cc
-#     Port 2018
-#
-# Host proxy38
-#     HostName sh.gitez.cc
-#     Port 2038
-
-# shanghai ROS router
 Host shros
     HostName sh.gitez.cc
     User userxx1
     Port 20000
 
-Host njros
-    HostName nj.gitez.cc
-    User userxx1
-    Port 20000
-
-Host memento
-    HostName memento.gitez.cc
-    User eagle
-
-Host a8inner
-    HostName a8.gitez.cc
-    User root
-    Port 7101
-
-# jia xing blockchain
-Host jx
-    HostName a8.gitez.cc
-    User root
-    Port 7999
-
-# 政务云
-Host zheng
-    HostName a8.gitez.cc
-    User root
-    Port 7998
-
 ##################################################
-# atom aliyun
-Host a8
-    HostName a8.gitez.cc
+# atom sh.gitez.cc
+Host a8eagle0
+    HostName 10.1.9.108
     User eagle
-    Port 2000
-Host atompveg
+
+Host a8pve0
+    HostName 10.1.9.2
+    User root
+
+Host a8frpc0
+    HostName 10.1.9.113
+    User root
+
+Host a8pve1
     HostName sh.gitez.cc
     Port 30003
     User root
+
+Host a8frpc1
+    HostName sh.gitez.cc
+    Port 30003
+    User root
+
+Host a8eagle1
+    HostName sh.gitez.cc
+    Port 30006
+    User eagle
+
+Host a8chuan1
+    HostName sh.gitez.cc
+    User root
+    Port 30005
+
+# atom gitez.cc
+Host a8frpc2
+    HostName gitez.cc
+    User root
+    Port 7101
+
+Host a8pve2
+    HostName gitez.cc
+    User root
+    Port 7103
+
+Host a8eagle2
+    HostName gitez.cc
+    User eagle
+    Port 7108
+
+Host a8chuan2
+    HostName gitez.cc
+    User root
+    Port 7109
 ##################################################
 # ATOM LOCAL VMs
 Host atompve
     HostName 10.1.9.2
-    User root
-
-Host atom22
-    HostName 10.1.9.22
-    User root
-    Port 7960
-
-Host atom126
-    HostName 10.1.9.126
-    User eagle
-
-Host atom110
-    HostName 10.1.9.110
     User root
 
 Host atomfrpc
