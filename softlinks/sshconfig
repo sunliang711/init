@@ -33,7 +33,7 @@ Host a8pve1
 
 Host a8frpc1
     HostName sh.gitez.cc
-    Port 30003
+    Port 30007
     User root
 
 Host a8eagle1
