@@ -1,0 +1,25 @@
+version: '2'
+services:
+  plex:
+    container_name: plex
+    image: plexinc/pms-docker
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      # claimToken: https://www.plex.tv/claim/
+      - PLEX_CLAIM=<claimToken>
+
+    network_mode: host
+    volumes:
+      - ./config:/config
+      - ./transcode:/transcode
+      - <path/to/media>:/data
+
+# 不用下面的挂载smb到volume的方式了，因为类似的这张服务很多，因此现在统一把smb挂载放到/etc/fstab中进行
+# volumes:
+#   data:
+#     driver: local
+#     driver_opts:
+#       type: cifs
+#       device: //10.1.1.160/qdownload
+#       o: "username=eagle,password=<PASSWORD>,iocharset=utf8,sec=ntlmssp,vers=3.0,uid=1000,gid=1000,file_mode=0770,dir_mode=0770"
