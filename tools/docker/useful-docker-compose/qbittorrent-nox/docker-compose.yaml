@@ -1,0 +1,33 @@
+version: "2.1"
+services:
+  qbittorrent:
+    image: qbittorrentofficial/qbittorrent-nox:latest
+    container_name: qbittorrent
+    environment:
+      - QBT_EULA=accept
+      - QBT_WEBUI_PORT=8080
+    volumes:
+      - ./config:/config
+      # - downloads:/downloads
+      # - /mnt/eagle/qdownload:/downloads
+      - /mnt/paopao/qdownload:/downloads
+    ports:
+      - 8080:8080
+      - 26881:6881
+      - 26881:6881/udp
+    restart: unless-stopped
+# Note:
+# 上面的QBT_WEBUI_PORT 值和ports中的8080对应的外部端口一致
+# 服务启动后web页面上的options - connection - listening port 中的端口要和 上面ports中6881的tcp和udp对应的外部端口一致，并且路由中的端口转发也要和它们一致
+
+# Note
+# 如果下载目录downloads需要mount局域网内的smb目录，则需要在开启容器之前就要mount好，并且其mount的参数uid和pid和这里的PUID PGID一致
+
+# 不用下面的挂载smb到volume的方式了，因为类似的这种服务很多，因此现在统一把smb挂载放到/etc/fstab中进行
+# volumes:
+#   downloads:
+#     driver: local
+#     driver_opts:
+#       type: cifs
+#       device: //10.1.1.120/p1/eagle/qdownload
+#       o: "username=eagle,password=<TODO>,iocharset=utf8,sec=ntlmssp,vers=3.0,uid=1000,gid=1000,file_mode=0770,dir_mode=0770"

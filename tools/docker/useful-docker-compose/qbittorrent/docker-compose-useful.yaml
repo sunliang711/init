@@ -13,10 +13,14 @@ services:
       - downloads:/downloads
     ports:
       - 8080:8080
-      - 6881:6881
-      - 6881:6881/udp
+      - 26881:6881
+      - 26881:6881/udp
     restart: unless-stopped
 
+# Note:
+# 上面的WEBUI_PORT 值和ports中的8080对应的外部端口一致
+# 服务启动后web页面上的options - connection - listening port 中的端口要和 上面ports中6881的tcp和udp对应的外部端口一致，并且路由中的端口转发也要和它们一致
+#
 # Note
 # 1. 开启容器后，到webui里面设置options-connection里的random，启用random端口
 # 2. 如果下载目录downloads需要mount局域网内的smb目录，则需要在开启容器之前就要mount好，并且其mount的参数uid和pid和这里的PUID PGID一致
