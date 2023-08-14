@@ -58,7 +58,19 @@ remoteTunnel(){
 }
 
 localTunnel(){
-    echo TODO
+    if (( $# !=6 ));then
+        echo "Usage: $0 <sshPort> <sshUser> <sshHost> <localPort> <remoteHost> <remotePort>"
+        exit 1
+    fi
+    echo "open localPort on sshHost to accept network traffic into remoteHost:remotePort"
+    sshPort=${1}
+    sshUser=${2}
+    sshHost=${3}
+    localPort=${4}
+    remoteHost=${5}
+    remotePort=${6}
+
+    ssh -p ${sshPort} -Nf -L ${localPort}:${remoteHost}:${remotePort} ${sshUser}@${sshHost}
 }
 # write your code above
 ###############################################################################
