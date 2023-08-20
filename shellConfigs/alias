@@ -29,6 +29,7 @@ fi
 
 alias dcp='docker compose'
 
+alias psaux='ps ax ouser,uid,group,gid,pid,ppid,%cpu,%mem,tty,stat,start,time,comm,args=ARGS'
 case $(uname) in
 "Linux")
     alias lA='ls -aF --color=auto'
