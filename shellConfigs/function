@@ -977,6 +977,43 @@ function traffic() {
     iptables -nvLINPUT | grep 'pt:' | awk '{printf "%-5s %-10s %-10s\n",$10,$11,$2}'
     echo
 }
+
+function scpMirrorFrom(){
+    port=22
+    user=$(whoami)
+    while getopts "p:u:h" arg;do
+        case $arg in
+            p)
+                port="$OPTARG"
+                ;;
+            u)
+                user="$OPTARG"
+                ;;
+            h)
+                host="$OPTARG"
+                ;;
+        esac
+    done
+
+    if [ -z "$host" ];then
+        echo "missing host: -h <host>"
+        return 1
+    fi
+
+    shift $((OPTIND - 1))
+    path=${1}
+    if [ -z "$path" ];then
+        echo "missing path"
+        return 1
+    fi
+    path=$(realpath $path)
+
+    set -x
+    scp -r -p "$port" $user@$host:$path $path
+    { set +x; } >/dev/null
+
+}
+
 function sshCopy() {
     if (($# < 1)); then
         echo "Usage: $(basename $0) [-p port-value] remoteUser@remoteHost"
