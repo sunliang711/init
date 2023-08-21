@@ -981,7 +981,7 @@ function traffic() {
 function scpMirrorFrom(){
     port=22
     user=$(whoami)
-    while getopts "p:u:h" arg;do
+    while getopts "p:u:h:" arg;do
         case $arg in
             p)
                 port="$OPTARG"
@@ -1001,16 +1001,52 @@ function scpMirrorFrom(){
     fi
 
     shift $((OPTIND - 1))
-    path=${1}
-    if [ -z "$path" ];then
-        echo "missing path"
+    location=${1}
+    if [ -z "$location" ];then
+        echo "missing location"
         return 1
     fi
-    path=$(realpath $path)
+    location="$(/usr/bin/realpath $location)"
 
     set -x
-    scp -r -p "$port" $user@$host:$path $path
-    { set +x; } >/dev/null
+    /usr/bin/scp -r -P "$port" "$user@$host:$location" "${location%/*}"
+    { set +x; } >/dev/null 2>&1
+
+}
+
+function scpMirrorTo(){
+    port=22
+    user=$(whoami)
+    while getopts "p:u:h:" arg;do
+        case $arg in
+            p)
+                port="$OPTARG"
+                ;;
+            u)
+                user="$OPTARG"
+                ;;
+            h)
+                host="$OPTARG"
+                ;;
+        esac
+    done
+
+    if [ -z "$host" ];then
+        echo "missing host: -h <host>"
+        return 1
+    fi
+
+    shift $((OPTIND - 1))
+    location=${1}
+    if [ -z "$location" ];then
+        echo "missing location"
+        return 1
+    fi
+    location="$(/usr/bin/realpath $location)"
+
+    set -x
+    /usr/bin/scp -r -P "$port" "${location}" "$user@$host:${location%/*}"
+    { set +x; } >/dev/null 2>&1
 
 }
 
