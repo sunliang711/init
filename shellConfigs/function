@@ -977,6 +977,79 @@ function traffic() {
     iptables -nvLINPUT | grep 'pt:' | awk '{printf "%-5s %-10s %-10s\n",$10,$11,$2}'
     echo
 }
+
+function scpMirrorFrom(){
+    port=22
+    user=$(whoami)
+    while getopts "p:u:h:" arg;do
+        case $arg in
+            p)
+                port="$OPTARG"
+                ;;
+            u)
+                user="$OPTARG"
+                ;;
+            h)
+                host="$OPTARG"
+                ;;
+        esac
+    done
+
+    if [ -z "$host" ];then
+        echo "missing host: -h <host>"
+        return 1
+    fi
+
+    shift $((OPTIND - 1))
+    location=${1}
+    if [ -z "$location" ];then
+        echo "missing location"
+        return 1
+    fi
+    location="$(/usr/bin/realpath $location)"
+
+    set -x
+    /usr/bin/scp -r -P "$port" "$user@$host:$location" "${location%/*}"
+    { set +x; } >/dev/null 2>&1
+
+}
+
+function scpMirrorTo(){
+    port=22
+    user=$(whoami)
+    while getopts "p:u:h:" arg;do
+        case $arg in
+            p)
+                port="$OPTARG"
+                ;;
+            u)
+                user="$OPTARG"
+                ;;
+            h)
+                host="$OPTARG"
+                ;;
+        esac
+    done
+
+    if [ -z "$host" ];then
+        echo "missing host: -h <host>"
+        return 1
+    fi
+
+    shift $((OPTIND - 1))
+    location=${1}
+    if [ -z "$location" ];then
+        echo "missing location"
+        return 1
+    fi
+    location="$(/usr/bin/realpath $location)"
+
+    set -x
+    /usr/bin/scp -r -P "$port" "${location}" "$user@$host:${location%/*}"
+    { set +x; } >/dev/null 2>&1
+
+}
+
 function sshCopy() {
     if (($# < 1)); then
         echo "Usage: $(basename $0) [-p port-value] remoteUser@remoteHost"
