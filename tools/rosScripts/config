@@ -1,4 +1,4 @@
-
+gateway=10.1.1.1
 subnet=10.1.1.0/24
 bridge=br-lan
 wan=pppoe-out1
@@ -17,7 +17,7 @@ mappings=(
 "tcp|42400|10.1.1.160|32400|dsm plex server"
 "tcp|6001|10.1.1.160||dsm website"
 
-"tcp|2035|10.1.1.200|22|dev35 ssh"
+"tcp|2035|10.1.1.142|22|dev ssh"
 
 "tcp|8338|10.1.1.121|8338|btc rpc"
 
