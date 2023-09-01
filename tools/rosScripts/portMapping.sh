@@ -37,11 +37,13 @@ echo "#$comment"
 if echo "$toPorts" | grep -qE '(,|-)';then
 cat<<EOF
 /ip firewall nat add chain=dstnat action=dst-nat protocol=$protocol dst-address=[/ip address get [/ip address find interface=${wan}] address] dst-port=$dstPort to-addresses=$toAddresses comment="$comment $dynWanTag"
+/ip firewall nat add chain=srcnat action=src-nat protocol=$protocol dst-address=$toAddresses dst-port=$dstPort to-addresses=$gateway comment="$comment snat"
 
 EOF
 else
 cat<<EOF
 /ip firewall nat add chain=dstnat action=dst-nat protocol=$protocol dst-address=[/ip address get [/ip address find interface=${wan}] address] dst-port=$dstPort to-addresses=$toAddresses to-ports=$toPorts comment="$comment $dynWanTag"
+/ip firewall nat add chain=srcnat action=src-nat protocol=$protocol dst-address=$toAddresses dst-port=$toPorts to-addresses=$gateway comment="$comment snat"
 
 EOF
 fi
