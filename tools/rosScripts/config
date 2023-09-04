@@ -29,6 +29,8 @@ mappings=(
 
 "tcp|26881|10.1.1.135||qbittorrent"
 "udp|26881|10.1.1.135||qbittorrent udp"
+
+"tcp|2120|10.1.1.120|22|trueNas ssh"
 )
 
 #"udp|51860|10.1.1.18||wireguard vpn server"
