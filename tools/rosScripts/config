@@ -27,6 +27,10 @@ mappings=(
 "tcp|4000-4400|10.1.1.16||ss1 tcp"
 "udp|4000-4400|10.1.1.16||ss1 udp"
 
+"udp|6208|10.1.1.138||mac mini Ponte"
+
+"tcp|8889|10.1.1.138|8889|mac mini socks5"
+
 "tcp|26881|10.1.1.135||qbittorrent"
 "udp|26881|10.1.1.135||qbittorrent udp"
 )
