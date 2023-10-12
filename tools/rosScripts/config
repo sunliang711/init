@@ -4,6 +4,7 @@ bridge=br-lan
 wan=pppoe-out1
 dynWanTag=dynWanDNAT
 hairpinTag=HairpinNAT
+addressList=pub_ip
 
 
 
@@ -13,22 +14,19 @@ hairpinTag=HairpinNAT
 # "tcp|26| 10.1.1.22|  22 |mjr ssh"
 
 mappings=(
-"tcp|8006|10.1.1.21|8006|dell pve admin console"
-"tcp|42400|10.1.1.135|32400|plex server"
-"tcp|5001|10.1.1.141||dsm website"
-
 "tcp|2035|10.1.1.142|22|dev ssh"
-
+"tcp|5001|10.1.1.141||dsm website"
+"tcp|42400|10.1.1.135|32400|plex server"
+"tcp|8006|10.1.1.21|8006|dell pve admin console"
 
 "tcp|30000-39999|10.1.1.16||frps"
-
-"udp|51820|10.1.1.16||native wireguard"
+"tcp|26881|10.1.1.135||qbittorrent"
 
 "tcp|4000-4400|10.1.1.16||ss1 tcp"
 "udp|4000-4400|10.1.1.16||ss1 udp"
 
-"tcp|26881|10.1.1.135||qbittorrent"
-"udp|26881|10.1.1.135||qbittorrent udp"
+"udp|51820|10.1.1.16||native wireguard"
+"udp|6208|10.1.1.130||surge ponte"
 
 "tcp|2120|10.1.1.120|22|trueNas ssh"
 )
