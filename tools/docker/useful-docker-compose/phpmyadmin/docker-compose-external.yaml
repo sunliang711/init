@@ -1,0 +1,12 @@
+version: '3.1'
+
+services:
+  phpmyadmin:
+    image: phpmyadmin
+    restart: always
+    ports:
+      - 8080:80
+    environment:
+      # 指定mysql ip 
+      - PMA_HOST=<MYSQL_HOST>
+

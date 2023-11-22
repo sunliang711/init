@@ -1,0 +1,11 @@
+version: '3.1'
+
+services:
+  phpmyadmin:
+    image: phpmyadmin
+    restart: always
+    ports:
+      - 8080:80
+    environment:
+      # 支持任意mysql，打开web时指定mysql host
+      - PMA_ARBITRARY=1
