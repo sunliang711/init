@@ -1,0 +1,27 @@
+version: '3.1'
+
+services:
+  db:
+    # image: mariadb:10.3
+    # restart: always
+    # environment:
+    #   MYSQL_ROOT_PASSWORD: root
+    image: mysql:5.7
+    restart: always
+    environment:
+      MYSQL_DATABASE: 'db'
+      MYSQL_USER: 'user'
+      MYSQL_PASSWORD: 'user'
+      MYSQL_ROOT_PASSWORD: 'root'
+    ports:
+      - '3306:3306'
+
+  phpmyadmin:
+    image: phpmyadmin
+    restart: always
+    ports:
+      - 8080:80
+    environment:
+      - PMA_ARBITRARY=1
+      # 指定了db作为默认的数据库，那么再web端，不指定server的情况下就连接这个数据库
+      - PMA_HOST=db

@@ -25,8 +25,11 @@ mappings=(
 "tcp|4000-4400|10.1.1.16||ss1 tcp"
 "udp|4000-4400|10.1.1.16||ss1 udp"
 
+"udp|6208|10.1.1.138||mac mini Ponte"
+
+"tcp|8889|10.1.1.138|8889|mac mini socks5"
+
 "udp|51820|10.1.1.16||native wireguard"
-"udp|6208|10.1.1.130||surge ponte"
 
 "tcp|2120|10.1.1.120|22|trueNas ssh"
 )
