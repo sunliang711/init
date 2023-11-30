@@ -388,8 +388,19 @@ _example() {
     # TODO
 }
 
+new(){
+    projectName=${1:?'missing project name'}
+    set -e
+
+    echo "create ${projectName}.."
+    cp -r "${this}/rust_tmpl" "${projectName}"
+    cd "${projectName}"
+    git init . && git add . && git commit -m "initial commit"
+}
+
 # write your code above
 ###############################################################################
+
 
 em() {
     $ed $0
@@ -406,10 +417,10 @@ EOF2
 }
 
 case "$1" in
-"" | -h | --help | help)
+-h | --help | help)
     _help
     ;;
 *)
-    "$@"
+    new "$@"
     ;;
 esac

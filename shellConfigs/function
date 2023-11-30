@@ -1811,7 +1811,7 @@ function newperl() {
 
 }
 
-function newrust() {
+function __newrust() {
     if ! _need cargo; then
         return 1
     fi
