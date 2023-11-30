@@ -2162,6 +2162,10 @@ cdnvim() {
     cd $HOME/.config/nvim
 }
 
+cdlvim() {
+    cd $HOME/.config/lvim
+}
+
 cdclash() {
     cd $HOME/.local/apps/clash
 }
