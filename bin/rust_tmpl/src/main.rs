@@ -1,4 +1,5 @@
 pub mod config;
+pub mod consts;
 pub mod error;
 pub mod types;
 pub mod utils;
@@ -15,7 +16,10 @@ fn main() -> anyhow::Result<()> {
     // init env_logger
     env_logger::init();
 
-    // TODO
+    // example: get config
+    let cfg = crate::config::Config::get();
+    println!("redis_url: {}", cfg.server.redis_url);
+    println!("port: {}", cfg.server.port);
 
     Ok(())
 }
