@@ -348,6 +348,7 @@ new() {
     local name=${1:?'missing script name'}
     cp "${this}/shTmpl" "${name}"
     $ed "${name}"
+    chmod +x "${name}"
 }
 # write your code above
 ###############################################################################
