@@ -16,4 +16,4 @@ services:
       #DISTANCE: "km"
       #WEBPORT: 80
     ports:
-      - "80:80" # webport mapping (host:container)
+      - "7000:80" # webport mapping (host:container)
