@@ -10,11 +10,7 @@ fn main() -> anyhow::Result<()> {
     // embed build info to the binary
     utils::build_info();
 
-    // load .env file
-    dotenv::dotenv().ok();
-
-    // init env_logger
-    env_logger::init();
+    utils::init::init_env(true, true);
 
     // example: get config
     let cfg = crate::config::Config::get();
