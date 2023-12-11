@@ -14,8 +14,7 @@ fn main() -> anyhow::Result<()> {
 
     // example: get config
     let cfg = crate::config::Config::get();
-    println!("redis_url: {}", cfg.server.redis_url);
-    println!("port: {}", cfg.server.port);
+    println!("config: {cfg}");
 
     Ok(())
 }
