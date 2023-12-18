@@ -552,7 +552,7 @@ proxyEnvOff() {
     unset HTTPS_PROXY
     unset ALL_PROXY
 
-    rm "${PROXY_FILE}"
+    [ -e "${PROXY_FILE}" ] && rm "${PROXY_FILE}"
 }
 
 # detect git proxy as http_proxy https_proxy env
@@ -560,6 +560,8 @@ detectProxyEnv() {
     local proxy="$(parseProxy)"
     if [ -n "$proxy" ];then
         proxyEnvOn "${proxy}"
+    else
+        proxyEnvOff
     fi
     # if ! command -v git >/dev/null 2>&1; then
     #     echo "No git command,exit."
