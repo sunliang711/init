@@ -88,7 +88,7 @@ install(){
     cd /tmp
     local name=${goURL##*/}
     if [ ! -e $name ];then
-        echo "Download $name to /tmp..."
+        echo "Download $name from $goURL to /tmp..."
         curl -LO $goURL || { echo "Download $name error"; exit 1; }
     fi
 
