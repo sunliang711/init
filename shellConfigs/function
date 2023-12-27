@@ -534,8 +534,8 @@ proxyEnvOn() {
         export HTTPS_PROXY="${proxy}"
         export ALL_PROXY="${proxy}"
         cat<<-EOF>${PROXY_FILE}
-			http_proxy="${proxy}"
-			https_proxy="${proxy}"
+			http_proxy=${proxy}
+			https_proxy=${proxy}
 		EOF
     else
         echo "proxyEnvOn: No proxy specified."
