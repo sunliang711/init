@@ -46,6 +46,11 @@ Host a8chuan1
     User root
     Port 30005
 
+Host atom112
+    HostName 10.1.9.112
+    User root
+    Port 22
+
 # atom gitez.cc
 Host a8frpc2
     HostName gitez.cc
@@ -91,3 +96,4 @@ Host socks
 Host dev142
     HostName 10.1.1.142
     User eagle
+
