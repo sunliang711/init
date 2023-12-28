@@ -91,3 +91,7 @@ Host socks
 Host dev142
     HostName 10.1.1.142
     User eagle
+
+Host atom121
+    HostName 10.1.9.121
+    User root
