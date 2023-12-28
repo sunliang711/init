@@ -1,5 +1,5 @@
 export time=$(shell date +%FT%T)
-export version=$(shell git rev-parse --short HEAD)
+export version=$(shell git rev-parse --short HEAD 2>/dev/null)
 
 .PHONY: build
 build:
@@ -7,8 +7,12 @@ build:
 
 .PHONY: run
 run:
-	cargo run --release
+	@cargo run --release
 
 .PHONY: clean
 clean:
-	cargo clean
+	@cargo clean
+
+.PHONY: test
+test:
+	@cargo test -- --showoutput

@@ -301,6 +301,7 @@ _checkService() {
 }
 
 ed=vi
+
 if _command_exists vim; then
     ed=vim
 fi
@@ -312,7 +313,9 @@ if [ -n "${editor}" ]; then
     ed=${editor}
 fi
 
+
 # available VARs: user, home, rootID
+# available color vars: RED GREEN YELLOW BLUE CYAN BOLD NORMAL
 # available functions:
 #    _err(): print "$*" to stderror
 #    _command_exists(): check command "$1" existence
@@ -326,8 +329,8 @@ fi
 #    _run():
 #                  -x (trace)
 #                  -s (run in subshell)
-#                  --nostdout (discard stdout)
-#                  --nostderr (discard stderr)
+#                  --no-stdout (discard stdout)
+#                  --no-stderr (discard stderr)
 #    _ensureDir(): mkdir if $@ not exist
 #    _root(): check if it is run as root
 #    _require_root(): exit when not run as root
@@ -344,12 +347,47 @@ fi
 ###############################################################################
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
-new() {
-    local name=${1:?'missing script name'}
-    cp "${this}/shTmpl" "${name}"
-    $ed "${name}"
-    chmod +x "${name}"
+function _parseOptions() {
+    if [ $(uname) != "Linux" ]; then
+        echo "getopt only on Linux"
+        exit 1
+    fi
+
+    options=$(getopt -o dv --long debug --long name: -- "$@")
+    [ $? -eq 0 ] || {
+        echo "Incorrect option provided"
+        exit 1
+    }
+    eval set -- "$options"
+    while true; do
+        case "$1" in
+        -v)
+            VERBOSE=1
+            ;;
+        -d)
+            DEBUG=1
+            ;;
+        --debug)
+            DEBUG=1
+            ;;
+        --name)
+            shift # The arg is next in position args
+            NAME=$1
+            ;;
+        --)
+            shift
+            break
+            ;;
+        esac
+        shift
+    done
 }
+
+_example() {
+    _parseOptions "$0" "$@"
+    # TODO
+}
+
 # write your code above
 ###############################################################################
 
@@ -368,17 +406,10 @@ EOF2
 }
 
 case "$1" in
-  -h | --help | help)
+"" | -h | --help | help)
     _help
     ;;
-  em)
-    em
-    ;;
-  "")
-    echo "all: $@"
-    new "$@"
-    ;;
-  *)
-    new "$@"
+*)
+    "$@"
     ;;
 esac

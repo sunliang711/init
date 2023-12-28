@@ -1,4 +1,5 @@
 pub mod config;
+pub mod consts;
 pub mod error;
 pub mod types;
 pub mod utils;
@@ -9,13 +10,11 @@ fn main() -> anyhow::Result<()> {
     // embed build info to the binary
     utils::build_info();
 
-    // load .env file
-    dotenv::dotenv().ok();
+    utils::init::init_env(true, true);
 
-    // init env_logger
-    env_logger::init();
-
-    // TODO
+    // example: get config
+    let cfg = crate::config::Config::get();
+    println!("config: {cfg}");
 
     Ok(())
 }

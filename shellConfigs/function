@@ -1,4 +1,5 @@
 export LOCAL_APP_ROOT="${home}/.local/apps"
+export PROXY_FILE="${home}/.PROXY_FILE"
 
 function Source() {
     file="${1}"
@@ -532,6 +533,10 @@ proxyEnvOn() {
         export HTTP_PROXY="${proxy}"
         export HTTPS_PROXY="${proxy}"
         export ALL_PROXY="${proxy}"
+        cat<<-EOF>${PROXY_FILE}
+			http_proxy="${proxy}"
+			https_proxy="${proxy}"
+		EOF
     else
         echo "proxyEnvOn: No proxy specified."
         return 1
@@ -546,18 +551,26 @@ proxyEnvOff() {
     unset HTTP_PROXY
     unset HTTPS_PROXY
     unset ALL_PROXY
+
+    [ -e "${PROXY_FILE}" ] && rm "${PROXY_FILE}"
 }
 
 # detect git proxy as http_proxy https_proxy env
 detectProxyEnv() {
-    if ! command -v git >/dev/null 2>&1; then
-        echo "No git command,exit."
-        return 1
+    local proxy="$(parseProxy)"
+    if [ -n "$proxy" ];then
+        proxyEnvOn "${proxy}"
+    else
+        proxyEnvOff
     fi
-    local gitHTTPProxy="$(git config --global http.proxy)"
-    if [ -n "${gitHTTPProxy}" ]; then
-        proxyEnvOn "${gitHTTPProxy}"
-    fi
+    # if ! command -v git >/dev/null 2>&1; then
+    #     echo "No git command,exit."
+    #     return 1
+    # fi
+    # local gitHTTPProxy="$(git config --global http.proxy)"
+    # if [ -n "${gitHTTPProxy}" ]; then
+    #     proxyEnvOn "${gitHTTPProxy}"
+    # fi
 }
 
 gitproxyon() {
@@ -2160,6 +2173,10 @@ function bak() {
 
 cdnvim() {
     cd $HOME/.config/nvim
+}
+
+cdlvim() {
+    cd $HOME/.config/lvim
 }
 
 cdclash() {
