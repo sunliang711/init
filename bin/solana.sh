@@ -233,6 +233,15 @@ newTokenAccount() {
         ${nftAddress}
 }
 
+getTokenAccount(){
+    ataPubkey=ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL
+    tokenPubkey=TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+    walletPubkey=${1:?'missing wallet account pubkey'}
+    mintPubkey=${2:?'missing mint account pubkey'}
+
+    solana find-program-derived-address "${ataPubkey}" pubkey:${walletPubkey} pubkey:${tokenPubkey} pubkey:${mintPubkey}
+}
+
 tokenAccountInfo() {
     tokenAccount=${1:?'missing token account'}
     spl-token account-info --address "${tokenAccount}"
