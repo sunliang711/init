@@ -420,6 +420,9 @@ case "$1" in
 -h | --help | help)
     _help
     ;;
+em)
+    em
+    ;;
 *)
     new "$@"
     ;;
