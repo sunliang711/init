@@ -390,15 +390,9 @@ _example() {
 
 newprogram(){
     name=${1:?'missing solana program name'}
-    cargo new --lib "${name}" 
+    echo "create solana program: ${name}"
+    cp -r "${this}/solana_program_tmpl" "${name}"
     cd "${name}"
-    cargo add solana-program
-    cat<<EOF>>Cargo.toml
-[lib]
-
-    name="${name}"
-    crate-type = ["cdylib", "lib"]
-EOF
 }
 
 # write your code above
