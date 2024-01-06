@@ -23,5 +23,5 @@ services:
       - 13306:80
     environment:
       - PMA_ARBITRARY=1
-      # 指定了db作为默认的数据库，那么再web端，不指定server的情况下就连接这个数据库
-      - PMA_HOST=db
+      # 指定了db作为默认的数据库，那么在web端，不指定server的情况下就连接这个数据库
+      - PMA_HOST=<MYSQL_HOST>

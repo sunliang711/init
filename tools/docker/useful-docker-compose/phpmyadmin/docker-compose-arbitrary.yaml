@@ -7,5 +7,7 @@ services:
     ports:
       - 13306:80
     environment:
-      # 支持任意mysql，打开web时指定mysql host
+      # 1. 要么 支持任意mysql，打开web时指定mysql host
       - PMA_ARBITRARY=1
+      # 2. 要么 指定mysql ip 
+      # - PMA_HOST=<MYSQL_HOST>
