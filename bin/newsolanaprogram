@@ -393,6 +393,7 @@ newprogram(){
     echo "create solana program: ${name}"
     cp -r "${this}/solana_program_tmpl" "${name}"
     cd "${name}"
+    rm -rf target
 }
 
 # write your code above
