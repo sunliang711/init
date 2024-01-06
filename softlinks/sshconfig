@@ -23,7 +23,7 @@ Host a8pve0
     User root
 
 Host a8frpc0
-    HostName 10.1.9.113
+    HostName 10.1.9.105
     User root
 
 Host a8pve1
