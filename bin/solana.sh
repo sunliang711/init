@@ -74,6 +74,10 @@ installcli() {
 }
 
 ###  network manager
+local(){
+    set -xe
+    solana config set --url localhost
+}
 devnet() {
     set -xe
     solana config set --url devnet
