@@ -428,7 +428,7 @@ rm(){
     _root
     cd ${wireguardRoot}
     serverName=${1:?'missing server name'}
-    systemctl stop wg-quick@{serverName}
+    systemctl stop wg-quick@${serverName}
     rm -rf ${serverName}.conf
     systemctl daemon-reload
 }
