@@ -433,6 +433,20 @@ rm(){
     systemctl daemon-reload
 }
 
+start(){
+    _root
+    systemctl start wg-quick@${serverName}
+}
+
+stop(){
+    _root
+    systemctl stop wg-quick@${serverName}
+}
+
+restart(){
+    systemctl restart wg-quick@${serverName}
+}
+
 # write your code above
 ###############################################################################
 
