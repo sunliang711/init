@@ -388,7 +388,7 @@ _example() {
     # TODO
 }
 
-wireguardRoot=/etc/wireguard/servers
+wireguardRoot=/etc/wireguard
 
 install(){
     set -e
@@ -401,7 +401,7 @@ install(){
 add(){
     _root
     cd ${wireguardRoot}
-    serverName=${1}
+    serverName=${1:?'missing server name'}
     $ed ${serverName}.conf
 
     systemctl daemon-reload
@@ -419,7 +419,7 @@ list(){
 config(){
     _root
     cd ${wireguardRoot}
-    serverName=${1}
+    serverName=${1:?'missing server name'}
     $ed ${serverName}.conf
     systemctl restart wg-quick@${serverName}
 }
@@ -427,7 +427,7 @@ config(){
 rm(){
     _root
     cd ${wireguardRoot}
-    serverName=${1}
+    serverName=${1:?'missing server name'}
     systemctl stop wg-quick@{serverName}
     rm -rf ${serverName}.conf
     systemctl daemon-reload
