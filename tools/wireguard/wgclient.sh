@@ -395,6 +395,8 @@ install(){
     _root
     apt update && apt install wireguard -y
     [ ! -d "${wireguardRoot}" ] && mkdir -p "${wireguardRoot}"
+    systemctl enable systemd-resolved.service
+    ln -s /usr/bin/resolvectl /usr/local/bin/resolvconf
 }
 
 # add server
