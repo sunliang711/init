@@ -402,7 +402,7 @@ add(){
     _root
     cd ${wireguardRoot}
     serverName=${1}
-    $editor ${serverName}.conf
+    $ed ${serverName}.conf
 
     systemctl daemon-reload
     systemctl enable --now wg-quick@${serverName}
@@ -420,7 +420,7 @@ config(){
     _root
     cd ${wireguardRoot}
     serverName=${1}
-    $editor ${serverName}.conf
+    $ed ${serverName}.conf
     systemctl restart wg-quick@{serverName}
 }
 
