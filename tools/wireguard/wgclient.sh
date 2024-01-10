@@ -421,7 +421,7 @@ config(){
     cd ${wireguardRoot}
     serverName=${1}
     $ed ${serverName}.conf
-    systemctl restart wg-quick@{serverName}
+    systemctl restart wg-quick@${serverName}
 }
 
 rm(){
