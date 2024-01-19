@@ -422,12 +422,21 @@ config(){
     _root
     cd ${wireguardRoot}
     serverName=${1:?'missing server name'}
+    file=${serverName}.conf
+    before=`stat ${file} | grep Modify`
     $ed ${serverName}.conf
-    systemctl restart wg-quick@${serverName}
+    after=`stat ${file} | grep Modify`
+    if ! systemctl status wg-quick@${serverName} | grep -q inactive ;then
+        if [ "${before}" != "${after}" ];then
+            echo "restart wg-quick@${serverName}"
+            systemctl restart wg-quick@${serverName}
+        fi
+    fi
 }
 
 rm(){
     _root
+    set -x
     cd ${wireguardRoot}
     serverName=${1:?'missing server name'}
     systemctl stop wg-quick@${serverName}
@@ -437,15 +446,21 @@ rm(){
 
 start(){
     _root
+    set -x
+    serverName=${1:?'missing server name'}
     systemctl start wg-quick@${serverName}
 }
 
 stop(){
     _root
+    set -x
+    serverName=${1:?'missing server name'}
     systemctl stop wg-quick@${serverName}
 }
 
 restart(){
+    set -x
+    serverName=${1:?'missing server name'}
     systemctl restart wg-quick@${serverName}
 }
 
