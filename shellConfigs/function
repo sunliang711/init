@@ -269,6 +269,19 @@ _command_exists() {
     fi
 }
 
+topOf(){
+    pidsArray=()
+    for program in ${@};do
+        echo "program: ${program}"
+        for pid in `pgrep ${program}`;do
+            pidsArray+=($pid)
+        done
+    done
+
+    pids=$(IFS=, ; echo "${pidsArray[*]}")
+    top -p "$pids"
+}
+
 runAsRoot() {
     local trace=0
     local subshell=0
@@ -956,7 +969,7 @@ function godoc() {
     fi
 }
 
-function pgrep() {
+function pgrep2() {
     if (($# != 1)); then
         echo "Usage: pgrep some_program_name"
         return 1
