@@ -278,8 +278,19 @@ topOf(){
         done
     done
 
-    pids=$(IFS=, ; echo "${pidsArray[*]}")
-    top -p "$pids"
+    case $(uname) in
+        Darwin)
+            for i in "${pidsArray[@]}";do
+                pids="${pids} -pid $i"
+            done
+            echo "pids: ${pids}"
+            eval "top $pids"
+            ;;
+        Linux)
+            pids=$(IFS=, ; echo "${pidsArray[*]}")
+            top -p "$pids"
+            ;;
+    esac
 }
 
 runAsRoot() {
