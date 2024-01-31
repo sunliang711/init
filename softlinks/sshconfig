@@ -100,3 +100,8 @@ Host dev142
 Host atom121
     HostName 10.1.9.121
     User root
+
+Host mbp2020
+    HostName gitez.cc
+    User eagle
+    Port 7705
