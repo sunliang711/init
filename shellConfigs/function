@@ -553,28 +553,31 @@ parseProxy() {
     echo "${proxy}"
 }
 
-proxyEnvOn() {
-    local proxy="${1}"
-    if [ -n "${proxy}" ]; then
-        echo "Set http_proxy https_proxy all_proxy to ${proxy}"
-        export http_proxy="${proxy}"
-        export https_proxy="${proxy}"
-        export all_proxy="${proxy}"
+envProxyOn() {
+    local proxy="${1:?'missing proxy'}"
+    local save="${2}"
 
-        export HTTP_PROXY="${proxy}"
-        export HTTPS_PROXY="${proxy}"
-        export ALL_PROXY="${proxy}"
+    echo "Set http_proxy https_proxy all_proxy to ${proxy}"
+    export http_proxy="${proxy}"
+    export https_proxy="${proxy}"
+    export all_proxy="${proxy}"
+
+    echo "Set HTTP_PROXY HTTPS_PROXY ALL_PROXY to ${proxy}"
+    export HTTP_PROXY="${proxy}"
+    export HTTPS_PROXY="${proxy}"
+    export ALL_PROXY="${proxy}"
+
+    if [[ "$save" == "-s" ]];then
         cat<<-EOF>${PROXY_FILE}
-			http_proxy=${proxy}
-			https_proxy=${proxy}
+            http_proxy=${proxy}
+            https_proxy=${proxy}
 		EOF
-    else
-        echo "proxyEnvOn: No proxy specified."
-        return 1
     fi
 }
 
-proxyEnvOff() {
+envProxyOff() {
+    local save="${1}"
+
     unset http_proxy
     unset https_proxy
     unset all_proxy
@@ -583,16 +586,18 @@ proxyEnvOff() {
     unset HTTPS_PROXY
     unset ALL_PROXY
 
-    [ -e "${PROXY_FILE}" ] && rm "${PROXY_FILE}"
+    if [[ "${save}" == "-s" ]];then
+        [ -e "${PROXY_FILE}" ] && rm "${PROXY_FILE}"
+    fi
 }
 
 # detect git proxy as http_proxy https_proxy env
 detectProxyEnv() {
     local proxy="$(parseProxy)"
     if [ -n "$proxy" ];then
-        proxyEnvOn "${proxy}"
+        envProxyOn "${proxy}"
     else
-        proxyEnvOff
+        envProxyOff
     fi
     # if ! command -v git >/dev/null 2>&1; then
     #     echo "No git command,exit."
@@ -676,7 +681,7 @@ proxyon() {
     local proxy="$(parseProxy ${1})"
 
     gitproxyon "${proxy}"
-    proxyEnvOn "${proxy}"
+    envProxyOn "${proxy}" -s
 
     echo
 
@@ -692,7 +697,7 @@ proxyon() {
 
 proxyoff() {
     gitproxyoff
-    proxyEnvOff
+    envProxyOff -s
 
     npmproxyoff
     pipproxyoff
