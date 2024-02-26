@@ -244,6 +244,13 @@ function slientExe() {
     eval "$@" >/dev/null 2>&1
 }
 
+function mysolana(){
+    (
+    cd $HOME/.config/solana
+    solana "$@"
+    )
+}
+
 _linux() {
     if [ $(uname) != "Linux" ]; then
         echo "Need run on Linux"
