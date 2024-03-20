@@ -133,7 +133,7 @@ _accountUrl(){
 ### account
 newAccount() {
     # create system account
-    local account=${1:?'missing account name'}
+    account=${1:?'missing account name'}
     cd ${solanaRoot}
 
     [ -e ${account}.json ] && {
