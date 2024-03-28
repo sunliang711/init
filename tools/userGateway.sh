@@ -108,7 +108,12 @@ install(){
     gateway=${3:?'missing gateway'}
 
 
-    sudo useradd -m -s /bin/bash -u ${uid} ${user}
+    if ! id -u ${user} >/dev/null 2>&1;then
+        echo "add user ${user}"
+        sudo useradd -m -s /bin/bash -u ${uid} ${user}
+    else
+        echo "user exist,skip.."
+    fi
     echo 200 custom | sudo tee -a /etc/iproute2/rt_tables
     sudo ip rule add uidrange ${uid}-${uid} lookup custom
     sudo ip route add default via ${gateway} table custom
