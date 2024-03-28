@@ -29,7 +29,6 @@ fi
 
 alias dcp='docker compose'
 
-alias psaux='ps ax ouser,uid,group,gid,pid,ppid,%cpu,%mem,tty,stat,start,time,comm,args=ARGS'
 case $(uname) in
 "Linux")
     alias lA='ls -aF --color=auto'
@@ -37,6 +36,7 @@ case $(uname) in
     alias ll='ls -lF --color=auto'
     alias l='ls -F --color=auto'
     alias ls='ls -F --color=auto'
+    alias psaux='ps ax ouser,uid,group,gid,pid,ppid,%cpu,%mem,tty,stat,start,time,comm,args=ARGS'
     ;;
 "Darwin")
     alias lA='ls -aFG'
@@ -46,6 +46,7 @@ case $(uname) in
     #alias ls='ls -FG'
     alias l='ls -G'
     alias ls='ls -G'
+    alias psaux='ps -A -o user,uid,group,gid,pid,ppid,%cpu,%mem,tty,stat,start,time,comm,args=ARGS'
     #brew with local proxy
     # alias brewlp='echo "Using socks5 proxy: ALL_PROXY=socks5://localhost:1080"&&ALL_PROXY=socks5://localhost:1080 brew'
     # export PATH=/usr/local/Cellar/privoxy/3.0.26/sbin:$PATH

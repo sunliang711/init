@@ -14,8 +14,12 @@ Host shros
 
 ##################################################
 # atom sh.gitez.cc
+Host a8eagle128
+    HostName 10.1.9.128
+    User eagle
+
 Host a8eagle0
-    HostName 10.1.9.108
+    HostName 10.1.9.113
     User eagle
 
 Host a8pve0
@@ -23,7 +27,7 @@ Host a8pve0
     User root
 
 Host a8frpc0
-    HostName 10.1.9.113
+    HostName 10.1.9.105
     User root
 
 Host a8pve1
@@ -45,6 +49,11 @@ Host a8chuan1
     HostName sh.gitez.cc
     User root
     Port 30005
+
+Host atom112
+    HostName 10.1.9.112
+    User root
+    Port 22
 
 # atom gitez.cc
 Host a8frpc2
@@ -79,5 +88,24 @@ Host atomfrpc
 
 # ATOM LOCAL VMs
 ##################################################
+# LOCAL
+Host gateway
+    HostName 10.1.1.15
+    User eagle
 
+Host socks
+    HostName 10.1.1.16
+    User eagle
 
+Host dev142
+    HostName 10.1.1.142
+    User eagle
+
+Host atom121
+    HostName 10.1.9.121
+    User root
+
+Host mbp2020
+    HostName gitez.cc
+    User eagle
+    Port 7705

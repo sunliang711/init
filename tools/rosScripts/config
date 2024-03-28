@@ -1,9 +1,10 @@
-
+gateway=10.1.1.1
 subnet=10.1.1.0/24
 bridge=br-lan
 wan=pppoe-out1
 dynWanTag=dynWanDNAT
 hairpinTag=HairpinNAT
+addressList=pub_ip
 
 
 
@@ -13,25 +14,24 @@ hairpinTag=HairpinNAT
 # "tcp|26| 10.1.1.22|  22 |mjr ssh"
 
 mappings=(
+"tcp|2035|10.1.1.142|22|dev ssh"
+"tcp|5001|10.1.1.141||dsm website"
+"tcp|42400|10.1.1.135|32400|plex server"
 "tcp|8006|10.1.1.21|8006|dell pve admin console"
-"tcp|42400|10.1.1.160|32400|dsm plex server"
-"tcp|6001|10.1.1.160||dsm website"
 
-"tcp|2035|10.1.1.200|22|dev35 ssh"
-
-"tcp|8338|10.1.1.121|8338|btc rpc"
-
-"tcp|30000-39999|10.1.1.18||proxy18 frps"
-
-"udp|51850|10.1.1.171||wireguard vpn server"
-"udp|51860|10.1.1.161||wireguard vpn server2"
-"udp|51820|10.1.1.162||native wireguard"
-
-"tcp|4000-4400|10.1.1.172||ss1 tcp"
-"udp|4000-4400|10.1.1.172||ss1 udp"
-
+"tcp|30000-39999|10.1.1.16||frps"
 "tcp|26881|10.1.1.135||qbittorrent"
-"udp|26881|10.1.1.135||qbittorrent udp"
+
+"tcp|4000-4400|10.1.1.16||ss1 tcp"
+"udp|4000-4400|10.1.1.16||ss1 udp"
+
+"udp|6208|10.1.1.138||mac mini Ponte"
+
+"tcp|8889|10.1.1.138|8889|mac mini socks5"
+
+"udp|51820|10.1.1.16||native wireguard"
+
+"tcp|2120|10.1.1.120|22|trueNas ssh"
 )
 
 #"udp|51860|10.1.1.18||wireguard vpn server"

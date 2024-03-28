@@ -388,6 +388,14 @@ _example() {
     # TODO
 }
 
+newprogram(){
+    name=${1:?'missing solana program name'}
+    echo "create solana program: ${name}"
+    cp -r "${this}/solana_program_tmpl" "${name}"
+    cd "${name}"
+    rm -rf target
+}
+
 # write your code above
 ###############################################################################
 
@@ -406,10 +414,10 @@ EOF2
 }
 
 case "$1" in
-"" | -h | --help | help)
+ -h | --help | help)
     _help
     ;;
 *)
-    "$@"
+    newprogram "$@"
     ;;
 esac

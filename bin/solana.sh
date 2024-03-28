@@ -61,10 +61,11 @@ fi
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
 solanaRoot=~/.config/solana
+explorBaseUrl="https://solscan.io"
 
 installcli() {
     # install solana cli
-    local version=${version:-1.14.2}
+    local version=${version:-1.17.13}
     set -xe
     sh -c "$(curl -sSfL https://release.solana.com/v${version}/install)"
     solana-install update
@@ -72,6 +73,11 @@ installcli() {
     cargo install spl-token-cli
 }
 
+###  network manager
+local(){
+    set -xe
+    solana config set --url localhost
+}
 devnet() {
     set -xe
     solana config set --url devnet
@@ -87,25 +93,92 @@ mainnet() {
     solana config set --url mainnet-beta #https://api.mainnet-beta.solana.com
 }
 
-network() {
-    solana config get | grep 'RPC'
+_currentNetwork(){
+    rpc="$(solana config get | grep 'RPC')"
+    network="$(echo $rpc | perl -lne 'print $1 if /api.(\w+)/')"
+    echo "$network"
+
 }
 
+network() {
+    echo "Current network: $(_currentNetwork)"
+
+}
+###  network manager
+
+_txUrl(){
+    txHash=${1:?'missing tx hash'}
+    currentNetwork="$(_currentNetwork)"
+
+    fullUrl="${explorBaseUrl}/tx/${txHash}"
+    # 主网不需要?cluster=xxx
+    if [ "${currentNetwork}" != "mainnet" ];then
+        fullUrl="${fullUrl}?cluster=${currentNetwork}"
+    fi
+    echo -n "$fullUrl"
+}
+
+_accountUrl(){
+    address=${1:?'missing account address'}
+    currentNetwork="$(_currentNetwork)"
+
+    fullUrl="${explorBaseUrl}/account/${address}"
+    # 主网不需要?cluster=xxx
+    if [ "${currentNetwork}" != "mainnet" ];then
+        fullUrl="${fullUrl}?cluster=${currentNetwork}"
+    fi
+    echo -n "$fullUrl"
+}
+
+### account
 newAccount() {
     # create system account
-    local account=${1:?'missing account name'}
+    account=${1:?'missing account name'}
     cd ${solanaRoot}
+
     [ -e ${account}.json ] && {
-        echo "already exists such account"
+        echo "already exists such account(${solanaRoot}/${account}.json)"
         return 1
     }
+
     solana-keygen new -o ${account}.json
 }
 
-getAddress() {
-    cd ${solanaRoot}
-    account=${1:?'missing acocunt name'}
-    solana address -k ${account}.json
+ledger(){
+    solana config set --keypair usb://ledger/
+}
+
+accounts(){
+    ls ${solanaRoot}/*.json
+}
+
+defaultKeypair(){
+    account=${1:?'missing account name'}
+    solana config set --keypair "${solanaRoot}/${account}.json"
+}
+
+_address(){
+    account=${1:?'missing account name'}
+    solana address -k "${solanaRoot}/${account}.json"
+}
+
+_balance(){
+    account=${1:?'missing account name'}
+    solana balance "${solanaRoot}/${account}.json"
+}
+
+accountInfo(){
+    account=${1:?'missing account name'}
+    network
+    address="$(_address ${account})"
+    url="$(_accountUrl ${address})"
+    balance="$(_balance ${account})"
+
+    cat<<EOF
+Address: ${address}
+Solscan URL: ${url}
+Balance: ${balance}
+EOF
 }
 
 airdrop() {
@@ -117,38 +190,19 @@ airdrop() {
         echo "no such account"
         return 1
     }
+    network
     solana airdrop $amount ${receiver}.json
 }
 
-balance() {
-    account=${1:?'missing account name'}
-    cd ${solanaRoot}
-    [ ! -e ${account}.json ] && {
-        echo "no such account"
-        return 1
-    }
-    solana balance ${account}.json
-}
+##--------------------------------------------------------------------
 
-accountInfo() {
-    cd ${solanaRoot}
-    account=${1:?'missing account name'}
-    solana account ${account}.json
-}
-
-tokenAccountInfo() {
-    cd ${solanaRoot}
-    tokenAccount=${1:?'missing token account'}
-
-    spl-token account-info --address ${tokenAccount}
-}
-
-newNft() {
+newToken() {
     cd ${solanaRoot}
     mintAuth=${1:?'missing mint auth account name'}
     feePayer=${2:?'missing fee payer account name'}
     decimals=${3:-9}
 
+    network
     mintAuthAddress="$(solana address -k ${mintAuth}.json)"
     feePayerAddress="$(solana address -k ${feePayer}.json)"
 
@@ -164,13 +218,13 @@ newNft() {
         --decimals ${decimals}
 }
 
-nftSupply() {
+tokenSupply() {
     cd ${solanaRoot}
     nft=${1:?'missing nft address'}
     spl-token supply $nft
 }
 
-newNftAccount() {
+newTokenAccount() {
     cd ${solanaRoot}
 
     owner=${1:?'mssing account owner(system account) name'}
@@ -183,7 +237,21 @@ newNftAccount() {
         ${nftAddress}
 }
 
-mintNft() {
+getTokenAccount(){
+    ataPubkey=ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL
+    tokenPubkey=TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA
+    walletPubkey=${1:?'missing wallet account pubkey'}
+    mintPubkey=${2:?'missing mint account pubkey'}
+
+    solana find-program-derived-address "${ataPubkey}" pubkey:${walletPubkey} pubkey:${tokenPubkey} pubkey:${mintPubkey}
+}
+
+tokenAccountInfo() {
+    tokenAccount=${1:?'missing token account'}
+    spl-token account-info --address "${tokenAccount}"
+}
+
+mintToken() {
     cd ${solanaRoot}
 
     mintAuth=${1:?'missing mint auth account name'}
@@ -200,13 +268,24 @@ mintNft() {
 	mint nft with the following info:
 	    mintAuth: ${mintAuthAddress}
 	    feePayer: ${feePayerAddress}
-	    decimals: ${decimals}
 	tokenAccount: ${tokenAccount}
 	EOF
 
+    set -x
     spl-token mint ${nftAddress} ${amount} ${tokenAccount} \
         --fee-payer ${feePayer}.json \
         --mint-authority ${mintAuth}.json
+}
+
+burnToken() {
+    cd ${solanaRoot}
+    tokenAccount=${1:?'missing token account address'}
+    amount=${2:?'missing amount'}
+    feePayer=${3:?'missing feePayer'}
+    owner=${4:?'missing owner'}
+
+    spl-token burn ${tokenAccount} ${amount} --fee-payer ${feePayer}.json --owner ${owner}.json
+
 }
 
 # write your code above

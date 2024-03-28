@@ -34,15 +34,16 @@ for mapping in "${mappings[@]}";do
 # comment后面多加一个dyn-wan，是因为每当重新拨号后，wan口ip地址会变，因此给这条规则打个标记，然后在ros的定时脚本里根据comment找到所有dyn-wan的规则，然后给它们修改新的wan口
 # 地址,也就是dst-address的值
 echo "#$comment"
+# 如果是多端口
 if echo "$toPorts" | grep -qE '(,|-)';then
 cat<<EOF
-/ip firewall nat add chain=dstnat action=dst-nat protocol=$protocol dst-address=[/ip address get [/ip address find interface=${wan}] address] dst-port=$dstPort to-addresses=$toAddresses comment="$comment $dynWanTag"
+/ip firewall nat add chain=dstnat action=dst-nat protocol=$protocol dst-address-list=${addressList} dst-port=$dstPort to-addresses=$toAddresses comment="$comment $dynWanTag"
 /ip firewall nat add chain=srcnat action=src-nat protocol=$protocol dst-address=$toAddresses dst-port=$dstPort to-addresses=$gateway comment="$comment snat"
 
 EOF
 else
 cat<<EOF
-/ip firewall nat add chain=dstnat action=dst-nat protocol=$protocol dst-address=[/ip address get [/ip address find interface=${wan}] address] dst-port=$dstPort to-addresses=$toAddresses to-ports=$toPorts comment="$comment $dynWanTag"
+/ip firewall nat add chain=dstnat action=dst-nat protocol=$protocol dst-address-list=${addressList} dst-port=$dstPort to-addresses=$toAddresses to-ports=$toPorts comment="$comment $dynWanTag"
 /ip firewall nat add chain=srcnat action=src-nat protocol=$protocol dst-address=$toAddresses dst-port=$toPorts to-addresses=$gateway comment="$comment snat"
 
 EOF
@@ -50,7 +51,7 @@ fi
 
 # 回流
 cat<<EOF
-/ip firewall nat add chain=srcnat action=masquerade protocol=$protocol out-interface=$bridge src-address=$subnet dst-address=$toAddresses dst-port=$toPorts comment="$comment $hairpinTag "
+/ip firewall nat add chain=srcnat action=masquerade protocol=$protocol out-interface=$bridge src-address=$subnet dst-address=$toAddresses dst-port=$toPorts comment="$comment $hairpinTag " disabled=yes
 
 EOF
 done

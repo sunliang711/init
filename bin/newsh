@@ -345,9 +345,10 @@ fi
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
 new() {
-    local name=${1}
+    local name=${1:?'missing script name'}
     cp "${this}/shTmpl" "${name}"
     $ed "${name}"
+    chmod +x "${name}"
 }
 # write your code above
 ###############################################################################
@@ -367,10 +368,17 @@ EOF2
 }
 
 case "$1" in
-"" | -h | --help | help)
+  -h | --help | help)
     _help
     ;;
-*)
-    "$@"
+  em)
+    em
+    ;;
+  "")
+    echo "all: $@"
+    new "$@"
+    ;;
+  *)
+    new "$@"
     ;;
 esac
