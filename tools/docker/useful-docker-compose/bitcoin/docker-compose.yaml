@@ -3,7 +3,11 @@ version: "3"
 services:
   btc:
     container_name: btc
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      # OR
+      #dockerfile: Dockerfile-download
     ports:
       - "8338:8338/tcp"
       - "8890:8890/tcp"
