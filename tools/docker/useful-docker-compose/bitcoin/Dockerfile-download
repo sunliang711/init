@@ -15,5 +15,5 @@ EXPOSE 8838
 # p2p
 EXPOSE 8890
 
-ENTRYPOINT ["/app/bitcoin-22.0/bin/bitcoind","-datadir=/app/datadir","-conf=/app/bitcoin.conf"]
+ENTRYPOINT ["/app/bin/bitcoind","-datadir=/app/datadir","-conf=/app/bitcoin.conf"]
 
