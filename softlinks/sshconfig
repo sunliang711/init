@@ -19,7 +19,7 @@ Host a8eagle128
     User eagle
 
 Host a8eagle0
-    HostName 10.1.9.113
+    HostName 10.1.9.128
     User eagle
 
 Host a8pve0
