@@ -1,3 +1,6 @@
+# zeta插件中的git 信息失效，使用下面的临时解决
+# https://github.com/ohmyzsh/ohmyzsh/issues/12328#issuecomment-2043492331
+zstyle ':omz:alpha:lib:git' async-prompt no 
 # If you come from bash you might have to change your $PATH.
 # export PATH=$HOME/bin:/usr/local/bin:$PATH
 
