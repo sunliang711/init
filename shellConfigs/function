@@ -2315,7 +2315,7 @@ function sshknownhosts() {
 }
 
 function sendmail() {
-    local url=https://gitez.cc/api/mail/v1/send
+    local url=https://www.gitez.cc/api/mail/v1/send
     receiver="sunliang711@163.com"
     subject=
     body=
