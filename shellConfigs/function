@@ -1446,14 +1446,16 @@ function encText() {
         fi
     fi
 
-    case $(uname) in
-    Darwin)
-        output=$(echo -n "${text}" | openssl aes-128-cbc -salt -base64 -A)
-        ;;
-    Linux)
-        output=$(echo -n "${text}" | openssl aes-128-cbc -pbkdf2 -base64 -A)
-        ;;
-    esac
+    # MacOS 14开始，-pbkdf2也支持
+    # case $(uname) in
+    # Darwin)
+    #     output=$(echo -n "${text}" | openssl aes-128-cbc -salt -base64 -A)
+    #     ;;
+    # Linux)
+    #     output=$(echo -n "${text}" | openssl aes-128-cbc -pbkdf2 -base64 -A)
+    #     ;;
+    # esac
+    output=$(echo -n "${text}" | openssl aes-128-cbc -pbkdf2 -base64 -A)
 
     if [ -n "${outputFile}" ]; then
         echo "${output}" >${outputFile}
@@ -1511,14 +1513,16 @@ function decText() {
         fi
     fi
 
-    case $(uname) in
-    Darwin)
-        output=$(echo -n "${text}" | base64 -d | openssl aes-128-cbc -d)
-        ;;
-    Linux)
-        output=$(echo -n "${text}" | base64 -d | openssl aes-128-cbc -d -pbkdf2)
-        ;;
-    esac
+    # MacOS 14开始，-pbkdf2也支持
+    # case $(uname) in
+    # Darwin)
+    #     output=$(echo -n "${text}" | base64 -d | openssl aes-128-cbc -d)
+    #     ;;
+    # Linux)
+    #     output=$(echo -n "${text}" | base64 -d | openssl aes-128-cbc -d -pbkdf2)
+    #     ;;
+    # esac
+    output=$(echo -n "${text}" | base64 -d | openssl aes-128-cbc -d -pbkdf2)
 
     if [ -n "${outputFile}" ]; then
         echo -n "${output}" >${outputFile}
