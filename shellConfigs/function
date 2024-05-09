@@ -1430,7 +1430,7 @@ function encText() {
         echo "Read text from ${inputFile}.."
         text="$(cat ${inputFile})"
     elif [ -n "$1" ]; then
-        text="$1"
+        text="$*"
     else
         # no input file and no input text, we read it
         # echo off
@@ -1497,7 +1497,7 @@ function decText() {
         echo "Read text from ${inputFile}.."
         text="$(cat ${inputFile})"
     elif [ -n "$1" ]; then
-        text="$1"
+        text="$*"
     else
         # no input file and no input text, we read it
         # echo off
