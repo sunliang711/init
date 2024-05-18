@@ -96,6 +96,21 @@ _example() {
     # TODO
 }
 
+installLatest(){
+    _require_root
+    _require_linux
+
+    name="nvim-linux64"
+    link="https://github.com/neovim/neovim/releases/latest/download/${name}.tar.gz"
+
+    cd /tmp
+    curl -LO "$link" || { echo "download failed!"; exit 1; }
+
+    tar -C /usr/local -xvf ${name}.tar.gz
+    ln -sf /usr/local/${name}/bin/nvim /usr/local/bin
+
+}
+
 install() {
     _require_root
     _require_linux
