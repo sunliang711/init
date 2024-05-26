@@ -457,6 +457,12 @@ status(){
     systemctl status stunnel4
 }
 
+list(){
+    _require_root
+    _require_linux
+    ls /etc/stunnel/*.conf
+}
+
 rm (){
     _require_root
     _require_linux
