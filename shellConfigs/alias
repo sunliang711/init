@@ -27,6 +27,10 @@ elif command -v proxychains5 >/dev/null 2>&1; then
     alias pc='proxychains5'
 fi
 
+if command -v lazygit >/dev/null 2>&1; then
+    alias lg='lazygit'
+fi
+
 alias dcp='docker compose'
 
 case $(uname) in

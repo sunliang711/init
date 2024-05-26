@@ -569,8 +569,8 @@ envProxyOn() {
 
     if [[ "$save" == "-s" ]];then
         cat<<-EOF>${PROXY_FILE}
-            http_proxy=${proxy}
-            https_proxy=${proxy}
+		http_proxy=${proxy}
+		https_proxy=${proxy}
 		EOF
     fi
 }
