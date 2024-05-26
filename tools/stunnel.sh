@@ -412,6 +412,7 @@ add(){
             ;;
         *)
             echo "invalid isClient, use yes or no"
+            exit
     esac
 
     cat<<EOF>/etc/stunnel/${name}.conf
@@ -432,6 +433,10 @@ ciphers = PSK
 accept = ${accept}
 connect = ${connect}
 PSKsecrets = /etc/stunnel/psk.txt
+EOF
+
+cat <<EOF>/etc/stunnel/psk.txt
+USER:SECRET
 EOF
 
     echo "add psk to /etc/stunnel/psk.txt manually"
