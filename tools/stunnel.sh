@@ -402,6 +402,18 @@ add(){
     name=${1:?'missing configName'}
     accept=${2:?'missing accept'}
     connect=${3:?'missing connect'}
+    isClient=${4}
+    case ${isClient} in
+        yes)
+            echo "client config"
+            ;;
+        no)
+            echo "server config"
+            ;;
+        *)
+            echo "invalid isClient, use yes or no"
+    esac
+
     cat<<EOF>/etc/stunnel/${name}.conf
 setuid = stunnel4
 setgid = stunnel4
@@ -411,7 +423,7 @@ output = /tmp/stunnel-$name.log
 
 [PSK ${name}]
 ; for client
-; client = yes
+client = ${isClient}
 
 ; for server
 ciphers = PSK
@@ -431,6 +443,9 @@ config(){
     _require_linux
     name=${1:?'missing configName'}
     $ed /etc/stunnel/${name}.conf
+
+    echo "config psk with path /etc/stunnel/psk.txt manually"
+    echo "psk format: <user>:<secrets>"
 }
 
 start(){
