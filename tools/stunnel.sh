@@ -484,7 +484,7 @@ rm (){
 
     name=${1:?'missing configName'}
     stop
-    rm -rf /etc/stunnel/${name}.conf
+    /bin/rm -rf /etc/stunnel/${name}.conf
 
 }
 
