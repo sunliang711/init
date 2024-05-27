@@ -453,6 +453,10 @@ config(){
     echo "psk format: <user>:<secrets>"
 }
 
+configpsk(){
+    $ed /etc/stunnel/psk.txt
+}
+
 start(){
     _require_root
     _require_linux
