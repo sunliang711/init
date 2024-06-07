@@ -28,6 +28,10 @@ mappings=(
 "udp|6208|10.1.1.138||mac mini Ponte"
 "tcp|8889|10.1.1.138|8889|mac mini socks5"
 
+"tcp|8443|10.1.1.135||syncthing discovery"
+"tcp|22067|10.1.1.135||syncthing relay"
+"tcp|22070|10.1.1.135||syncthing relay"
+
 
 )
 
