@@ -30,6 +30,10 @@ Host a8frpc0
     HostName 10.1.9.105
     User root
 
+Host 115
+    HostName 10.1.9.115
+    User root
+
 Host a8pve1
     HostName sh.gitez.cc
     Port 30003
