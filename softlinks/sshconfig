@@ -97,6 +97,10 @@ Host socks
     HostName 10.1.1.16
     User eagle
 
+Host service
+    HostName 10.1.1.135
+    User eagle
+
 Host dev142
     HostName 10.1.1.142
     User eagle
