@@ -14,9 +14,8 @@ addressList=pub_ip
 # "tcp|26| 10.1.1.22|  22 |mjr ssh"
 
 mappings=(
-"tcp|5001|10.1.1.141||dsm website"
-"tcp|8006|10.1.1.21|8006|dell pve admin console"
-"tcp|42400|10.1.1.135|32400|plex server"
+"tcp|8008|10.1.1.135||nginx"
+"tcp|8009|10.1.1.135||nginx"
 
 
 "tcp|30000-39999|10.1.1.16||frps"
@@ -33,6 +32,9 @@ mappings=(
 
 )
 
+#"tcp|5001|10.1.1.141||dsm website"
+#"tcp|8006|10.1.1.21|8006|dell pve admin console"
+#"tcp|42400|10.1.1.135|32400|plex server"
 #"tcp|26881|10.1.1.135||qbittorrent"
 #"udp|6208|10.1.1.138||mac mini Ponte"
 #"tcp|2120|10.1.1.120|22|trueNas ssh"
