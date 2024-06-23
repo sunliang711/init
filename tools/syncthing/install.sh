@@ -446,10 +446,15 @@ download(){
     url=`curl https://api.github.com/repos/syncthing/syncthing/releases/latest | grep browser_download_url | grep linux-amd64 | cut -d '"' -f 4`
     echo "download url: ${url}"
     curl -LO "$url" && { echo "download ok"; } || { echo "download failed"; exit 1; }
-    file=`echo ${url##*/}`
-    echo "extract $file.."
-    _extract ${file}
+    tarFile=`echo ${url##*/}`
+    echo "extract $tarFile.."
+    _extract ${tarFile}
+
+    folder=`echo ${tarFile##.tar.gz}`
+
+    _runAsRoot ""
 }
+
 
 # write your code above
 ###############################################################################
