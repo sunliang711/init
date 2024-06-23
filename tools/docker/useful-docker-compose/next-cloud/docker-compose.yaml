@@ -33,6 +33,6 @@ services:
       - MYSQL_HOST=db
       # - NEXTCLOUD_TRUSTED_DOMAINS=cloud.gitez.cc
       # - NEXTCLOUD_TRUSTED_PROXIES=cloud.gitez.cc
-      # - OVERWRITECLIURL=https://cloud.gitez.cc
+      # - OVERWRITECLIURL=https://cloud.gitez.cc[:PORT]
       # - OVERWRITEPROTOCOL=https
-      # - OVERWRITEHOST=cloud.gitez.cc
+      # - OVERWRITEHOST=cloud.gitez.cc[:PORT]
