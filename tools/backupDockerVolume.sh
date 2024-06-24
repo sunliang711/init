@@ -409,6 +409,32 @@ backup(){
     docker run --rm -v "${volume}":/volume -v "${backupDir}":/backup busybox tar czvf "/backup/${volume}_backup_${d}.tar.gz" -C /volume .
 }
 
+restoreUsage="usage: restore <backupFile> <volume> "
+restore(){
+    backupFile=${1:?"${restoreUsage}"}
+    volume=${2:?"${restoreUsage}"}
+
+    # check volume existence
+    if ! docker volume inspect "${volume}" >/dev/null 2>&1;then
+        echo "no such volume: ${volume}" >&2
+        exit 1
+    fi
+
+    #backupDir
+    if [ ! -f "${backupFile}" ];then
+        echo "no such backup file: ${backupFile}" >&2
+        exit 1
+    fi
+
+    dir="$(dirname ${backupFile})"
+    file="$(basename ${backupFile})"
+    echo "dir: ${dir}"
+    echo "file: ${file}"
+
+    docker run --rm -v ${volume}:/volume -v ${dir}:/backup busybox tar xzvf /backup/${file} -C /volume
+
+
+}
 # write your code above
 ###############################################################################
 
