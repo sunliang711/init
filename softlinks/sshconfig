@@ -117,3 +117,8 @@ Host mbp2020
     HostName gitez.cc
     User eagle
     Port 7705
+
+Host bwg
+    HostName 45.78.51.79
+    User root
+    Port 29837
