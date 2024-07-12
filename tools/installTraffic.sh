@@ -416,9 +416,7 @@ EOF
 
     echo -n "-- install crontab.."
     crontabLine="0 * * * * ${scriptFile}"
-    set -x
     (crontab -l 2>/dev/null | grep -v "traffic.sh"; echo "${crontabLine}")  | crontab -
-    set +x
     echo " [ok]"
 
 
