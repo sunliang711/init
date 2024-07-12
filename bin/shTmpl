@@ -275,19 +275,19 @@ _must_ok() {
 }
 
 _info() {
-    echo -n "$(date +%FT%T) ${1}"
+    echo -n "$(date +%FT%T) ${@}"
 }
 
 _infoln() {
-    echo "$(date +%FT%T) ${1}"
+    echo "$(date +%FT%T) ${@}"
 }
 
 _error() {
-    echo -n "$(date +%FT%T) ${RED}${1}${NORMAL}"
+    echo -n "$(date +%FT%T) ${RED}${@}${NORMAL}"
 }
 
 _errorln() {
-    echo "$(date +%FT%T) ${RED}${1}${NORMAL}"
+    echo "$(date +%FT%T) ${RED}${@}${NORMAL}"
 }
 
 _checkService() {
