@@ -333,7 +333,7 @@ set_log_level() {
 
 # 子命令数组
 # todo
-COMMANDS=("help" "example")
+COMMANDS=("help" "example","install")
 
 # 显示帮助信息
 show_help() {
@@ -359,6 +359,145 @@ example_command() {
 }
 
 #todo
+install(){
+    _require_root
+    _require_linux
+    _require_command lsof
+    _require_command ufw
+    _require_command apt
+
+    set -e
+
+    log INFO "更新系统.."
+    apt update && apt upgrade
+
+    log INFO "配置防火墙.."
+    apt install ufw -y >/dev/null
+
+    sshPort="$(lsof -i -P -n | grep sshd | grep -i ipv4 | grep -i listen | awk '{print $9}' | cut -d':' -f2)"
+    log INFO "ssh端口: $sshPort"
+
+    realityPort=443
+    log INFO "xray端口: $realityPort"
+
+    ufw allow $sshPort
+    ufw allow $realityPort
+
+    ufw deny out 25
+    ufw deny out 587
+
+    # ufw enable
+
+    log INFO "开启bbr"
+    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+    sysctl -p
+
+    log INFO "安装xray"
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --beta -u root
+
+    uuid="$(xray uuid)"
+    pair="$(xray x25519)"
+    publicKey="$(echo $pair | grep -i private | awk '{print $3}')"
+    privateKey="$(echo $pair | grep -i public | awk '{print $3}')"
+    website="www.microsoft.com"
+    shortId="$(echo $uuid | cut -d'-' -f1)"
+
+    serverIp="$(curl -s https://ipinfo.io/ip)"
+    configFile="/usr/local/etc/xray/config.json"
+    log INFO "生成配置文件到${configFile}"
+    cat > ${configFile} <<EOF
+{
+    "log": {
+        "loglevel": "warning"
+    },
+    "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+            {
+                "type": "field",
+                "domain": [
+                    "geosite:category-ads-all"
+                ],
+                "outboundTag": "block"
+            },
+            {
+                "type": "field",
+                "ip": [
+                    "geoip:cn"
+                ],
+                "outboundTag": "block"
+            }
+        ]
+    },
+    "inbounds": [
+        {
+            "listen": "0.0.0.0",
+            "port": ${realityPort},
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    {
+                        "id": "${uuid}",
+                        "flow": "xtls-rprx-vision"
+                    }
+                ],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "show": false,
+                    "dest": "${website}:443",
+                    "xver": 0,
+                    "serverNames": [
+                        "${website}"
+                    ],
+                    "privateKey": "${privateKey}",
+                    "minClientVer": "",
+                    "maxClientVer": "",
+                    "maxTimeDiff": 0,
+                    "shortIds": [
+                        "${shortId}"
+                    ]
+                }
+            },
+            "sniffing": {
+                "enabled": true,
+                "destOverride": [
+                    "http",
+                    "tls"
+                ]
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "protocol": "freedom",
+            "tag": "direct"
+        },
+        {
+            "protocol": "blackhole",
+            "tag": "block"
+        }
+    ],
+    "policy": {
+        "levels": {
+            "0": {
+                "handshake": 3,
+                "connIdle": 180
+            }
+        }
+    }
+}
+EOF
+    log INFO "重启xray"
+    systemctl restart xray
+
+
+    log INFO "请检查上面的ssh 端口是否正确,如果正确，请执行ufw enable命令"
+}
 
 # 解析命令行参数
 while getopts ":l:" opt; do
@@ -396,6 +535,9 @@ case "$command" in
     example_command "$@"
     ;;
     #todo
+  install)
+    install "$@"
+    ;;
   *)
     echo "Unknown command: $command" 1>&2
     show_help
