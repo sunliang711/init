@@ -47,11 +47,12 @@ else
 fi
 
 # 日志级别常量
-LOG_LEVEL_ERROR=1
-LOG_LEVEL_WARNING=2
-LOG_LEVEL_INFO=3
-LOG_LEVEL_SUCCESS=4
-LOG_LEVEL_DEBUG=5
+LOG_LEVEL_FATAL=1
+LOG_LEVEL_ERROR=2
+LOG_LEVEL_WARNING=3
+LOG_LEVEL_INFO=4
+LOG_LEVEL_SUCCESS=5
+LOG_LEVEL_DEBUG=6
 
 # 默认日志级别
 LOG_LEVEL=$LOG_LEVEL_INFO
@@ -251,7 +252,7 @@ _runAsRoot() {
 }
 
 # 日志级别名称数组及最大长度计算
-LOG_LEVELS=("ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
+LOG_LEVELS=("FATAL" "ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
 MAX_LEVEL_LENGTH=0
 
 for level in "${LOG_LEVELS[@]}"; do
@@ -275,6 +276,13 @@ log() {
   local padded_level=$(pad_level "$level")
   local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
   case "$level" in
+    "FATAL")
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
+        exit 1
+      fi
+      ;;
+
     "ERROR")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
         echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
@@ -310,6 +318,9 @@ log() {
 set_log_level() {
   local level="$(echo "$1" | awk '{print toupper($0)}')"
   case "$level" in
+    "FATAL")
+      LOG_LEVEL=$LOG_LEVEL_FATAL
+      ;;
     "ERROR")
       LOG_LEVEL=$LOG_LEVEL_ERROR
       ;;
@@ -345,7 +356,7 @@ show_help() {
   done
   echo ""
   echo "Options:"
-  echo "  -l LOG_LEVEL  Set the log level (ERROR, WARNING, INFO, SUCCESS, DEBUG)"
+  echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
 }
 
 # 示例子命令函数
