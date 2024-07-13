@@ -418,7 +418,7 @@ EOF
 
     echo -n "-- install crontab.."
     crontabLine="0 * * * * ${scriptFile}"
-    (crontab -l 2>/dev/null | grep -v "traffic.sh"; echo "${crontabLine}")  | crontab -
+    (crontab -l 2>/dev/null | grep -F "${crontabLine}") || (crontab -l; echo "${crontabLine}") | crontab -
     echo " [ok]"
 
 
@@ -436,6 +436,12 @@ ${output}
 EOF
     echo " [ok]"
 
+}
+
+uninstall(){
+
+    crontabLine="0 * * * * ${scriptFile}"
+    (crontab -l 2>/dev/null | grep -v -F "${crontabLine}") | crontab -
 }
 
 # write your code above
