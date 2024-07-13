@@ -14,23 +14,29 @@ addressList=pub_ip
 # "tcp|26| 10.1.1.22|  22 |mjr ssh"
 
 mappings=(
-"tcp|5001|10.1.1.141||dsm website"
-"tcp|42400|10.1.1.135|32400|plex server"
-"tcp|8006|10.1.1.21|8006|dell pve admin console"
+"tcp|8008|10.1.1.135||nginx"
+"tcp|8009|10.1.1.135||nginx"
 
-"tcp|26881|10.1.1.135||qbittorrent"
 
 "tcp|30000-39999|10.1.1.16||frps"
+
 "tcp|4000-4400|10.1.1.16||ss1 tcp"
 "udp|4000-4400|10.1.1.16||ss1 udp"
+
 "udp|51820|10.1.1.16||native wireguard"
 
-"udp|6208|10.1.1.138||mac mini Ponte"
-"tcp|8889|10.1.1.138|8889|mac mini socks5"
 
+"tcp|8443|10.1.1.135||syncthing discovery"
+"tcp|22067|10.1.1.135||syncthing relay"
+"tcp|22070|10.1.1.135||syncthing relay"
 
 )
 
+#"tcp|5001|10.1.1.141||dsm website"
+#"tcp|8006|10.1.1.21|8006|dell pve admin console"
+#"tcp|42400|10.1.1.135|32400|plex server"
+#"tcp|26881|10.1.1.135||qbittorrent"
+#"udp|6208|10.1.1.138||mac mini Ponte"
 #"tcp|2120|10.1.1.120|22|trueNas ssh"
 #"tcp|2035|10.1.1.142|22|dev ssh"
 #"udp|51860|10.1.1.18||wireguard vpn server"

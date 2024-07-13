@@ -101,6 +101,10 @@ Host socks
     HostName 10.1.1.16
     User eagle
 
+Host service
+    HostName 10.1.1.135
+    User eagle
+
 Host dev142
     HostName 10.1.1.142
     User eagle
@@ -113,3 +117,12 @@ Host mbp2020
     HostName gitez.cc
     User eagle
     Port 7705
+
+Host bwg
+    HostName 45.78.51.79
+    User root
+    Port 29837
+
+Host yang
+    HostName 154.17.4.62
+    User root
