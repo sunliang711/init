@@ -47,12 +47,11 @@ else
 fi
 
 # 日志级别常量
-LOG_LEVEL_FATAL=1
-LOG_LEVEL_ERROR=2
-LOG_LEVEL_WARNING=3
-LOG_LEVEL_INFO=4
-LOG_LEVEL_SUCCESS=5
-LOG_LEVEL_DEBUG=6
+LOG_LEVEL_ERROR=1
+LOG_LEVEL_WARNING=2
+LOG_LEVEL_INFO=3
+LOG_LEVEL_SUCCESS=4
+LOG_LEVEL_DEBUG=5
 
 # 默认日志级别
 LOG_LEVEL=$LOG_LEVEL_INFO
@@ -252,7 +251,7 @@ _runAsRoot() {
 }
 
 # 日志级别名称数组及最大长度计算
-LOG_LEVELS=("FATAL" "ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
+LOG_LEVELS=("ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
 MAX_LEVEL_LENGTH=0
 
 for level in "${LOG_LEVELS[@]}"; do
@@ -276,13 +275,6 @@ log() {
   local padded_level=$(pad_level "$level")
   local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
   case "$level" in
-    "FATAL")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
-        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
-        exit 1
-      fi
-      ;;
-
     "ERROR")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
         echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
@@ -318,9 +310,6 @@ log() {
 set_log_level() {
   local level="$(echo "$1" | awk '{print toupper($0)}')"
   case "$level" in
-    "FATAL")
-      LOG_LEVEL=$LOG_LEVEL_FATAL
-      ;;
     "ERROR")
       LOG_LEVEL=$LOG_LEVEL_ERROR
       ;;
@@ -344,7 +333,7 @@ set_log_level() {
 
 # 子命令数组
 # todo
-COMMANDS=("help" "example")
+COMMANDS=("help" "example","install")
 
 # 显示帮助信息
 show_help() {
@@ -356,7 +345,7 @@ show_help() {
   done
   echo ""
   echo "Options:"
-  echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
+  echo "  -l LOG_LEVEL  Set the log level (ERROR, WARNING, INFO, SUCCESS, DEBUG)"
 }
 
 # 示例子命令函数
@@ -370,6 +359,145 @@ example_command() {
 }
 
 #todo
+install(){
+    _require_root
+    _require_linux
+    _require_command lsof
+    _require_command ufw
+    _require_command apt
+
+    set -e
+
+    log INFO "更新系统.."
+    apt update && apt upgrade
+
+    log INFO "配置防火墙.."
+    apt install ufw -y >/dev/null
+
+    sshPort="$(lsof -i -P -n | grep sshd | grep -i ipv4 | grep -i listen | awk '{print $9}' | cut -d':' -f2)"
+    log INFO "ssh端口: $sshPort"
+
+    realityPort=443
+    log INFO "xray端口: $realityPort"
+
+    ufw allow $sshPort
+    ufw allow $realityPort
+
+    ufw deny out 25
+    ufw deny out 587
+
+    # ufw enable
+
+    log INFO "开启bbr"
+    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+    sysctl -p
+
+    log INFO "安装xray"
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --beta -u root
+
+    uuid="$(xray uuid)"
+    pair="$(xray x25519)"
+    publicKey="$(echo $pair | grep -i private | awk '{print $3}')"
+    privateKey="$(echo $pair | grep -i public | awk '{print $3}')"
+    website="www.microsoft.com"
+    shortId="$(echo $uuid | cut -d'-' -f1)"
+
+    serverIp="$(curl -s https://ipinfo.io/ip)"
+    configFile="/usr/local/etc/xray/config.json"
+    log INFO "生成配置文件到${configFile}"
+    cat > ${configFile} <<EOF
+{
+    "log": {
+        "loglevel": "warning"
+    },
+    "routing": {
+        "domainStrategy": "IPIfNonMatch",
+        "rules": [
+            {
+                "type": "field",
+                "domain": [
+                    "geosite:category-ads-all"
+                ],
+                "outboundTag": "block"
+            },
+            {
+                "type": "field",
+                "ip": [
+                    "geoip:cn"
+                ],
+                "outboundTag": "block"
+            }
+        ]
+    },
+    "inbounds": [
+        {
+            "listen": "0.0.0.0",
+            "port": ${realityPort},
+            "protocol": "vless",
+            "settings": {
+                "clients": [
+                    {
+                        "id": "${uuid}",
+                        "flow": "xtls-rprx-vision"
+                    }
+                ],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "show": false,
+                    "dest": "${website}:443",
+                    "xver": 0,
+                    "serverNames": [
+                        "${website}"
+                    ],
+                    "privateKey": "${privateKey}",
+                    "minClientVer": "",
+                    "maxClientVer": "",
+                    "maxTimeDiff": 0,
+                    "shortIds": [
+                        "${shortId}"
+                    ]
+                }
+            },
+            "sniffing": {
+                "enabled": true,
+                "destOverride": [
+                    "http",
+                    "tls"
+                ]
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "protocol": "freedom",
+            "tag": "direct"
+        },
+        {
+            "protocol": "blackhole",
+            "tag": "block"
+        }
+    ],
+    "policy": {
+        "levels": {
+            "0": {
+                "handshake": 3,
+                "connIdle": 180
+            }
+        }
+    }
+}
+EOF
+    log INFO "重启xray"
+    systemctl restart xray
+
+
+    log INFO "请检查上面的ssh 端口是否正确,如果正确，请执行ufw enable命令"
+}
 
 # 解析命令行参数
 while getopts ":l:" opt; do
@@ -407,6 +535,9 @@ case "$command" in
     example_command "$@"
     ;;
     #todo
+  install)
+    install "$@"
+    ;;
   *)
     echo "Unknown command: $command" 1>&2
     show_help
