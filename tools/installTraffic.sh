@@ -432,6 +432,8 @@ ${output}
     missingok
     notifempty
     compress
+    copytruncate
+    su root root
 }
 EOF
     echo " [ok]"
