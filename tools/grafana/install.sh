@@ -1,4 +1,5 @@
 #!/bin/bash
+
 if [ -z "${BASH_SOURCE}" ]; then
     this=${PWD}
 else
@@ -15,24 +16,24 @@ else
     this="$(cd $(dirname $rpath) && pwd)"
 fi
 
-export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
 user="${SUDO_USER:-$(whoami)}"
 home="$(eval echo ~$user)"
 
-# export TERM=xterm-256color
-
-# Use colors, but only if connected to a terminal, and that terminal
-# supports them.
+# 定义颜色
+# Use colors, but only if connected to a terminal(-t 1), and that terminal supports them(ncolors >=8.
 if which tput >/dev/null 2>&1; then
-  ncolors=$(tput colors 2>/dev/null)
+    ncolors=$(tput colors 2>/dev/null)
 fi
 if [ -t 1 ] && [ -n "$ncolors" ] && [ "$ncolors" -ge 8 ]; then
     RED="$(tput setaf 1)"
     GREEN="$(tput setaf 2)"
     YELLOW="$(tput setaf 3)"
     BLUE="$(tput setaf 4)"
-    CYAN="$(tput setaf 5)"
+    # 品红色
+    MAGENTA=$(tput setaf 5)
+    # 青色
+    CYAN="$(tput setaf 6)"
+    # 粗体
     BOLD="$(tput bold)"
     NORMAL="$(tput sgr0)"
 else
@@ -45,51 +46,168 @@ else
     NORMAL=""
 fi
 
-_err(){
-    echo "$*" >&2
+# 日志级别常量
+LOG_LEVEL_FATAL=1
+LOG_LEVEL_ERROR=2
+LOG_LEVEL_WARNING=3
+LOG_LEVEL_SUCCESS=4
+LOG_LEVEL_INFO=5
+LOG_LEVEL_DEBUG=6
+
+# 默认日志级别
+LOG_LEVEL=$LOG_LEVEL_INFO
+
+# 导出 PATH 环境变量
+export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+_command_exists() {
+    command -v "$1" >/dev/null 2>&1
 }
 
-_command_exists(){
-    command -v "$@" > /dev/null 2>&1
+_require_command() {
+    if ! _command_exists "$1"; then
+        echo "Require command $1" 1>&2
+        exit ${err_require_command}
+    fi
 }
+
+function _ensureDir() {
+    local dirs=$@
+    for dir in ${dirs}; do
+        if [ ! -d ${dir} ]; then
+            mkdir -p ${dir} || {
+                echo "create $dir failed!"
+                exit 1
+            }
+        fi
+    done
+}
+
+function _root() {
+    if [ ${EUID} -ne ${rootID} ]; then
+        echo "Require root privilege." 1>&2
+        return $err_require_root
+    fi
+}
+
+function _require_root() {
+    if ! _root; then
+        exit $err_require_root
+    fi
+}
+
+function _linux() {
+    if [ "$(uname)" != "Linux" ]; then
+        echo "Require Linux" 1>&2
+        return $err_require_linux
+    fi
+}
+
+function _require_linux() {
+    if ! _linux; then
+        exit $err_require_linux
+    fi
+}
+
+function _wait() {
+    # secs=$((5 * 60))
+    secs=${1:?'missing seconds'}
+
+    while [ $secs -gt 0 ]; do
+        echo -ne "$secs\033[0K\r"
+        sleep 1
+        : $((secs--))
+    done
+    echo -ne "\033[0K\r"
+}
+
+function _parseOptions() {
+    if [ $(uname) != "Linux" ]; then
+        echo "getopt only on Linux"
+        exit 1
+    fi
+
+    options=$(getopt -o dv --long debug --long name: -- "$@")
+    [ $? -eq 0 ] || {
+        echo "Incorrect option provided"
+        exit 1
+    }
+    eval set -- "$options"
+    while true; do
+        case "$1" in
+        -v)
+            VERBOSE=1
+            ;;
+        -d)
+            DEBUG=1
+            ;;
+        --debug)
+            DEBUG=1
+            ;;
+        --name)
+            shift # The arg is next in position args
+            NAME=$1
+            ;;
+        --)
+            shift
+            break
+            ;;
+        esac
+        shift
+    done
+}
+
+# 设置ed
+ed=vi
+if _command_exists vim; then
+    ed=vim
+fi
+if _command_exists nvim; then
+    ed=nvim
+fi
+# use ENV: editor to override
+if [ -n "${editor}" ]; then
+    ed=${editor}
+fi
 
 rootID=0
 
-_runAsRoot(){
+# 用法: _runAsRoot [-x] [-s] [--no-stdout] [--no-stderr] <command>
+_runAsRoot() {
     local trace=0
     local subshell=0
     local nostdout=0
     local nostderr=0
 
     local optNum=0
-    for opt in ${@};do
+    for opt in ${@}; do
         case "${opt}" in
-            --trace|-x)
-                trace=1
-                ((optNum++))
-                ;;
-            --subshell|-s)
-                subshell=1
-                ((optNum++))
-                ;;
-            --no-stdout)
-                nostdout=1
-                ((optNum++))
-                ;;
-            --no-stderr)
-                nostderr=1
-                ((optNum++))
-                ;;
-            *)
-                break
-                ;;
+        --trace | -x)
+            trace=1
+            ((optNum++))
+            ;;
+        --subshell | -s)
+            subshell=1
+            ((optNum++))
+            ;;
+        --no-stdout)
+            nostdout=1
+            ((optNum++))
+            ;;
+        --no-stderr)
+            nostderr=1
+            ((optNum++))
+            ;;
+        *)
+            break
+            ;;
         esac
     done
 
     shift $(($optNum))
     local cmd="${*}"
     bash_c='bash -c'
-    if [ "${EUID}" -ne "${rootID}" ];then
+    if [ "${EUID}" -ne "${rootID}" ]; then
         if _command_exists sudo; then
             bash_c='sudo -E bash -c'
         elif _command_exists su; then
@@ -99,392 +217,342 @@ _runAsRoot(){
 			Error: this installer needs the ability to run commands as root.
 			We are unable to find either "sudo" or "su" available to make this happen.
 			EOF
-            exit 1
+            return 1
         fi
     fi
 
     local fullcommand="${bash_c} ${cmd}"
-    if [ $nostdout -eq 1 ];then
+    if [ $nostdout -eq 1 ]; then
         cmd="${cmd} >/dev/null"
     fi
-    if [ $nostderr -eq 1 ];then
+    if [ $nostderr -eq 1 ]; then
         cmd="${cmd} 2>/dev/null"
     fi
 
-    if [ $subshell -eq 1 ];then
-        if [ $trace -eq 1 ];then
-            (set -x; ${bash_c} "${cmd}")
+    if [ $subshell -eq 1 ]; then
+        if [ $trace -eq 1 ]; then
+            (
+                { set -x; } 2>/dev/null
+                ${bash_c} "${cmd}"
+            )
         else
             (${bash_c} "${cmd}")
         fi
     else
-        if [ $trace -eq 1 ];then
-            set -x; ${bash_c} "${cmd}";set +x;
+        if [ $trace -eq 1 ]; then
+            { set -x; } 2>/dev/null
+            ${bash_c} "${cmd}"
+            local ret=$?
+            { set +x; } 2>/dev/null
+            return $ret
         else
             ${bash_c} "${cmd}"
         fi
     fi
 }
 
-function _insert_path(){
-    if [ -z "$1" ];then
-        return
-    fi
-    echo -e ${PATH//:/"\n"} | grep -c "^$1$" >/dev/null 2>&1 || export PATH=$1:$PATH
+# 日志级别名称数组及最大长度计算
+LOG_LEVELS=("FATAL" "ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
+MAX_LEVEL_LENGTH=0
+
+for level in "${LOG_LEVELS[@]}"; do
+  len=${#level}
+  if (( len > MAX_LEVEL_LENGTH )); then
+    MAX_LEVEL_LENGTH=$len
+  fi
+done
+MAX_LEVEL_LENGTH=$((MAX_LEVEL_LENGTH+2))
+
+# 日志级别名称填充
+pad_level() {
+  printf "%-${MAX_LEVEL_LENGTH}s" "[$1]"
 }
 
-_run(){
-    local trace=0
-    local subshell=0
-    local nostdout=0
-    local nostderr=0
-
-    local optNum=0
-    for opt in ${@};do
-        case "${opt}" in
-            --trace|-x)
-                trace=1
-                ((optNum++))
-                ;;
-            --subshell|-s)
-                subshell=1
-                ((optNum++))
-                ;;
-            --no-stdout)
-                nostdout=1
-                ((optNum++))
-                ;;
-            --no-stderr)
-                nostderr=1
-                ((optNum++))
-                ;;
-            *)
-                break
-                ;;
-        esac
-    done
-
-    shift $(($optNum))
-    local cmd="${*}"
-    bash_c='bash -c'
-
-    local fullcommand="${bash_c} ${cmd}"
-    if [ $nostdout -eq 1 ];then
-        cmd="${cmd} >/dev/null"
-    fi
-    if [ $nostderr -eq 1 ];then
-        cmd="${cmd} 2>/dev/null"
-    fi
-
-    if [ $subshell -eq 1 ];then
-        if [ $trace -eq 1 ];then
-            (set -x; ${bash_c} "${cmd}")
-        else
-            (${bash_c} "${cmd}")
-        fi
-    else
-        if [ $trace -eq 1 ];then
-            set -x
-            ${bash_c} "${cmd}"
-            ret=$?
-            set +x
-            return ${ret}
-        else
-            ${bash_c} "${cmd}"
-        fi
-    fi
-}
-
-function _root(){
-    if [ ${EUID} -ne ${rootID} ];then
-        echo "Requires root privilege." 1>&2
+# 打印带颜色的日志函数
+log() {
+  local level="$(echo "$1" | awk '{print toupper($0)}')" # 转换为大写以支持大小写敏感
+  shift
+  local message="$@"
+  local padded_level=$(pad_level "$level")
+  local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+  case "$level" in
+    "FATAL")
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
         exit 1
+      fi
+      ;;
+
+    "ERROR")
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
+      fi
+      ;;
+    "WARNING")
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]; then
+        echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message"
+      fi
+      ;;
+    "INFO")
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]; then
+        echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message"
+      fi
+      ;;
+    "SUCCESS")
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]; then
+        echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message"
+      fi
+      ;;
+    "DEBUG")
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]; then
+        echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message"
+      fi
+      ;;
+    *)
+      echo -e "${NC}[$timestamp] [$level] $message"
+      ;;
+  esac
+}
+
+# 设置日志级别的函数
+set_log_level() {
+  local level="$(echo "$1" | awk '{print toupper($0)}')"
+  case "$level" in
+    "FATAL")
+      LOG_LEVEL=$LOG_LEVEL_FATAL
+      ;;
+    "ERROR")
+      LOG_LEVEL=$LOG_LEVEL_ERROR
+      ;;
+    "WARNING")
+      LOG_LEVEL=$LOG_LEVEL_WARNING
+      ;;
+    "INFO")
+      LOG_LEVEL=$LOG_LEVEL_INFO
+      ;;
+    "SUCCESS")
+      LOG_LEVEL=$LOG_LEVEL_SUCCESS
+      ;;
+    "DEBUG")
+      LOG_LEVEL=$LOG_LEVEL_DEBUG
+      ;;
+    *)
+      echo "无效的日志级别: $1"
+      ;;
+  esac
+}
+
+# 子命令数组
+# todo
+COMMANDS=("help" "example" "installNodeExporter" "installPrometheus" "installGrafana")
+
+# 显示帮助信息
+show_help() {
+  echo "Usage: $0 [-l LOG_LEVEL] <command>"
+  echo ""
+  echo "Commands:"
+  for cmd in "${COMMANDS[@]}"; do
+    echo "  $cmd"
+  done
+  echo ""
+  echo "Options:"
+  echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
+}
+
+# 示例子命令函数
+example_command() {
+  log "INFO" "This is an example command."
+  log "DEBUG" "This is some debug information."
+  _wait 3
+  log "SUCCESS" "This is a success message."
+  log "WARNING" "This is a warning message."
+  log "error" "This is an error message."
+}
+
+#todo
+installNodeExporter() {
+    _require_root
+    _require_command curl
+    _require_command tar
+    _require_command systemctl
+
+    case "$(name -m)" in
+        "x86_64")
+            target="amd64"
+            ;;
+        "aarch64")
+            target="arm64"
+            ;;
+        *)
+        log "FATAL" "Unsupported architecture: $(name -m)"
+    esac
+ 
+    set -e
+
+    version="1.8.1"
+    nodeExporterLink="https://github.com/prometheus/node_exporter/releases/download/v${version}/node_exporter-${version}.linux-${target}.tar.gz"
+    tarFile="${nodeExporterLink##*/}"
+    dirName="${tarFile%.tar.gz}"
+    log DEBUG "Downloading node_exporter from $nodeExporterLink"
+    log DEBUG "Saving to $tarFile"
+
+
+    nodeExporterInstallTmpDir="/tmp/node_exporter_install$$"
+    log INFO "Creating temporary directory $nodeExporterInstallTmpDir"
+    mkdir -p "$nodeExporterInstallTmpDir"
+    cd "$nodeExporterInstallTmpDir"
+
+    log INFO "Downloading node_export"
+    curl -s -L -O $nodeExporterLink
+    if [ ! -e "$tarFile" ];then
+        log FAIL "Download node_exporter failed"
     fi
+    log SUCCESS "Downloaded node_exporter"
+
+
+    log INFO "Extracting node_exporter"
+    # extract node_exporter
+    tar -zxvf $tarFile
+
+    log INFO "Copying node_exporter"
+    find . -name "node_exporter" -exec cp {} /usr/local/bin/ \;
+
+    log INFO "Add user node_exporter"
+    useradd -rs /bin/false node_exporter
+
+    log INFO "Creating node_exporter service"
+    cp ${this}/node_exporter.service /etc/systemd/system/
+
+    log INFO "Starting node_exporter"
+    systemctl enable --now node_exporter
+
+    # TODO check node_exporter status
 }
 
-function _linux(){
-    if [ "$(uname)" != "Linux" ];then
-        echo "Requires Linux" 1>&2
-        exit 1
-    fi
-}
+installPrometheus(){
+    _require_root
+    _require_linux
+    _require_command curl
+    _require_command tar
+    _require_command systemctl
+    set -e
 
-function _wait(){
-    # secs=$((5 * 60))
-    secs=${1:?'missing seconds'}
+    case "$(name -m)" in
+        "x86_64")
+            target="amd64"
+            ;;
+        "aarch64")
+            target="arm64"
+            ;;
+        *)
+        log "FATAL" "Unsupported architecture: $(name -m)"
+    esac
 
-    while [ $secs -gt 0 ]; do
-       echo -ne "$secs\033[0K\r"
-       sleep 1
-       : $((secs--))
-    done
-    echo -ne "\033[0K\r"
-}
+    [ ! -d "/var/lib/prometheus" ] && mkdir /var/lib/prometheus
+    mkdir -p /etc/prometheus/rules
+    mkdir -p /etc/prometheus/rules.d
+    mkdir -p /etc/prometheus/files_sd
 
-ed=vi
-if _command_exists vim; then
-    ed=vim
-fi
-if _command_exists nvim; then
-    ed=nvim
-fi
-# use ENV: editor to override
-if [ -n "${editor}" ];then
-    ed=${editor}
-fi
-###############################################################################
-# write your code below (just define function[s])
-# function is hidden when begin with '_'
+    installPrometheusTmpDir="/tmp/prometheus_install$$"
+    log INFO "Creating temporary directory $installPrometheusTmpDir"
+    mkdir -p "$installPrometheusTmpDir"
+    cd "$installPrometheusTmpDir"
 
-_must_ok(){
-    if [ $? != 0 ];then
-        echo "failed,exit.."
-        exit $?
-    fi
-}
-
-_info(){
-    echo -n "$(date +%FT%T) ${1}"
-}
-
-_infoln(){
-    echo "$(date +%FT%T) ${1}"
-}
-
-_error(){
-    echo -n "$(date +%FT%T) ${RED}${1}${NORMAL}"
-}
-
-_errorln(){
-    echo "$(date +%FT%T) ${RED}${1}${NORMAL}"
-}
-
-_checkService(){
-    _info "find service ${1}.."
-    if systemctl --all --no-pager | grep -q "${1}";then
-        echo "OK"
-    else
-        echo "Not found"
-        return 1
-    fi
-}
-
-# ref: https://foxi.buduanwang.vip/virtualization/pve/615.html/
-
-# install grafana
-igrafana(){
-    _root
-
-    if _checkService grafana;then
-        _infoln "already exist grafana,exit.."
-        exit 0
-    fi
-
-    local sourceDest=/etc/apt/sources.list.d
-    _infoln "add grafana source file to ${sourceDest}.."
-    cat>${sourceDest}/grafana.list<<-EOF
-		deb https://packages.grafana.com/oss/deb stable main
-	EOF
-    _must_ok
-
-
-    _info "get gpg siqnature.. "
-    _run "curl -s https://packages.grafana.com/gpg.key | apt-key add -"
-    _must_ok
-
-    _infoln "update source and install grafana"
-    _run -x "apt update && apt install -y apt-transport-https grafana"
-
-    _infoln "enable and start grafana"
-    _run "systemctl enable --now grafana-server"
-
-}
-
-# install prometheus
-iprometheus(){
-    _root
-
-    _run -x "groupadd --system prometheus"
-
-    _run -x "useradd -s /sbin/nologin --system -g prometheus prometheus"
-
-    _run -x "mkdir /var/lib/prometheus"
-
-    for i in rules rules.d files_sd; do
-        _run -x "mkdir -p /etc/prometheus/${i}"
-    done
-
-    rm -rf /tmp/prometheus
-    mkdir -p /tmp/prometheus && cd /tmp/prometheus
-
-    _infoln "download prometheus.."
+    log INFO "Downloading prometheus"
     curl https://api.github.com/repos/prometheus/prometheus/releases/latest \
         | grep browser_download_url \
-        | grep linux-amd64 \
+        | grep linux-${target} \
         | cut -d '"' -f 4 \
         | xargs -IR curl -LO R
-        #| wget -i -
-    _infoln "extract prometheus.."
+
+    log INFO "Extracting prometheus"
     tar xvf prometheus*.tar.gz
-    _infoln "copy prometheus files.."
+
+    log INFO "Copying prometheus"
     cd prometheus*/
     mv prometheus promtool /usr/local/bin/
     mv prometheus.yml  /etc/prometheus/prometheus.yml
     mv consoles/ console_libraries/ /etc/prometheus/
+
     cd ~/
-    rm -rf /tmp/prometheus
+    rm -rf "$installPrometheusTmpDir"
 
-    cp ${this}/prometheus.service /etc/systemd/system
+    log INFO "Add user prometheus"
+    useradd -rs /bin/false prometheus
+    log INFO "Add group prometheus"
+    groupadd --system prometheus
 
-    for i in rules rules.d files_sd; do chown -R prometheus:prometheus /etc/prometheus/${i}; done
-    for i in rules rules.d files_sd; do chmod -R 775 /etc/prometheus/${i}; done
-    chown -R prometheus:prometheus /var/lib/prometheus/
+    log INFO "Install prometheus service"
+    cp ${this}/prometheus.service /etc/systemd/system/
 
-    _infoln "enable prometheus.."
-    systemctl daemon-reload
+    chown -R prometheus:prometheus /var/lib/prometheus
+
+    chown -R prometheus:prometheus /etc/prometheus/rules
+    chown -R prometheus:prometheus /etc/prometheus/rules.d
+    chown -R prometheus:prometheus /etc/prometheus/files_sd
+
+    chmod -R 775 /etc/prometheus/rules
+    chmod -R 775 /etc/prometheus/rules.d
+    chmod -R 775 /etc/prometheus/files_sd
+
+    log INFO "Starting prometheus"
     systemctl enable --now prometheus
 }
 
-# config proxmox-pve-exporter
-ipveexporter(){
-    _root
-    _run -x "groupadd --system prometheus"
-    _run -x "useradd -s /sbin/nologin --system -g prometheus prometheus"
-    mkdir /etc/prometheus
-
-    _infoln "install python3 pip3.."
-    apt install -y python3 python3-pip
-
-    _infoln "install prometheus-pve-exporter.."
-    pip3 install prometheus-pve-exporter
-
-    echo "enter root password: "
-    stty -echo
-    read password
-    stty echo
-    cat>/etc/prometheus/pve.yml<<-EOF
-	default:
-	    user: root@pam
-	    password: $password
-	    verify_ssl: false
-	EOF
-
-    chown -R prometheus:prometheus /etc/prometheus/
-    chmod -R 775 /etc/prometheus/
-
-    _infoln "install prometheus-pve-exporter service"
-    cp ${this}/prometheus-pve-exporter.service /etc/systemd/system
-    _infoln "enable prometheus-pve-exporter.."
-    systemctl daemon-reload
-    systemctl enable --now prometheus-pve-exporter
+installGrafana(){
+    _require_linux
 
 }
 
-# config prometheus pve exporter
-cpveexporter(){
-    _root
+# 解析命令行参数
+while getopts ":l:" opt; do
+  case ${opt} in
+    l )
+      set_log_level "$OPTARG"
+      ;;
+    \? )
+      show_help
+      exit 1
+      ;;
+    : )
+      echo "Invalid option: $OPTARG requires an argument" 1>&2
+      show_help
+      exit 1
+      ;;
+  esac
+done
+shift $((OPTIND -1))
 
-    echo "input pve ip: "
-    read ip
+# 解析子命令
+command=$1
+shift
 
-    local pveExporterHeader="#proxmox exporter begin"
-    local pveExporterTail="#proxmox exporter end"
+if [[ -z "$command" ]]; then
+  show_help
+  exit 0
+fi
 
-    if grep "${pveExporterHeader}" /etc/prometheus/prometheus.yml;then
-        echo "already configured pve exporter"
-        exit
-    fi
-    cat>>/etc/prometheus/prometheus.yml<<-EOF
-	${pveExporterHeader}
-	  - job_name: 'proxmox'
-	    metrics_path: /pve
-	    static_configs:
-	      - targets: ['$ip:9221']
-	${pveExporterTail}
-	EOF
+case "$command" in
+  help)
+    show_help
+    ;;
+    #todo
+  installNodeExporter)
+    installNodeExporter "$@"
+    ;;
 
-    _infoln "restart prometheus"
-    systemctl restart prometheus
-    echo "template id: 10347"
-}
+  installPrometheus)
+    installPrometheus "$@"
+    ;;
 
-# config prometheus node exporter
-cnodeexporter(){
-    _root
+  installGrafana)
+    installGrafana "$@"
+    ;;
+ 
 
-    echo "input node exporter host ip: "
-    read ip
-
-    local nodeExporterHeader="#node exporter begin"
-    local nodeExporterTail="#node exporter end"
-
-    # if grep "${nodeExporterHeader}" /etc/prometheus/prometheus.yml;then
-    #     echo "already configured node exporter"
-    # fi
-    cat>>/etc/prometheus/prometheus.yml<<-EOF
-	${nodeExporterHeader}
-	  - job_name: 'node_exporter_metrics${ip}'
-	    scrape_interval: 5s
-	    static_configs:
-	      - targets: ['$ip:9100']
-	${nodeExporterTail}
-	EOF
-
-    _infoln "restart prometheus"
-    systemctl restart prometheus
-    echo "template id: 8919"
-
-}
-
-# install node exporter
-inodeexporter(){
-    _root
-
-    _infoln "downlad node exporter.."
-    version=${version:-1.3.1}
-    nodeExporterLink="https://github.com/prometheus/node_exporter/releases/download/v${version}/node_exporter-${version}.linux-amd64.tar.gz"
-    wget -P /tmp --timeout=20 "${nodeExporterLink}"
-    if [ $? -ne 0 ];then
-        nodeExporterLink="https://source711.oss-cn-shanghai.aliyuncs.com/nodeExporter/node_exporter-1.0.1.linux-amd64.tar.gz"
-        wget -P /tmp --timeout=20 "${nodeExporterLink}" || { echo "download node exporter failed."; exit 1; }
-    fi
-    tar -xzvf /tmp/node_exporter-${version}.linux-amd64.tar.gz -C /tmp
-    mv /tmp/node_exporter-${version}.linux-amd64/node_exporter /usr/local/bin/
-    chmod +x /usr/local/bin/node_exporter
-
-    _infoln "add user node_exporter"
-    useradd -rs /bin/false node_exporter
-
-    _infoln "install node_exporter service"
-    cp ${this}/node_exporter.service /etc/systemd/system
-
-    _infoln "enable node_exporter service"
-    systemctl daemon-reload
-    systemctl enable --now node_exporter
-
-
-}
-# write your code above
-###############################################################################
-
-em(){
-    $ed $0
-}
-
-function _help(){
-    cd "${this}"
-    cat<<EOF2
-Usage: $(basename $0) ${bold}CMD${reset}
-
-${bold}CMD${reset}:
-EOF2
-    perl -lne 'print "\t$2" if /^\s*(function)?\s*(\S+)\s*\(\)\s*\{$/' $(basename ${BASH_SOURCE}) | perl -lne "print if /^\t[^_]/"
-}
-
-case "$1" in
-     ""|-h|--help|help)
-        _help
-        ;;
-    *)
-        "$@"
+  *)
+    echo "Unknown command: $command" 1>&2
+    show_help
+    exit 1
+    ;;
 esac
