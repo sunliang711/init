@@ -83,6 +83,10 @@ function _ensureDir() {
     done
 }
 
+err_require_root=33
+err_require_linux=55
+err_require_command=88
+
 function _root() {
     if [ ${EUID} -ne ${rootID} ]; then
         echo "Require root privilege." 1>&2
@@ -376,7 +380,7 @@ installNodeExporter() {
     _require_command tar
     _require_command systemctl
 
-    case "$(name -m)" in
+    case "$(uname -m)" in
         "x86_64")
             target="amd64"
             ;;
@@ -403,12 +407,11 @@ installNodeExporter() {
     cd "$nodeExporterInstallTmpDir"
 
     log INFO "Downloading node_export"
-    curl -s -L -O $nodeExporterLink
+    curl -m 30 -L -O $nodeExporterLink
     if [ ! -e "$tarFile" ];then
         log FAIL "Download node_exporter failed"
     fi
     log SUCCESS "Downloaded node_exporter"
-
 
     log INFO "Extracting node_exporter"
     # extract node_exporter
@@ -416,6 +419,8 @@ installNodeExporter() {
 
     log INFO "Copying node_exporter"
     find . -name "node_exporter" -exec cp {} /usr/local/bin/ \;
+
+    rm -rf "${nodeExporterInstallTmpDir}"
 
     log INFO "Add user node_exporter"
     useradd -rs /bin/false node_exporter
@@ -437,7 +442,7 @@ installPrometheus(){
     _require_command systemctl
     set -e
 
-    case "$(name -m)" in
+    case "$(uname -m)" in
         "x86_64")
             target="amd64"
             ;;
