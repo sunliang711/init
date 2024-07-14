@@ -348,7 +348,7 @@ set_log_level() {
 
 # 子命令数组
 # todo
-COMMANDS=("help" "example" "installNodeExporter" "installPrometheus" "installGrafana")
+COMMANDS=("help" "example" "installNodeExporter" "installPrometheus" "installGrafana" "configNodeExporter")
 
 # 显示帮助信息
 show_help() {
@@ -432,6 +432,7 @@ installNodeExporter() {
     systemctl enable --now node_exporter
 
     # TODO check node_exporter status
+    log SUCCESS "Node exporter installed"
 }
 
 installPrometheus(){
@@ -482,10 +483,14 @@ installPrometheus(){
     cd ~/
     rm -rf "$installPrometheusTmpDir"
 
-    log INFO "Add user prometheus"
-    useradd -rs /bin/false prometheus
-    log INFO "Add group prometheus"
-    groupadd --system prometheus
+    if ! id -u prometheus>/dev/null;then
+      log INFO "Add user prometheus"
+      useradd -rs /bin/false prometheus
+    fi
+    if ! id -g prometheus>/dev/null;then
+      log INFO "Add group prometheus"
+      groupadd --system prometheus
+    fi
 
     log INFO "Install prometheus service"
     cp ${this}/prometheus.service /etc/systemd/system/
@@ -502,11 +507,40 @@ installPrometheus(){
 
     log INFO "Starting prometheus"
     systemctl enable --now prometheus
+
+    log SUCCESS "Prometheus installed"
+}
+
+configNodeExporter(){
+    _require_root
+
+    echo "Input node exporter host ip: "
+    read ip
+    if [ -z "$ip" ];then
+        log FATAL "empty ip address"
+    fi
+
+    local nodeExporterHeader="#node exporter begin"
+    local nodeExporterTail="#node exporter end"
+
+    # if grep "${nodeExporterHeader}" /etc/prometheus/prometheus.yml;then
+    #     echo "already configured node exporter"
+    # fi
+    cat>>/etc/prometheus/prometheus.yml<<-EOF
+	${nodeExporterHeader}
+	  - job_name: 'node_exporter_metrics${ip}'
+	    scrape_interval: 5s
+	    static_configs:
+	      - targets: ['$ip:9100']
+	${nodeExporterTail}
+	EOF
+
+    log INFO "Restart prometheus"
+    systemctl restart prometheus
 }
 
 installGrafana(){
-    _require_linux
-
+    log INFO "Use docker compose to run grafana"
 }
 
 # 解析命令行参数
@@ -548,6 +582,10 @@ case "$command" in
 
   installPrometheus)
     installPrometheus "$@"
+    ;;
+
+  configNodeExporter)
+    configNodeExporter "$@"
     ;;
 
   installGrafana)
