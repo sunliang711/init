@@ -364,7 +364,7 @@ install() {
     _require_command tmux
     set -e
 
-    log INFO "Install tmux plugins...
+    log INFO "Install tmux plugins..."
     git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
 
     cat <<EOF >$home/.tmux.conf
