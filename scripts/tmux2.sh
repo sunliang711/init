@@ -344,7 +344,7 @@ set_log_level() {
 
 # 子命令数组
 # todo
-COMMANDS=("help" "install")
+COMMANDS=("help" "install" "uninstall", "reinstall")
 
 # 显示帮助信息
 show_help() {
@@ -511,7 +511,12 @@ case "$command" in
   install)
     install "$@"
     ;;
-    #todo
+  uninstall)
+    uninstall "$@"
+    ;;
+  reinstall)
+    reinstall "$@"
+    ;;
   *)
     echo "Unknown command: $command" 1>&2
     show_help
