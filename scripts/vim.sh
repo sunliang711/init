@@ -60,6 +60,10 @@ LOG_LEVEL=$LOG_LEVEL_INFO
 # 导出 PATH 环境变量
 export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+err_require_command=1
+err_require_root=2
+err_require_linux=3
+
 _command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
@@ -360,23 +364,30 @@ show_help() {
 }
 
 globalPath=/etc/vim/vimrc.local
+macOSGlobalPath=/usr/share/vim/vimrc
 userPath=$HOME/.vimrc
 
 global() {
-    _config "$globalPath"
+    case "$(uname)" in
+        Darwin)
+            if [ ! -e ${macOSGlobalPath}.orig ];then
+                _runAsRoot cp ${macOSGlobalPath} ${macOSGlobalPath}.orig
+            fi
+            log INFO "Copy vimrc to ${macOSGlobalPath}"
+            _runAsRoot cp vimrc ${macOSGlobalPath}
+            ;;
+        Linux)
+            log INFO "Copy vimrc to ${globalPath}"
+            _runAsRoot cp vimrc ${globalPath}
+            ;;
+    esac
 }
 
 user() {
-    _config "$userPath"
-}
+    log INFO "Copy vimrc to $userPath"
+    cp vimrc $userPath
 
-_config() {
-    dest=${1}
-
-    log "INFO" "Copy vimrc to $dest"
-    cp vimrc "$dest"
-
-    log SUCCESS "Done"
+    log SCUCESS "Done"
 }
 
 #todo
