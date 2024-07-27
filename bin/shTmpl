@@ -60,9 +60,9 @@ LOG_LEVEL=$LOG_LEVEL_INFO
 # 导出 PATH 环境变量
 export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-_err_require_command=1
-_err_require_root=2
-_err_require_linux=3
+err_require_command=1
+err_require_root=2
+err_require_linux=3
 
 _command_exists() {
     command -v "$1" >/dev/null 2>&1
