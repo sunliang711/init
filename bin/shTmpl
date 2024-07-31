@@ -346,10 +346,6 @@ set_log_level() {
   esac
 }
 
-# 子命令数组
-# todo
-COMMANDS=("help" "example")
-
 # 显示帮助信息
 show_help() {
   echo "Usage: $0 [-l LOG_LEVEL] <command>"
@@ -363,8 +359,12 @@ show_help() {
   echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
 }
 
+------------------------------------------------------------
+# 子命令数组
+COMMANDS=("help" "example")
+
 # 示例子命令函数
-example_command() {
+example() {
   log "INFO" "This is an example command."
   log "DEBUG" "This is some debug information."
   _wait 3
@@ -373,7 +373,7 @@ example_command() {
   log "error" "This is an error message."
 }
 
-#todo
+------------------------------------------------------------
 
 # 解析命令行参数
 while getopts ":l:" opt; do
@@ -407,10 +407,6 @@ case "$command" in
   help)
     show_help
     ;;
-  example)
-    example_command "$@"
-    ;;
-    #todo
   *)
     ${command} "$@"
     ;;
