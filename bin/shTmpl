@@ -412,8 +412,6 @@ case "$command" in
     ;;
     #todo
   *)
-    echo "Unknown command: $command" 1>&2
-    show_help
-    exit 1
+    ${command} "$@"
     ;;
 esac
