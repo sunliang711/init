@@ -101,6 +101,14 @@ Host socks
     HostName 10.1.1.16
     User eagle
 
+Host portmonitor
+    HostName 10.1.1.27
+    User eagle
+
+Host grafana
+    HostName 10.1.1.129
+    User eagle
+
 Host service
     HostName 10.1.1.135
     User eagle

@@ -47,11 +47,12 @@ else
 fi
 
 # 日志级别常量
-LOG_LEVEL_ERROR=1
-LOG_LEVEL_WARNING=2
-LOG_LEVEL_INFO=3
+LOG_LEVEL_FATAL=1
+LOG_LEVEL_ERROR=2
+LOG_LEVEL_WARNING=3
 LOG_LEVEL_SUCCESS=4
-LOG_LEVEL_DEBUG=5
+LOG_LEVEL_INFO=5
+LOG_LEVEL_DEBUG=6
 
 # 默认日志级别
 LOG_LEVEL=$LOG_LEVEL_INFO
@@ -59,13 +60,17 @@ LOG_LEVEL=$LOG_LEVEL_INFO
 # 导出 PATH 环境变量
 export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+err_require_command=1
+err_require_root=2
+err_require_linux=3
+
 _command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
 _require_command() {
     if ! _command_exists "$1"; then
-        echo "require command $1" 1>&2
+        echo "Require command $1" 1>&2
         exit ${err_require_command}
     fi
 }
@@ -251,7 +256,7 @@ _runAsRoot() {
 }
 
 # 日志级别名称数组及最大长度计算
-LOG_LEVELS=("ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
+LOG_LEVELS=("FATAL" "ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
 MAX_LEVEL_LENGTH=0
 
 for level in "${LOG_LEVELS[@]}"; do
@@ -275,33 +280,40 @@ log() {
   local padded_level=$(pad_level "$level")
   local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
   case "$level" in
+    "FATAL")
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
+        exit 1
+      fi
+      ;;
+
     "ERROR")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
-        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "WARNING")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]; then
-        echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "INFO")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]; then
-        echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "SUCCESS")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]; then
-        echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "DEBUG")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]; then
-        echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     *)
-      echo -e "${NC}[$timestamp] [$level] $message"
+      echo -e "${NC}[$timestamp] [$level] $message${NORMAL}"
       ;;
   esac
 }
@@ -310,6 +322,9 @@ log() {
 set_log_level() {
   local level="$(echo "$1" | awk '{print toupper($0)}')"
   case "$level" in
+    "FATAL")
+      LOG_LEVEL=$LOG_LEVEL_FATAL
+      ;;
     "ERROR")
       LOG_LEVEL=$LOG_LEVEL_ERROR
       ;;
@@ -345,7 +360,7 @@ show_help() {
   done
   echo ""
   echo "Options:"
-  echo "  -l LOG_LEVEL  Set the log level (ERROR, WARNING, INFO, SUCCESS, DEBUG)"
+  echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
 }
 
 # 示例子命令函数

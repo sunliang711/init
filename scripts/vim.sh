@@ -1,4 +1,5 @@
 #!/bin/bash
+
 if [ -z "${BASH_SOURCE}" ]; then
     this=${PWD}
 else
@@ -15,15 +16,11 @@ else
     this="$(cd $(dirname $rpath) && pwd)"
 fi
 
-export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
 user="${SUDO_USER:-$(whoami)}"
 home="$(eval echo ~$user)"
 
-# export TERM=xterm-256color
-
-# Use colors, but only if connected to a terminal, and that terminal
-# supports them.
+# 定义颜色
+# Use colors, but only if connected to a terminal(-t 1), and that terminal supports them(ncolors >=8.
 if which tput >/dev/null 2>&1; then
     ncolors=$(tput colors 2>/dev/null)
 fi
@@ -32,7 +29,11 @@ if [ -t 1 ] && [ -n "$ncolors" ] && [ "$ncolors" -ge 8 ]; then
     GREEN="$(tput setaf 2)"
     YELLOW="$(tput setaf 3)"
     BLUE="$(tput setaf 4)"
-    CYAN="$(tput setaf 5)"
+    # 品红色
+    MAGENTA=$(tput setaf 5)
+    # 青色
+    CYAN="$(tput setaf 6)"
+    # 粗体
     BOLD="$(tput bold)"
     NORMAL="$(tput sgr0)"
 else
@@ -45,14 +46,23 @@ else
     NORMAL=""
 fi
 
-# error code
-err_require_root=1
-err_require_linux=2
-err_require_command=3
+# 日志级别常量
+LOG_LEVEL_FATAL=1
+LOG_LEVEL_ERROR=2
+LOG_LEVEL_WARNING=3
+LOG_LEVEL_SUCCESS=4
+LOG_LEVEL_INFO=5
+LOG_LEVEL_DEBUG=6
 
-_err() {
-    echo "$*" >&2
-}
+# 默认日志级别
+LOG_LEVEL=$LOG_LEVEL_INFO
+
+# 导出 PATH 环境变量
+export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+err_require_command=1
+err_require_root=2
+err_require_linux=3
 
 _command_exists() {
     command -v "$1" >/dev/null 2>&1
@@ -60,13 +70,113 @@ _command_exists() {
 
 _require_command() {
     if ! _command_exists "$1"; then
-        echo "require command $1" 1>&2
+        echo "Require command $1" 1>&2
         exit ${err_require_command}
     fi
 }
 
+function _ensureDir() {
+    local dirs=$@
+    for dir in ${dirs}; do
+        if [ ! -d ${dir} ]; then
+            mkdir -p ${dir} || {
+                echo "create $dir failed!"
+                exit 1
+            }
+        fi
+    done
+}
+
+function _root() {
+    if [ ${EUID} -ne ${rootID} ]; then
+        echo "Require root privilege." 1>&2
+        return $err_require_root
+    fi
+}
+
+function _require_root() {
+    if ! _root; then
+        exit $err_require_root
+    fi
+}
+
+function _linux() {
+    if [ "$(uname)" != "Linux" ]; then
+        echo "Require Linux" 1>&2
+        return $err_require_linux
+    fi
+}
+
+function _require_linux() {
+    if ! _linux; then
+        exit $err_require_linux
+    fi
+}
+
+function _wait() {
+    # secs=$((5 * 60))
+    secs=${1:?'missing seconds'}
+
+    while [ $secs -gt 0 ]; do
+        echo -ne "$secs\033[0K\r"
+        sleep 1
+        : $((secs--))
+    done
+    echo -ne "\033[0K\r"
+}
+
+function _parseOptions() {
+    if [ $(uname) != "Linux" ]; then
+        echo "getopt only on Linux"
+        exit 1
+    fi
+
+    options=$(getopt -o dv --long debug --long name: -- "$@")
+    [ $? -eq 0 ] || {
+        echo "Incorrect option provided"
+        exit 1
+    }
+    eval set -- "$options"
+    while true; do
+        case "$1" in
+        -v)
+            VERBOSE=1
+            ;;
+        -d)
+            DEBUG=1
+            ;;
+        --debug)
+            DEBUG=1
+            ;;
+        --name)
+            shift # The arg is next in position args
+            NAME=$1
+            ;;
+        --)
+            shift
+            break
+            ;;
+        esac
+        shift
+    done
+}
+
+# 设置ed
+ed=vi
+if _command_exists vim; then
+    ed=vim
+fi
+if _command_exists nvim; then
+    ed=nvim
+fi
+# use ENV: editor to override
+if [ -n "${editor}" ]; then
+    ed=${editor}
+fi
+
 rootID=0
 
+# 用法: _runAsRoot [-x] [-s] [--no-stdout] [--no-stderr] <command>
 _runAsRoot() {
     local trace=0
     local subshell=0
@@ -145,438 +255,184 @@ _runAsRoot() {
     fi
 }
 
-function _insert_path() {
-    if [ -z "$1" ]; then
-        return
-    fi
-    echo -e ${PATH//:/"\n"} | grep -c "^$1$" >/dev/null 2>&1 || export PATH=$1:$PATH
+# 日志级别名称数组及最大长度计算
+LOG_LEVELS=("FATAL" "ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
+MAX_LEVEL_LENGTH=0
+
+for level in "${LOG_LEVELS[@]}"; do
+  len=${#level}
+  if (( len > MAX_LEVEL_LENGTH )); then
+    MAX_LEVEL_LENGTH=$len
+  fi
+done
+MAX_LEVEL_LENGTH=$((MAX_LEVEL_LENGTH+2))
+
+# 日志级别名称填充
+pad_level() {
+  printf "%-${MAX_LEVEL_LENGTH}s" "[$1]"
 }
 
-_run() {
-    local trace=0
-    local subshell=0
-    local nostdout=0
-    local nostderr=0
+# 打印带颜色的日志函数
+log() {
+  local level="$(echo "$1" | awk '{print toupper($0)}')" # 转换为大写以支持大小写敏感
+  shift
+  local message="$@"
+  local padded_level=$(pad_level "$level")
+  local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+  case "$level" in
+    "FATAL")
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
+        exit 1
+      fi
+      ;;
 
-    local optNum=0
-    for opt in ${@}; do
-        case "${opt}" in
-        --trace | -x)
-            trace=1
-            ((optNum++))
-            ;;
-        --subshell | -s)
-            subshell=1
-            ((optNum++))
-            ;;
-        --no-stdout)
-            nostdout=1
-            ((optNum++))
-            ;;
-        --no-stderr)
-            nostderr=1
-            ((optNum++))
-            ;;
-        *)
-            break
-            ;;
-        esac
-    done
-
-    shift $(($optNum))
-    local cmd="${*}"
-    bash_c='bash -c'
-
-    local fullcommand="${bash_c} ${cmd}"
-    if [ $nostdout -eq 1 ]; then
-        cmd="${cmd} >/dev/null"
-    fi
-    if [ $nostderr -eq 1 ]; then
-        cmd="${cmd} 2>/dev/null"
-    fi
-
-    if [ $subshell -eq 1 ]; then
-        if [ $trace -eq 1 ]; then
-            (
-                { set -x; } 2>/dev/null
-                ${bash_c} "${cmd}"
-            )
-        else
-            (${bash_c} "${cmd}")
-        fi
-    else
-        if [ $trace -eq 1 ]; then
-            { set -x; } 2>/dev/null
-            ${bash_c} "${cmd}"
-            { local ret=$?; } 2>/dev/null
-            { set +x; } 2>/dev/null
-            return ${ret}
-        else
-            ${bash_c} "${cmd}"
-        fi
-    fi
+    "ERROR")
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
+      fi
+      ;;
+    "WARNING")
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]; then
+        echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message"
+      fi
+      ;;
+    "INFO")
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]; then
+        echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message"
+      fi
+      ;;
+    "SUCCESS")
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]; then
+        echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message"
+      fi
+      ;;
+    "DEBUG")
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]; then
+        echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message"
+      fi
+      ;;
+    *)
+      echo -e "${NC}[$timestamp] [$level] $message"
+      ;;
+  esac
 }
 
-function _ensureDir() {
-    local dirs=$@
-    for dir in ${dirs}; do
-        if [ ! -d ${dir} ]; then
-            mkdir -p ${dir} || {
-                echo "create $dir failed!"
-                exit 1
-            }
-        fi
-    done
+# 设置日志级别的函数
+set_log_level() {
+  local level="$(echo "$1" | awk '{print toupper($0)}')"
+  case "$level" in
+    "FATAL")
+      LOG_LEVEL=$LOG_LEVEL_FATAL
+      ;;
+    "ERROR")
+      LOG_LEVEL=$LOG_LEVEL_ERROR
+      ;;
+    "WARNING")
+      LOG_LEVEL=$LOG_LEVEL_WARNING
+      ;;
+    "INFO")
+      LOG_LEVEL=$LOG_LEVEL_INFO
+      ;;
+    "SUCCESS")
+      LOG_LEVEL=$LOG_LEVEL_SUCCESS
+      ;;
+    "DEBUG")
+      LOG_LEVEL=$LOG_LEVEL_DEBUG
+      ;;
+    *)
+      echo "无效的日志级别: $1"
+      ;;
+  esac
 }
 
-function _root() {
-    if [ ${EUID} -ne ${rootID} ]; then
-        echo "Require root privilege." 1>&2
-        return $err_require_root
-    fi
+# 子命令数组
+# todo
+COMMANDS=("help" "global" "user")
+
+# 显示帮助信息
+show_help() {
+  echo "Usage: $0 [-l LOG_LEVEL] <command>"
+  echo ""
+  echo "Commands:"
+  for cmd in "${COMMANDS[@]}"; do
+    echo "  $cmd"
+  done
+  echo ""
+  echo "Options:"
+  echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
 }
-
-function _require_root() {
-    if ! _root; then
-        exit $err_require_root
-    fi
-}
-
-function _linux() {
-    if [ "$(uname)" != "Linux" ]; then
-        echo "Require Linux" 1>&2
-        return $err_require_linux
-    fi
-}
-
-function _require_linux() {
-    if ! _linux; then
-        exit $err_require_linux
-    fi
-}
-
-function _wait() {
-    # secs=$((5 * 60))
-    secs=${1:?'missing seconds'}
-
-    while [ $secs -gt 0 ]; do
-        echo -ne "$secs\033[0K\r"
-        sleep 1
-        : $((secs--))
-    done
-    echo -ne "\033[0K\r"
-}
-
-_must_ok() {
-    if [ $? != 0 ]; then
-        echo "failed,exit.."
-        exit $?
-    fi
-}
-
-_info() {
-    echo -n "$(date +%FT%T) ${1}"
-}
-
-_infoln() {
-    echo "$(date +%FT%T) ${1}"
-}
-
-_error() {
-    echo -n "$(date +%FT%T) ${RED}${1}${NORMAL}"
-}
-
-_errorln() {
-    echo "$(date +%FT%T) ${RED}${1}${NORMAL}"
-}
-
-_checkService() {
-    _info "find service ${1}.."
-    if systemctl --all --no-pager | grep -q "${1}"; then
-        echo "OK"
-    else
-        echo "Not found"
-        return 1
-    fi
-}
-
-ed=vi
-if _command_exists vim; then
-    ed=vim
-fi
-if _command_exists nvim; then
-    ed=nvim
-fi
-# use ENV: editor to override
-if [ -n "${editor}" ]; then
-    ed=${editor}
-fi
-
-##### begin progress bar #####
-# Usage:
-# Source this script
-# _enable_trapping <- optional to clean up properly if user presses ctrl-c
-# _setup_scroll_area <- create empty progress bar
-# _draw_progress_bar 10 <- advance progress bar
-# _draw_progress_bar 40 <- advance progress bar
-# _block_progress_bar 45 <- turns the progress bar yellow to indicate some action is requested from the user
-# _draw_progress_bar 90 <- advance progress bar
-# _destroy_scroll_area <- remove progress bar
-
-# Constants
-CODE_SAVE_CURSOR="\033[s"
-CODE_RESTORE_CURSOR="\033[u"
-CODE_CURSOR_IN_SCROLL_AREA="\033[1A"
-COLOR_FG="\e[30m"
-COLOR_BG="\e[42m"
-COLOR_BG_BLOCKED="\e[43m"
-RESTORE_FG="\e[39m"
-RESTORE_BG="\e[49m"
-
-# Variables
-PROGRESS_BLOCKED="false"
-TRAPPING_ENABLED="false"
-TRAP_SET="false"
-
-CURRENT_NR_LINES=0
-
-_setup_scroll_area() {
-    # If trapping is enabled, we will want to activate it whenever we setup the scroll area and remove it when we break the scroll area
-    if [ "$TRAPPING_ENABLED" = "true" ]; then
-        _trap_on_interrupt
-    fi
-
-    lines=$(tput lines)
-    CURRENT_NR_LINES=$lines
-    let lines=$lines-1
-    # Scroll down a bit to avoid visual glitch when the screen area shrinks by one row
-    echo -en "\n"
-
-    # Save cursor
-    echo -en "$CODE_SAVE_CURSOR"
-    # Set scroll region (this will place the cursor in the top left)
-    echo -en "\033[0;${lines}r"
-
-    # Restore cursor but ensure its inside the scrolling area
-    echo -en "$CODE_RESTORE_CURSOR"
-    echo -en "$CODE_CURSOR_IN_SCROLL_AREA"
-
-    # Start empty progress bar
-    _draw_progress_bar 0
-}
-
-_destroy_scroll_area() {
-    lines=$(tput lines)
-    # Save cursor
-    echo -en "$CODE_SAVE_CURSOR"
-    # Set scroll region (this will place the cursor in the top left)
-    echo -en "\033[0;${lines}r"
-
-    # Restore cursor but ensure its inside the scrolling area
-    echo -en "$CODE_RESTORE_CURSOR"
-    echo -en "$CODE_CURSOR_IN_SCROLL_AREA"
-
-    # We are done so clear the scroll bar
-    _clear_progress_bar
-
-    # Scroll down a bit to avoid visual glitch when the screen area grows by one row
-    echo -en "\n\n"
-
-    # Once the scroll area is cleared, we want to remove any trap previously set. Otherwise, ctrl+c will exit our shell
-    if [ "$TRAP_SET" = "true" ]; then
-        trap - INT
-    fi
-}
-
-_draw_progress_bar() {
-    sleep .1
-    percentage=$1
-    lines=$(tput lines)
-    let lines=$lines
-
-    # Check if the window has been resized. If so, reset the scroll area
-    if [ "$lines" -ne "$CURRENT_NR_LINES" ]; then
-        _setup_scroll_area
-    fi
-
-    # Save cursor
-    echo -en "$CODE_SAVE_CURSOR"
-
-    # Move cursor position to last row
-    echo -en "\033[${lines};0f"
-
-    # Clear progress bar
-    tput el
-
-    # Draw progress bar
-    PROGRESS_BLOCKED="false"
-    _print_bar_text $percentage
-
-    # Restore cursor position
-    echo -en "$CODE_RESTORE_CURSOR"
-}
-
-_block_progress_bar() {
-    percentage=$1
-    lines=$(tput lines)
-    let lines=$lines
-    # Save cursor
-    echo -en "$CODE_SAVE_CURSOR"
-
-    # Move cursor position to last row
-    echo -en "\033[${lines};0f"
-
-    # Clear progress bar
-    tput el
-
-    # Draw progress bar
-    PROGRESS_BLOCKED="true"
-    _print_bar_text $percentage
-
-    # Restore cursor position
-    echo -en "$CODE_RESTORE_CURSOR"
-}
-
-_clear_progress_bar() {
-    lines=$(tput lines)
-    let lines=$lines
-    # Save cursor
-    echo -en "$CODE_SAVE_CURSOR"
-
-    # Move cursor position to last row
-    echo -en "\033[${lines};0f"
-
-    # clear progress bar
-    tput el
-
-    # Restore cursor position
-    echo -en "$CODE_RESTORE_CURSOR"
-}
-
-_print_bar_text() {
-    local percentage=$1
-    local cols=$(tput cols)
-    let bar_size=$cols-17
-
-    local color="${COLOR_FG}${COLOR_BG}"
-    if [ "$PROGRESS_BLOCKED" = "true" ]; then
-        color="${COLOR_FG}${COLOR_BG_BLOCKED}"
-    fi
-
-    # Prepare progress bar
-    let complete_size=($bar_size * $percentage)/100
-    let remainder_size=$bar_size-$complete_size
-    progress_bar=$(
-        echo -ne "["
-        echo -en "${color}"
-        _printf_new "#" $complete_size
-        echo -en "${RESTORE_FG}${RESTORE_BG}"
-        _printf_new "." $remainder_size
-        echo -ne "]"
-    )
-
-    # Print progress bar
-    echo -ne " Progress ${percentage}% ${progress_bar}"
-}
-
-_enable_trapping() {
-    TRAPPING_ENABLED="true"
-}
-
-_trap_on_interrupt() {
-    # If this function is called, we setup an interrupt handler to cleanup the progress bar
-    TRAP_SET="true"
-    trap _cleanup_on_interrupt INT
-}
-
-_cleanup_on_interrupt() {
-    _destroy_scroll_area
-    exit
-}
-
-_printf_new() {
-    str=$1
-    num=$2
-    v=$(printf "%-${num}s" "$str")
-    echo -ne "${v// /$str}"
-}
-
-##### end progress bar #####
-
-# vim: set ft=sh:
-
-# available VARs: user, home, rootID
-# available functions:
-#    _err(): print "$*" to stderror
-#    _command_exists(): check command "$1" existence
-#    _require_command(): exit when command "$1" not exist
-#    _runAsRoot():
-#                  -x (trace)
-#                  -s (run in subshell)
-#                  --nostdout (discard stdout)
-#                  --nostderr (discard stderr)
-#    _insert_path(): insert "$1" to PATH
-#    _run():
-#                  -x (trace)
-#                  -s (run in subshell)
-#                  --no-stdout (discard stdout)
-#                  --no-stderr (discard stderr)
-#    _ensureDir(): mkdir if $@ not exist
-#    _root(): check if it is run as root
-#    _require_root(): exit when not run as root
-#    _linux(): check if it is on Linux
-#    _require_linux(): exit when not on Linux
-#    _wait(): wait $i seconds in script
-#    _must_ok(): exit when $? not zero
-#    _info(): info log
-#    _infoln(): info log with \n
-#    _error(): error log
-#    _errorln(): error log with \n
-#    _checkService(): check $1 exist in systemd
-
-###############################################################################
-# write your code below (just define function[s])
-# function is hidden when begin with '_'
 
 globalPath=/etc/vim/vimrc.local
+macOSGlobalPath=/usr/share/vim/vimrc
 userPath=$HOME/.vimrc
 
 global() {
-    _config "$globalPath"
+    case "$(uname)" in
+        Darwin)
+            if [ ! -e ${macOSGlobalPath}.orig ];then
+                _runAsRoot cp ${macOSGlobalPath} ${macOSGlobalPath}.orig
+            fi
+            log INFO "Copy vimrc to ${macOSGlobalPath}"
+            _runAsRoot cp vimrc ${macOSGlobalPath}
+            ;;
+        Linux)
+            log INFO "Copy vimrc to ${globalPath}"
+            _runAsRoot cp vimrc ${globalPath}
+            ;;
+    esac
 }
 
 user() {
-    _config "$userPath"
+    log INFO "Copy vimrc to $userPath"
+    cp vimrc $userPath
+
+    log SCUCESS "Done"
 }
 
-_config() {
-    dest=${1}
+#todo
 
-    cp vimrc "$dest"
-}
+# 解析命令行参数
+while getopts ":l:" opt; do
+  case ${opt} in
+    l )
+      set_log_level "$OPTARG"
+      ;;
+    \? )
+      show_help
+      exit 1
+      ;;
+    : )
+      echo "Invalid option: $OPTARG requires an argument" 1>&2
+      show_help
+      exit 1
+      ;;
+  esac
+done
+shift $((OPTIND -1))
 
-# write your code above
-###############################################################################
+# 解析子命令
+command=$1
+shift
 
-em() {
-    $ed $0
-}
+if [[ -z "$command" ]]; then
+  show_help
+  exit 0
+fi
 
-function _help() {
-    cd "${this}"
-    cat <<EOF2
-Usage: $(basename $0) ${bold}CMD${reset}
-
-${bold}CMD${reset}:
-EOF2
-    perl -lne 'print "\t$2" if /^\s*(function)?\s*(\S+)\s*\(\)\s*\{$/' $(basename ${BASH_SOURCE}) | perl -lne "print if /^\t[^_]/"
-}
-
-case "$1" in
-"" | -h | --help | help)
-    _help
+case "$command" in
+  help)
+    show_help
     ;;
-*)
-    "$@"
+  global)
+    global
+    ;;
+  user)
+    user
+    ;;
+  *)
+    echo "Unknown command: $command" 1>&2
+    show_help
+    exit 1
     ;;
 esac
