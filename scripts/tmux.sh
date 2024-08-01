@@ -278,34 +278,34 @@ log() {
   case "$level" in
     "FATAL")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
-        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
         exit 1
       fi
       ;;
 
     "ERROR")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
-        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "WARNING")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]; then
-        echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "INFO")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]; then
-        echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "SUCCESS")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]; then
-        echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "DEBUG")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]; then
-        echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     *)
