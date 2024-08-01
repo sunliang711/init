@@ -60,9 +60,9 @@ LOG_LEVEL=$LOG_LEVEL_INFO
 # 导出 PATH 环境变量
 export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-_err_require_command=1
-_err_require_root=2
-_err_require_linux=3
+err_require_command=1
+err_require_root=2
+err_require_linux=3
 
 _command_exists() {
     command -v "$1" >/dev/null 2>&1
@@ -282,38 +282,38 @@ log() {
   case "$level" in
     "FATAL")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
-        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
         exit 1
       fi
       ;;
 
     "ERROR")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
-        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "WARNING")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]; then
-        echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "INFO")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]; then
-        echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "SUCCESS")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]; then
-        echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "DEBUG")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]; then
-        echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     *)
-      echo -e "${NC}[$timestamp] [$level] $message"
+      echo -e "${NC}[$timestamp] [$level] $message${NORMAL}"
       ;;
   esac
 }
@@ -346,10 +346,6 @@ set_log_level() {
   esac
 }
 
-# 子命令数组
-# todo
-COMMANDS=("help" "example")
-
 # 显示帮助信息
 show_help() {
   echo "Usage: $0 [-l LOG_LEVEL] <command>"
@@ -363,8 +359,12 @@ show_help() {
   echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
 }
 
+# ------------------------------------------------------------
+# 子命令数组
+COMMANDS=("help" "example")
+
 # 示例子命令函数
-example_command() {
+example() {
   log "INFO" "This is an example command."
   log "DEBUG" "This is some debug information."
   _wait 3
@@ -373,7 +373,7 @@ example_command() {
   log "error" "This is an error message."
 }
 
-#todo
+# ------------------------------------------------------------
 
 # 解析命令行参数
 while getopts ":l:" opt; do
@@ -407,13 +407,7 @@ case "$command" in
   help)
     show_help
     ;;
-  example)
-    example_command "$@"
-    ;;
-    #todo
   *)
-    echo "Unknown command: $command" 1>&2
-    show_help
-    exit 1
+    ${command} "$@"
     ;;
 esac
