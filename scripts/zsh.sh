@@ -540,9 +540,14 @@ _printf_new() {
 
 ZSH=${ZSH:-${HOME}/.oh-my-zsh}
 ZSH_CUSTOM=${ZSH_CUSTOM:-${ZSH}/custom}
+
+check(){
+    _require_command git curl zsh
+}
+
 install() {
     export SHELLRC_ROOT=${HOME}/.local/apps/init/shellConfigs
-    _require_command git curl zsh
+    check
 
     if [ ! -e "$HOME/.editrc" ] || ! grep -q 'bind -v' "$HOME/.editrc"; then
         echo 'bind -v' >>"$HOME/.editrc"

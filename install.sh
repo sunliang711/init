@@ -563,6 +563,12 @@ install() {
         echo "to use proxy, pass http proxy as first argument"
     fi
 
+    # check
+    ./scripts/setGit.sh check
+    ./scripts/zsh.sh check
+    ./scripts/installFzf.sh check
+    ./scripts/installFzf check
+
     # git
     (cd scripts && bash setGit.sh set)
 

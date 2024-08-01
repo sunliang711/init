@@ -537,9 +537,12 @@ _printf_new() {
 ###############################################################################
 # write your code below (just define function[s])
 # function is hidden when begin with '_'
-set() {
-    ## check command
+check() {
     _require_command git
+}
+
+set() {
+    check
 
     defaultEmail="sunliang711@163.com"
     defaultUser="sunliang711"

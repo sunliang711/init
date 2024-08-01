@@ -537,7 +537,9 @@ _printf_new() {
 ###############################################################################
 # write your code below (just define function[s])
 ###############################################################################
-# TODO
+check(){
+    _require_command git
+}
 install() {
     cd "${this}"
     echo "Install fzf ..."

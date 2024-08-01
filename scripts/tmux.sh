@@ -359,9 +359,13 @@ show_help() {
   echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
 }
 
+check(){
+    _require_command tmux
+}
+
 # 示例子命令函数
 install() {
-    _require_command tmux
+    check
     set -e
 
     log INFO "Install tmux plugins..."
