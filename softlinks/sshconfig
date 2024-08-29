@@ -12,6 +12,11 @@ Host shros
     User userxx1
     Port 20000
 
+Host shroslan
+    HostName 10.1.1.1
+    User userxx1
+    Port 20000
+
 ##################################################
 # atom sh.gitez.cc
 Host a8eagle128
