@@ -367,6 +367,10 @@ globalPath=/etc/vim/vimrc.local
 macOSGlobalPath=/usr/share/vim/vimrc
 userPath=$HOME/.vimrc
 
+check(){
+    _require_command vim
+}
+
 global() {
     case "$(uname)" in
         Darwin)
@@ -429,6 +433,9 @@ case "$command" in
     ;;
   user)
     user
+    ;;
+  check)
+    check
     ;;
   *)
     echo "Unknown command: $command" 1>&2
