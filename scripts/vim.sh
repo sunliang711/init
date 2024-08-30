@@ -391,6 +391,11 @@ user() {
     log INFO "Copy vimrc to $userPath"
     cp vimrc $userPath
 
+    log INFO "install nerdtree plugin.."
+    # requrie vim 8+
+    git clone https://github.com/preservim/nerdtree.git ~/.vim/pack/vendor/start/nerdtree
+    vim -u NONE -c "helptags ~/.vim/pack/vendor/start/nerdtree/doc" -c q
+
     log SCUCESS "Done"
 }
 

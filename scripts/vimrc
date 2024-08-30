@@ -260,3 +260,5 @@ function! GotoJump()
 endfunction
 
 set completeopt=longest,menuone
+
+nnoremap <leader>e :NERDTreeToggle<CR>
