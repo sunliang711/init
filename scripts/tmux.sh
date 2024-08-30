@@ -521,6 +521,9 @@ case "$command" in
   reinstall)
     reinstall "$@"
     ;;
+  check)
+    check "$@"
+    ;;
   *)
     echo "Unknown command: $command" 1>&2
     show_help
