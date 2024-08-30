@@ -18,7 +18,7 @@ else
 endif
 
 set cursorline
-set cursorcolumn
+# set cursorcolumn
 
 "set mouse=c
 set mouse=a
