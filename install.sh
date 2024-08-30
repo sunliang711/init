@@ -564,11 +564,12 @@ install() {
     fi
 
     # check
-    ./scripts/setGit.sh check
-    ./scripts/zsh.sh check
-    ./scripts/installFzf.sh check
-    ./scripts/tmux.sh check
-    ./scripts/vim.sh check
+    scripts=(./scripts/setGit.sh ./scripts/zsh.sh ./scripts/installFzf.sh ./scripts/tmux.sh ./scripts/vim.sh)
+    for script in ${scripts[@]};do
+        if ! ${script} check;then
+            exit 1
+        fi
+    done
 
     # git
     (cd scripts && bash setGit.sh set)
