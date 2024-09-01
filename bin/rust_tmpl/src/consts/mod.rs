@@ -1,4 +1,5 @@
-pub const CONFIG_TOML_FILE: &str = "App.toml";
+pub const DEFAULT_CONFIG_FILE: &str = "config.toml";
+pub const PRIVATE_CONFIG_FILE: &str = "private.toml";
 pub const CONFIG_ENV_PREFIX: &str = "APP_";
 
 // expect error messages
