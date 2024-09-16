@@ -392,6 +392,7 @@ while getopts ":l:" opt; do
       ;;
   esac
 done
+# NOTE: 这里全局使用了OPTIND，如果在某个函数中也使用了getopts，那么在函数的开头需要重置OPTIND (OPTIND=1)
 shift $((OPTIND -1))
 
 # 解析子命令

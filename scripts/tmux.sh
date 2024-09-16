@@ -57,6 +57,10 @@ LOG_LEVEL_DEBUG=6
 # 默认日志级别
 LOG_LEVEL=$LOG_LEVEL_INFO
 
+err_require_command=1
+err_require_root=2
+err_require_linux=3
+
 # 导出 PATH 环境变量
 export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -520,6 +524,9 @@ case "$command" in
     ;;
   reinstall)
     reinstall "$@"
+    ;;
+  check)
+    check "$@"
     ;;
   *)
     echo "Unknown command: $command" 1>&2

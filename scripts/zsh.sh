@@ -542,7 +542,9 @@ ZSH=${ZSH:-${HOME}/.oh-my-zsh}
 ZSH_CUSTOM=${ZSH_CUSTOM:-${ZSH}/custom}
 
 check(){
-    _require_command git curl zsh
+    _require_command git
+    _require_command curl
+    _require_command zsh
 }
 
 install() {

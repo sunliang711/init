@@ -542,13 +542,13 @@ repo="https://github.com/sunliang711/init"
 dest="$HOME/.local/apps/init"
 
 install() {
-    proxy=${1}
     if [ "$this" != "$dest" ]; then
         echo "Please clone this to $dest"
         echo "Run git clone $repo $dest"
         exit 1
     fi
 
+    proxy=${1}
     if [ -n "$proxy" ]; then
         echo "set proxy.."
         set -x
@@ -564,10 +564,12 @@ install() {
     fi
 
     # check
-    ./scripts/setGit.sh check
-    ./scripts/zsh.sh check
-    ./scripts/installFzf.sh check
-    ./scripts/installFzf check
+    scripts=(./scripts/setGit.sh ./scripts/zsh.sh ./scripts/installFzf.sh ./scripts/tmux.sh ./scripts/vim.sh)
+    for script in ${scripts[@]};do
+        if ! ${script} check;then
+            exit 1
+        fi
+    done
 
     # git
     (cd scripts && bash setGit.sh set)
@@ -583,6 +585,9 @@ install() {
 
     # tmux
     (cd scripts && bash tmux.sh install)
+
+    # vim
+    ( cd scripts && bash vim.sh user)
 
 }
 

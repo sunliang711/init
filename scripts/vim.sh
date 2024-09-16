@@ -367,6 +367,10 @@ globalPath=/etc/vim/vimrc.local
 macOSGlobalPath=/usr/share/vim/vimrc
 userPath=$HOME/.vimrc
 
+check(){
+    _require_command vim
+}
+
 global() {
     case "$(uname)" in
         Darwin)
@@ -386,6 +390,11 @@ global() {
 user() {
     log INFO "Copy vimrc to $userPath"
     cp vimrc $userPath
+
+    log INFO "install nerdtree plugin.."
+    # requrie vim 8+
+    git clone https://github.com/preservim/nerdtree.git ~/.vim/pack/vendor/start/nerdtree
+    vim -u NONE -c "helptags ~/.vim/pack/vendor/start/nerdtree/doc" -c q
 
     log SCUCESS "Done"
 }
@@ -429,6 +438,9 @@ case "$command" in
     ;;
   user)
     user
+    ;;
+  check)
+    check
     ;;
   *)
     echo "Unknown command: $command" 1>&2

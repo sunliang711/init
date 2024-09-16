@@ -18,7 +18,7 @@ else
 endif
 
 set cursorline
-set cursorcolumn
+" set cursorcolumn
 
 "set mouse=c
 set mouse=a
@@ -260,3 +260,9 @@ function! GotoJump()
 endfunction
 
 set completeopt=longest,menuone
+
+nnoremap <leader>e :NERDTreeToggle<CR>
+nnoremap <c-h> <c-w>h
+nnoremap <c-l> <c-w>l
+nnoremap <c-j> <c-w>j
+nnoremap <c-k> <c-w>k

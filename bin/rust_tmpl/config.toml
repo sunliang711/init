@@ -3,3 +3,4 @@ port = 1230
 redis_url = "redis://localhost:7963"
 
 # 对应的env传递方式: APP_SERVER={port=8080,redis_url=redis://localhost:7963}
+# https://docs.rs/figment/latest/figment/providers/struct.Env.html

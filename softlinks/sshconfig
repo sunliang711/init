@@ -12,6 +12,11 @@ Host shros
     User userxx1
     Port 20000
 
+Host shroslan
+    HostName 10.1.1.1
+    User userxx1
+    Port 20000
+
 ##################################################
 # atom sh.gitez.cc
 Host a8eagle128
@@ -109,7 +114,7 @@ Host grafana
     HostName 10.1.1.129
     User eagle
 
-Host service
+Host service135
     HostName 10.1.1.135
     User eagle
 
