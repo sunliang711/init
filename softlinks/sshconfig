@@ -1,6 +1,10 @@
 # Include 指令必须放在Host指令之前!!
 Include ~/.ssh/local
 
+  Host 10.1.9.220
+    HostName 10.1.9.220
+    User root
+
 Host aliyun
     HostName aliyun.gitez.cc
     User eagle
