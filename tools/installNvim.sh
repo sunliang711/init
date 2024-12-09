@@ -19,6 +19,10 @@ fi
 user="${SUDO_USER:-$(whoami)}"
 home="$(eval echo ~$user)"
 
+err_require_command=1
+err_require_root=2
+err_require_linux=3
+
 # 定义颜色
 # Use colors, but only if connected to a terminal(-t 1), and that terminal supports them(ncolors >=8.
 if which tput >/dev/null 2>&1; then
