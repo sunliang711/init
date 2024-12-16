@@ -375,6 +375,7 @@ EOF
 }
 
 backup() {
+  set -e
   configFile=${1:?'missing config file'}
   source "${configFile}"
   for s in "${!fileOrDirs[@]}";do
