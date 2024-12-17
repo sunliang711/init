@@ -30,11 +30,12 @@ mappings=(
 "tcp|22067|10.1.1.135||syncthing relay"
 "tcp|22070|10.1.1.135||syncthing relay"
 
+"tcp|42400|10.1.1.135|32400|plex server"
+"tcp|52400|10.1.1.121|32400|plex server gamePC"
 )
 
 #"tcp|5001|10.1.1.141||dsm website"
 #"tcp|8006|10.1.1.21|8006|dell pve admin console"
-#"tcp|42400|10.1.1.135|32400|plex server"
 #"tcp|26881|10.1.1.135||qbittorrent"
 #"udp|6208|10.1.1.138||mac mini Ponte"
 #"tcp|2120|10.1.1.120|22|trueNas ssh"

@@ -19,10 +19,6 @@ fi
 user="${SUDO_USER:-$(whoami)}"
 home="$(eval echo ~$user)"
 
-err_require_command=1
-err_require_root=2
-err_require_linux=3
-
 # 定义颜色
 # Use colors, but only if connected to a terminal(-t 1), and that terminal supports them(ncolors >=8.
 if which tput >/dev/null 2>&1; then
@@ -63,6 +59,10 @@ LOG_LEVEL=$LOG_LEVEL_INFO
 
 # 导出 PATH 环境变量
 export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+err_require_command=1
+err_require_root=2
+err_require_linux=3
 
 _command_exists() {
     command -v "$1" >/dev/null 2>&1
@@ -282,38 +282,38 @@ log() {
   case "$level" in
     "FATAL")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
-        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
         exit 1
       fi
       ;;
 
     "ERROR")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
-        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "WARNING")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]; then
-        echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "INFO")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]; then
-        echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "SUCCESS")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]; then
-        echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "DEBUG")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]; then
-        echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     *)
-      echo -e "${NC}[$timestamp] [$level] $message"
+      echo -e "${NC}[$timestamp] [$level] $message${NORMAL}"
       ;;
   esac
 }
@@ -346,10 +346,6 @@ set_log_level() {
   esac
 }
 
-# 子命令数组
-# todo
-COMMANDS=("help" "install" "installLatest")
-
 # 显示帮助信息
 show_help() {
   echo "Usage: $0 [-l LOG_LEVEL] <command>"
@@ -363,52 +359,36 @@ show_help() {
   echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
 }
 
-installLatest(){
-    _require_root
-    _require_linux
+# ------------------------------------------------------------
+# 子命令数组
+COMMANDS=("help" "backup" "configFile")
 
-    name="nvim-linux64"
-    link="https://github.com/neovim/neovim/releases/latest/download/${name}.tar.gz"
 
-    cd /tmp
-    curl -LO "$link" || { echo "download failed!"; exit 1; }
+configFile(){
+	cat<<EOF
+## config file example
+bucket="Bucket Name"
+declare -A fileOrDirs
+fileOrDirs[etc]="/etc"
+fileOrDirs[frpc]="/usr/local/frp/frpc/"
+EOF
+}
 
-    tar -C /usr/local -xvf ${name}.tar.gz
-    ln -sf /usr/local/${name}/bin/nvim /usr/local/bin
+backup() {
+  set -e
+  configFile=${1:?'missing config file'}
+  source "${configFile}"
+  for s in "${!fileOrDirs[@]}";do
+    tarFile="$(hostname)-${s}-$(date +%Y%m%d%H%M%S)".tar.bz2
+    log "INFO" "compress: ${fileOrDirs[$s]} -> ${tarFile}"
+    tar -cjf "${tarFile}" "${fileOrDirs[$s]}"
+    log "INFO" "upload to s3.."
+    aws s3 cp "${tarFile}" "s3://${bucket}/$(hostname)/${tarFile}" && rm -rf "${tarFile}"
+  done
 
 }
 
-install() {
-    _require_root
-    _require_linux
-
-    version="${1:?'missing version,eg: v0.8.3 v0.9.1'}"
-    link="https://github.com/neovim/neovim/releases/download/${version}/nvim.appimage"
-    binary="${link##*/}"
-    dest=/usr/local/nvim/"${version}"
-
-    set -e
-
-    cd /tmp
-    if [ ! -e "$binary" ]; then
-        echo "download $link to /tmp .."
-        curl -LO "$link" || {
-            echo "download failed!"
-            exit 1
-        }
-    fi
-    chmod +x "$binary"
-    ./"$binary" --appimage-extract
-
-    if [ ! -e "$dest" ]; then
-        mkdir -p "$dest"
-    fi
-
-    echo "install nvim ${version} to ${dest}.."
-    mv squashfs-root/* "$dest"
-    ln -sf "$dest/usr/bin/nvim" /usr/local/bin/nvim
-
-}
+# ------------------------------------------------------------
 
 # 解析命令行参数
 while getopts ":l:" opt; do
@@ -427,6 +407,7 @@ while getopts ":l:" opt; do
       ;;
   esac
 done
+# NOTE: 这里全局使用了OPTIND，如果在某个函数中也使用了getopts，那么在函数的开头需要重置OPTIND (OPTIND=1)
 shift $((OPTIND -1))
 
 # 解析子命令
@@ -442,15 +423,7 @@ case "$command" in
   help)
     show_help
     ;;
-  install)
-    install "$@"
-    ;;
-  installLatest)
-    installLatest "$@"
-    ;;
   *)
-    echo "Unknown command: $command" 1>&2
-    show_help
-    exit 1
+    ${command} "$@"
     ;;
 esac
