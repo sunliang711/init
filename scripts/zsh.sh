@@ -588,6 +588,7 @@ install() {
 
 linksshpems(){
     ln -svf "${this}"/../softlinks/sshpems "$HOME"/.ssh/sshpems
+    chmod 0600 "$HOME"/.ssh/sshpems/*
 }
 
 uninstall() {
