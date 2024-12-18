@@ -19,6 +19,11 @@ Host shroslan
 
 ##################################################
 # atom sh.gitez.cc
+Host a8aliyun
+    HostName atom8.gitez.cc
+    User root
+    IdentityFile ~/.ssh/sshpems/a8aliyun.pem
+
 Host a8eagle128
     HostName 10.1.9.128
     User eagle

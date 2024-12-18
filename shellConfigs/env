@@ -9,6 +9,8 @@ export GOPROXY=https://goproxy.cn,direct
 user=${SUDO_USER:-$(whoami)}
 home=$(eval echo ~$user)
 
+export SSHPEMS=$HOME/.ssh/sshpems
+
 #BEGIN environment variable
 export workspace=$HOME/Workspace
 export ws=$workspace
