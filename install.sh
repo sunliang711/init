@@ -589,6 +589,9 @@ install() {
     # vim
     ( cd scripts && bash vim.sh user)
 
+    # updateInit
+    ( cd tools && bash updateInit.sh install)
+
 }
 
 uninstall() {
@@ -597,6 +600,8 @@ uninstall() {
     (./tools/installFzf.sh uninstall)
 
     (cd scripts && bash tmux.sh uninstall)
+
+    ( cd tools && bash updateInit.sh uninstall)
 }
 
 # write your code above

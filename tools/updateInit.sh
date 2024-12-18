@@ -369,6 +369,10 @@ install() {
     ( crontab -l ; echo "0 0 * * * ${thisScript} update") | crontab -
 }
 
+uninstall() {
+    ( crontab -l | grep -v updateInit.sh ) | crontab -
+}
+
 update() {
     repo=${home}/.local/apps/init
     cd ${repo}
