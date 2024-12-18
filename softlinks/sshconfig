@@ -1,6 +1,11 @@
 # Include 指令必须放在Host指令之前!!
 Include ~/.ssh/local
 
+
+Host *
+  IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+
+
   Host 10.1.9.220
     HostName 10.1.9.220
     User root
@@ -32,7 +37,7 @@ Host shroslan
 Host a8aliyun
     HostName atom8.gitez.cc
     User root
-    IdentityFile ~/.ssh/sshpems/a8aliyun.pem
+    # IdentityFile ~/.ssh/sshpems/a8aliyun.pem
 
 Host a8eagle128
     HostName 10.1.9.128

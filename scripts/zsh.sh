@@ -583,7 +583,6 @@ install() {
     # soft link sshconfig
     [ ! -d ~/.ssh ] && mkdir ~/.ssh
     ln -svf "${this}"/../softlinks/sshconfig "$HOME"/.ssh/config
-    linksshpems
 }
 
 linksshpems(){
