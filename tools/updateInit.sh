@@ -361,7 +361,7 @@ show_help() {
 
 # ------------------------------------------------------------
 # 子命令数组
-COMMANDS=("help" "update" "install")
+COMMANDS=("help" "update" "install" "uninstall")
 
 thisScript="${this}/updateInit.sh"
 # install to crontab
