@@ -5,6 +5,12 @@ Include ~/.ssh/local
     HostName 10.1.9.220
     User root
 
+Host aliyunChain
+    HostName aliyun.gitez.cc
+    User eagle
+    Port 2000
+    ProxyJump socks
+
 Host aliyun
     HostName aliyun.gitez.cc
     User eagle
