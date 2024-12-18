@@ -366,7 +366,7 @@ COMMANDS=("help" "update" "install")
 thisScript="${this}/updateInit.sh"
 # install to crontab
 install() {
-    ( echo "0 0 * * * ${thisScript} update"; crontab -l ) | crontab -
+    ( crontab -l ; echo "0 0 * * * ${thisScript} update") | crontab -
 }
 
 update() {
