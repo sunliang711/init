@@ -2237,6 +2237,28 @@ function bak() {
     done
 }
 
+unbak () {
+    if [ "$1" = "-h" ]; then
+        cat <<EOF
+Usage: unbak files|dirs
+EOF
+        return 1
+    fi
+    for i in "$@"; do
+        if [[ "${i}" == *.bak ]]; then
+            original_name="${i%.bak}"
+            if [ -e "${i}" ]; then
+                echo "restore ${i} -> ${original_name}"
+                mv "${i}" "${original_name}"
+            else
+                echo "No backup found for ${i}"
+            fi
+        else
+            echo "${i} is not a backup file"
+        fi
+    done
+}
+
 cdnvim() {
     cd $HOME/.config/nvim
 }
