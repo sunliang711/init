@@ -56,6 +56,10 @@ Host a8eagle0
     HostName 10.1.9.128
     User eagle
 
+Host a8eagle112
+    HostName 10.1.9.112
+    User eagle
+
 Host a8pve0
     HostName 10.1.9.2
     User root
