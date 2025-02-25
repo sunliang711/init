@@ -10,6 +10,10 @@ Include ~/.ssh/local
 Host *
   IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 
+Host dmit
+    HostName 154.17.4.62
+    User root
+
 
 Host 10.1.9.220
     HostName 10.1.9.220
