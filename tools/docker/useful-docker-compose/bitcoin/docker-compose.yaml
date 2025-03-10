@@ -22,3 +22,10 @@ services:
 
     restart: always
 
+    # 限制日志大小
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+

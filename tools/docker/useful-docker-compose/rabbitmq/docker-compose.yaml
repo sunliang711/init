@@ -10,3 +10,9 @@ services:
     ports:
         - 5672:5672
         - 15672:15672
+    # 限制日志大小
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

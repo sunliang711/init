@@ -16,6 +16,12 @@ services:
       - 6881:6881
       - 6881:6881/udp
     restart: unless-stopped
+    # 限制日志大小
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     
 # Note
 # 1. 开启容器后，到webui里面设置options-connection里的random，启用random端口

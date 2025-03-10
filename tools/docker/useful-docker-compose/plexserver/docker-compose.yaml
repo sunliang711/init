@@ -14,6 +14,12 @@ services:
       - ./config:/config
       - ./transcode:/transcode
       - <path/to/media>:/data
+    # 限制日志大小
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 # 不用下面的挂载smb到volume的方式了，因为类似的这张服务很多，因此现在统一把smb挂载放到/etc/fstab中进行
 # volumes:

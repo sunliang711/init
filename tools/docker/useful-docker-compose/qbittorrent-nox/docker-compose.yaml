@@ -16,6 +16,12 @@ services:
       - 26881:6881
       - 26881:6881/udp
     restart: unless-stopped
+    # 限制日志大小
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 # Note:
 # 上面的QBT_WEBUI_PORT 值和ports中的8080对应的外部端口一致
 # 服务启动后web页面上的options - connection - listening port 中的端口要和 上面ports中6881的tcp和udp对应的外部端口一致，并且路由中的端口转发也要和它们一致

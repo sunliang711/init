@@ -17,6 +17,12 @@ services:
       # 只保存7天数据
       - '--storage.tsdb.retention.time=7d'
     restart: unless-stopped
+    # 限制日志大小
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   prometheus_data:

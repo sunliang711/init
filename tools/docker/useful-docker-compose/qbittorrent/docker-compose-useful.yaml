@@ -16,6 +16,12 @@ services:
       - 26881:6881
       - 26881:6881/udp
     restart: unless-stopped
+    # 限制日志大小
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 # Note:
 # 上面的WEBUI_PORT 值和ports中的8080对应的外部端口一致
