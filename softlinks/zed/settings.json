@@ -1,0 +1,108 @@
+// Zed settings
+//
+// For information on how to configure Zed, see the Zed
+// documentation: https://zed.dev/docs/configuring-zed
+//
+// To see all of Zed's default settings without changing your
+// custom settings, run the `open default settings` command
+// from the command palette or from `Zed` application menu.
+{
+	"ssh_connections": [
+    {
+      "host": "a8eagle128",
+      "projects": [
+        {
+          "paths": [
+            "~/Sync/atom8/exchange-admin-backend"
+          ]
+        },
+        {
+          "paths": [
+            "~/Sync/atom8/exchange-ledger-manager-backend"
+          ]
+        },
+        {
+          "paths": [
+            "~/Sync/atom8/exchange-quoter2-backend"
+          ]
+        },
+        {
+          "paths": [
+            "~/Sync/rust-tests"
+          ]
+        }
+      ],
+      "upload_binary_over_ssh": true
+    }
+  ],
+	"show_edit_predictions": true,
+	"edit_predictions": {
+		"disabled_globs": [],
+		"mode": "eager"
+	},
+	"icon_theme": "Material Icon Theme",
+	"languages": {
+		"Go": {
+			"show_edit_predictions": true
+		}
+	},
+	"theme": "Gruvbox Dark",
+	"base_keymap": "VSCode",
+	"autosave": "on_focus_change",
+	"inlay_hints": {
+		"enabled": false,
+		"show_type_hints": true,
+		"show_parameter_hints": true,
+		"show_other_hints": true,
+		"toggle_on_modifiers_press": {
+			"control": true,
+			"alt": true
+		}
+	},
+	"vim": {
+		"use_system_clipboard": "on_yank"
+	},
+	"vim_mode": true,
+	"relative_line_numbers": true,
+	"hover_popover_enabled": true,
+	"auto_signature_help": false,
+	"buffer_font_size": 16,
+	"hard_tabs": true,
+	"show_whitespaces": "all",
+	"soft_wrap": "editor_width",
+	"terminal": {
+		"button": true,
+		"copy_on_select": false
+	},
+	"features": {
+		"copilot": true
+	},
+	"assistant": {
+		"default_model": {
+			"provider": "copilot_chat",
+			"model": "claude-3-7-sonnet"
+		},
+		"button": true,
+		"version": "2"
+	},
+	"chat_panel": {
+		"button": "always"
+	},
+	"collaboration_panel": {
+		"button": true
+	},
+	// not work
+	"task": {
+		"show_status_indicator": true
+	},
+	"restore_on_startup": "last_session",
+	"double_click_in_multibuffer": "open",
+	"tab_bar": {
+		"show": true
+	},
+	"tabs": {
+		"file_icons": true,
+		"git_status": true
+	}
+}
+
