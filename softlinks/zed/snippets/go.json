@@ -1,0 +1,17 @@
+{
+	"main function": {
+		"prefix": "main",
+		"body": ["func main(){", "\t$0", "}"],
+		"description": "main function[S]"
+	},
+	"function": {
+		"prefix": "func",
+		"body": ["func $1($2){", "$0", "}"],
+		"description": "function[S]"
+	},
+	"unit test": {
+		"prefix": "test",
+		"body": ["func Test$1(t *testing.T){", "$0", "}"],
+		"description": "unit test[S]"
+	}
+}

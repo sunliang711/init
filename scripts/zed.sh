@@ -365,13 +365,14 @@ COMMANDS=("help" "link")
 
 link() {
     dest=$HOME/.config/zed
-    settingFile="${dest}/settings.json"
-    keymapFile="${dest}/keymap.json"
-    snippetDir="${dest}/snippets"
-
-    sourceSettingFile="${this}/../softlinks/zed/settings.json"
-    sourceKeymapFile="${this}/../softlinks/zed/keymap.json"
-    sourceSnippetDir="${this}/../softlinks/zed/snippets"
+    set -e
+    # require bash >= 4.0
+    # on MacOS install bash with brew (brew install bash),then add $(brew --prefix)/bin to PATH
+    declare -A link_table=(
+        ["${this}/../softlinks/zed/settings.json"]="${dest}/settings.json"
+        ["${this}/../softlinks/zed/keymap.json"]="${dest}/keymap.json"
+        ["${this}/../softlinks/zed/snippets"]="${dest}/snippets"
+    )
 
     if [ ! -d "$dest}" ]; then
         log INFO "create ${dest}.."
@@ -381,31 +382,19 @@ link() {
         }
     fi
 
-    # link settings.json
-    if [ -e "$settingFile" ]; then
-        log INFO "${settingFile} already exists, backup it.."
-        cp "${settingFile}" "${settingFile}.old"
-    fi
-    log INFO "link ${sourceSettingFile} to ${settingFile}.."
-    ln -sf "${sourceSettingFile}" "${settingFile}"
+    for source in "${!link_table[@]}"; do
+        dest="${link_table[$source]}"
+        if [ -e "${dest}" ]; then
+            log INFO "${dest} already exists, backup it .."
+            backup="${dest}.old"
+            if [ ! -e "${backup}" ]; then
+                mv "${dest}" "${dest}.old"
+            fi
+        fi
 
-    # link keymap.json
-    if [ -e "$keymapFile" ]; then
-        log INFO "${keymapFile} already exists, backup it.."
-        cp "${keymapFile}" "${keymapFile}.old"
-    fi
-    log INFO "link ${sourceKeymapFile} to ${keymapFile}.."
-    ln -sf "${sourceKeymapFile}" "${keymapFile}"
-
-    # link snippets
-    if [ -d "$snippetDir" ]; then
-        log INFO "${snippetDir} already exists, backup it.."
-        cp -r "${snippetDir}" "${snippetDir}.old"
-        log INFO "remove ${snippetDir}.."
-        rm -rf "${snippetDir}"
-    fi
-    log INFO "link ${sourceSnippetDir} to ${snippetDir}.."
-    ln -sf "${sourceSnippetDir}" "${snippetDir}"
+        log INFO "link ${source} to ${dest}.."
+        ln -sf "${source}" "${dest}"
+    done
 
 }
 
