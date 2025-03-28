@@ -48,9 +48,9 @@
 			"g i": "editor::GoToImplementation",
 			"g d": "editor::GoToDefinition",
 			"g t": "editor::GoToTypeDefinition",
-			"G i": "editor::GoToImplementationSplit",
-			"G d": "editor::GoToDefinitionSplit",
-			"G t": "editor::GoToTypeDefinitionSplit"
+			"g I": "editor::GoToImplementationSplit",
+			"g D": "editor::GoToDefinitionSplit",
+			"g T": "editor::GoToTypeDefinitionSplit"
 		}
 	}
 	// {
@@ -77,4 +77,3 @@
 	// 	}
 	// }
 ]
-
