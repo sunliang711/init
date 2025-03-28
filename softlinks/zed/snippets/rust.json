@@ -1,0 +1,160 @@
+{
+    "main function": {
+        "prefix": "main",
+        "body": [
+            "fn main(){",
+            "\t$0",
+            "}"
+        ],
+        "description": "main function"
+    },
+    "function": {
+        "prefix": "fn",
+        "body": [
+            "fn $1($2) -> $3 {",
+            "\t$0",
+            "}"
+        ],
+        "description": "function"
+    },
+    "for loop": {
+        "prefix": "for",
+        "body": [
+            "for $1 in $2 {",
+            "\t$0",
+            "}"
+        ],
+        "description": "for loop"
+    },
+    "println": {
+        "prefix": "println",
+        "body": [
+            "println!(\"$1\", $0);"
+        ],
+        "description": "println"
+    },
+    "variable declaration": {
+        "prefix": "let",
+        "body": [
+            "let $1 = $0;"
+        ],
+        "description": "variable declaration"
+    },
+    "unit test function": {
+        "prefix": "test function",
+        "body": [
+            "#[test]",
+            "fn $1() {",
+            "\t$0",
+            "}"
+        ],
+        "description": "unit test function"
+    },
+    "test module": {
+        "prefix": "test mod",
+        "body": [
+            "#[cfg(test)]",
+            "mod tests {",
+            "\tuse super::*;",
+            "\t$0",
+            "}"
+        ],
+        "description": "test module"
+    },
+    "derive": {
+        "prefix": "derive",
+        "body": [
+            "#[derive($1)]",
+            "$0"
+        ],
+        "description": "derive"
+    },
+    "if": {
+        "prefix": "if",
+        "body": [
+            "if $1 {",
+            "\t$0",
+            "}"
+        ],
+        "description": "if"
+    },
+    "if else": {
+        "prefix": "if else",
+        "body": [
+            "if $1 {",
+            "\t$0",
+            "} else {",
+            "\t",
+            "}"
+        ],
+        "description": "if else"
+    },
+    "if let": {
+        "prefix": "if let",
+        "body": [
+            "if let $1 = $2 {",
+            "\t$0",
+            "}"
+        ],
+        "description": "if let"
+    },
+    "match": {
+        "prefix": "match",
+        "body": [
+            "match $1 {",
+            "\t$0",
+            "}"
+        ],
+        "description": "match"
+    },
+    "while let": {
+        "prefix": "while let",
+        "body": [
+            "while let $1 = $2 {",
+            "\t$0",
+            "}"
+        ],
+        "description": "while let"
+    },
+    "todo": {
+        "prefix": "todo",
+        "body": [
+            "// TODO: $0;"
+        ],
+        "description": "todo comment"
+    },
+    "struct": {
+        "prefix": "struct",
+        "body": [
+            "#[derive(Debug)]",
+            "struct $1 {",
+            "\t$2",
+            "}"
+        ],
+        "description": "struct"
+    },
+    "enum": {
+        "prefix": "enum",
+        "body": [
+            "#[derive(Debug)]",
+            "enum $1 {",
+            "\t$2",
+            "}"
+        ],
+        "description": "enum"
+    },
+    "file header": {
+        "prefix": "file header",
+        "body": [
+            "// $1",
+            "//",
+            "// $2",
+            "//",
+            "// $3",
+            "//",
+            "// $4",
+            "//"
+        ],
+        "description": "file header"
+    }
+}
