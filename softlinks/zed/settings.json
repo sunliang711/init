@@ -8,45 +8,37 @@
 // from the command palette or from `Zed` application menu.
 {
 	"ssh_connections": [
-    {
-      "host": "a8eagle128",
-      "projects": [
-        {
-          "paths": [
-            "~/Sync/atom8/exchange-admin-backend"
-          ]
-        },
-        {
-          "paths": [
-            "~/Sync/atom8/exchange-ledger-manager-backend"
-          ]
-        },
-        {
-          "paths": [
-            "~/Sync/atom8/exchange-quoter2-backend"
-          ]
-        },
-        {
-          "paths": [
-            "~/Sync/rust-tests"
-          ]
-        }
-      ],
-      "upload_binary_over_ssh": true
-    }
-  ],
+		{
+			"host": "a8eagle128",
+			"projects": [
+				{
+					"paths": ["~/Sync/atom8/exchange-admin-backend"]
+				},
+				{
+					"paths": ["~/Sync/atom8/exchange-ledger-manager-backend"]
+				},
+				{
+					"paths": ["~/Sync/atom8/exchange-quoter2-backend"]
+				},
+				{
+					"paths": ["~/Sync/rust-tests"]
+				}
+			],
+			"upload_binary_over_ssh": true
+		}
+	],
 	"show_edit_predictions": true,
 	"edit_predictions": {
 		"disabled_globs": [],
 		"mode": "eager"
 	},
-	"icon_theme": "Material Icon Theme",
+	"icon_theme": "Catppuccin Mocha",
 	"languages": {
 		"Go": {
 			"show_edit_predictions": true
 		}
 	},
-	"theme": "Gruvbox Dark",
+	"theme": "Catppuccin Macchiato",
 	"base_keymap": "VSCode",
 	"autosave": "on_focus_change",
 	"inlay_hints": {
@@ -66,7 +58,7 @@
 	"relative_line_numbers": true,
 	"hover_popover_enabled": true,
 	"auto_signature_help": false,
-	"buffer_font_size": 16,
+	"buffer_font_size": 14,
 	"hard_tabs": true,
 	"show_whitespaces": "all",
 	"soft_wrap": "editor_width",
@@ -105,4 +97,3 @@
 		"git_status": true
 	}
 }
-
