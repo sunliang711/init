@@ -70,7 +70,8 @@
 		"copilot": true
 	},
 	"agent": {
-		"default_model": {
+		"default_profile": "ask",
+  "default_model": {
 			"provider": "copilot_chat",
 			"model": "claude-3-7-sonnet"
 		},
