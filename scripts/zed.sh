@@ -372,6 +372,7 @@ link() {
         ["${this}/../softlinks/zed/settings.json"]="${dest}/settings.json"
         ["${this}/../softlinks/zed/keymap.json"]="${dest}/keymap.json"
         ["${this}/../softlinks/zed/snippets"]="${dest}/snippets"
+        ["${this}/../softlinks/zed/tasks.json"]="${dest}/tasks.json"
     )
 
     if [ ! -d "$dest}" ]; then
@@ -385,6 +386,11 @@ link() {
     for source in "${!link_table[@]}"; do
         dest="${link_table[$source]}"
         if [ -e "${dest}" ]; then
+            # 如果dest是目录，则跳过
+            if [ -d "${dest}" ]; then
+                log INFO "${dest} is a directory, skip .."
+                continue
+            fi
             log INFO "${dest} already exists, backup it .."
             backup="${dest}.old"
             if [ ! -e "${backup}" ]; then
