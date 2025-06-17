@@ -260,90 +260,90 @@ LOG_LEVELS=("FATAL" "ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
 MAX_LEVEL_LENGTH=0
 
 for level in "${LOG_LEVELS[@]}"; do
-  len=${#level}
-  if (( len > MAX_LEVEL_LENGTH )); then
-    MAX_LEVEL_LENGTH=$len
-  fi
+    len=${#level}
+    if ((len > MAX_LEVEL_LENGTH)); then
+        MAX_LEVEL_LENGTH=$len
+    fi
 done
-MAX_LEVEL_LENGTH=$((MAX_LEVEL_LENGTH+2))
+MAX_LEVEL_LENGTH=$((MAX_LEVEL_LENGTH + 2))
 
 # 日志级别名称填充
 pad_level() {
-  printf "%-${MAX_LEVEL_LENGTH}s" "[$1]"
+    printf "%-${MAX_LEVEL_LENGTH}s" "[$1]"
 }
 
 # 打印带颜色的日志函数
 log() {
-  local level="$(echo "$1" | awk '{print toupper($0)}')" # 转换为大写以支持大小写敏感
-  shift
-  local message="$@"
-  local padded_level=$(pad_level "$level")
-  local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
-  case "$level" in
+    local level="$(echo "$1" | awk '{print toupper($0)}')" # 转换为大写以支持大小写敏感
+    shift
+    local message="$@"
+    local padded_level=$(pad_level "$level")
+    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+    case "$level" in
     "FATAL")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
-        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
-        exit 1
-      fi
-      ;;
+        if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
+            echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
+            exit 1
+        fi
+        ;;
 
     "ERROR")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
-        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
-      fi
-      ;;
+        if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
+            echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
+        fi
+        ;;
     "WARNING")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]; then
-        echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message"
-      fi
-      ;;
+        if [ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]; then
+            echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message"
+        fi
+        ;;
     "INFO")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]; then
-        echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message"
-      fi
-      ;;
+        if [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]; then
+            echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message"
+        fi
+        ;;
     "SUCCESS")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]; then
-        echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message"
-      fi
-      ;;
+        if [ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]; then
+            echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message"
+        fi
+        ;;
     "DEBUG")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]; then
-        echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message"
-      fi
-      ;;
+        if [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]; then
+            echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message"
+        fi
+        ;;
     *)
-      echo -e "${NC}[$timestamp] [$level] $message"
-      ;;
-  esac
+        echo -e "${NC}[$timestamp] [$level] $message"
+        ;;
+    esac
 }
 
 # 设置日志级别的函数
 set_log_level() {
-  local level="$(echo "$1" | awk '{print toupper($0)}')"
-  case "$level" in
+    local level="$(echo "$1" | awk '{print toupper($0)}')"
+    case "$level" in
     "FATAL")
-      LOG_LEVEL=$LOG_LEVEL_FATAL
-      ;;
+        LOG_LEVEL=$LOG_LEVEL_FATAL
+        ;;
     "ERROR")
-      LOG_LEVEL=$LOG_LEVEL_ERROR
-      ;;
+        LOG_LEVEL=$LOG_LEVEL_ERROR
+        ;;
     "WARNING")
-      LOG_LEVEL=$LOG_LEVEL_WARNING
-      ;;
+        LOG_LEVEL=$LOG_LEVEL_WARNING
+        ;;
     "INFO")
-      LOG_LEVEL=$LOG_LEVEL_INFO
-      ;;
+        LOG_LEVEL=$LOG_LEVEL_INFO
+        ;;
     "SUCCESS")
-      LOG_LEVEL=$LOG_LEVEL_SUCCESS
-      ;;
+        LOG_LEVEL=$LOG_LEVEL_SUCCESS
+        ;;
     "DEBUG")
-      LOG_LEVEL=$LOG_LEVEL_DEBUG
-      ;;
+        LOG_LEVEL=$LOG_LEVEL_DEBUG
+        ;;
     *)
-      echo "无效的日志级别: $1"
-      ;;
-  esac
+        echo "无效的日志级别: $1"
+        ;;
+    esac
 }
 
 # 子命令数组
@@ -352,38 +352,38 @@ COMMANDS=("help" "global" "user")
 
 # 显示帮助信息
 show_help() {
-  echo "Usage: $0 [-l LOG_LEVEL] <command>"
-  echo ""
-  echo "Commands:"
-  for cmd in "${COMMANDS[@]}"; do
-    echo "  $cmd"
-  done
-  echo ""
-  echo "Options:"
-  echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
+    echo "Usage: $0 [-l LOG_LEVEL] <command>"
+    echo ""
+    echo "Commands:"
+    for cmd in "${COMMANDS[@]}"; do
+        echo "  $cmd"
+    done
+    echo ""
+    echo "Options:"
+    echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
 }
 
 globalPath=/etc/vim/vimrc.local
 macOSGlobalPath=/usr/share/vim/vimrc
 userPath=$HOME/.vimrc
 
-check(){
+check() {
     _require_command vim
 }
 
 global() {
     case "$(uname)" in
-        Darwin)
-            if [ ! -e ${macOSGlobalPath}.orig ];then
-                _runAsRoot cp ${macOSGlobalPath} ${macOSGlobalPath}.orig
-            fi
-            log INFO "Copy vimrc to ${macOSGlobalPath}"
-            _runAsRoot cp vimrc ${macOSGlobalPath}
-            ;;
-        Linux)
-            log INFO "Copy vimrc to ${globalPath}"
-            _runAsRoot cp vimrc ${globalPath}
-            ;;
+    Darwin)
+        if [ ! -e ${macOSGlobalPath}.orig ]; then
+            _runAsRoot cp ${macOSGlobalPath} ${macOSGlobalPath}.orig
+        fi
+        log INFO "Copy vimrc to ${macOSGlobalPath}"
+        _runAsRoot cp vimrc ${macOSGlobalPath}
+        ;;
+    Linux)
+        log INFO "Copy vimrc to ${globalPath}"
+        _runAsRoot cp vimrc ${globalPath}
+        ;;
     esac
 }
 
@@ -403,46 +403,46 @@ user() {
 
 # 解析命令行参数
 while getopts ":l:" opt; do
-  case ${opt} in
-    l )
-      set_log_level "$OPTARG"
-      ;;
-    \? )
-      show_help
-      exit 1
-      ;;
-    : )
-      echo "Invalid option: $OPTARG requires an argument" 1>&2
-      show_help
-      exit 1
-      ;;
-  esac
+    case ${opt} in
+    l)
+        set_log_level "$OPTARG"
+        ;;
+    \?)
+        show_help
+        exit 1
+        ;;
+    :)
+        echo "Invalid option: $OPTARG requires an argument" 1>&2
+        show_help
+        exit 1
+        ;;
+    esac
 done
-shift $((OPTIND -1))
+shift $((OPTIND - 1))
 
 # 解析子命令
 command=$1
 shift
 
 if [[ -z "$command" ]]; then
-  show_help
-  exit 0
+    show_help
+    exit 0
 fi
 
 case "$command" in
-  help)
+help)
     show_help
     ;;
-  global)
+global)
     global
     ;;
-  user)
+user)
     user
     ;;
-  check)
+check)
     check
     ;;
-  *)
+*)
     echo "Unknown command: $command" 1>&2
     show_help
     exit 1
