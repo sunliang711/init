@@ -551,15 +551,15 @@ ZSH_CUSTOM=${ZSH_CUSTOM:-${ZSH}/custom}
 check(){
     errorCount=1
     if ! _need_command git;then
-        errorCount=((errorCount+1))
+        errorCount=$((errorCount+1))
     fi
 
     if ! _need_command curl;then
-        errorCount=((errorCount+1))
+        errorCount=$((errorCount+1))
     fi
 
     if ! _need_command zsh;then
-        errorCount=((errorCount+1))
+        errorCount=$((errorCount+1))
     fi
 
     if ((errorCount > 0)); then
