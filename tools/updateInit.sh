@@ -376,6 +376,10 @@ uninstall() {
     (crontab -l | grep -v updateInit.sh) | crontab -
 }
 
+check() {
+    _require_command crontab
+}
+
 update() {
     repo=${home}/.local/apps/init
     cd ${repo}

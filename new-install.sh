@@ -390,7 +390,7 @@ install() {
 
     errorChecks=0
     # check
-    scripts=(./scripts/setGit.sh ./scripts/zsh.sh ./scripts/installFzf.sh ./scripts/tmux.sh ./scripts/vim.sh)
+    scripts=(./scripts/setGit.sh ./scripts/zsh.sh ./scripts/installFzf.sh ./scripts/tmux.sh ./scripts/vim.sh ./tools/updateInit.sh)
     for script in ${scripts[@]}; do
         if ! ${script} check; then
             errorChecks=$((errorChecks + 1))
