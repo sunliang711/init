@@ -65,6 +65,13 @@ _require_command() {
     fi
 }
 
+_need_command() {
+    if ! _command_exists "$1"; then
+        echo "require command $1" 1>&2
+        return 1
+    fi
+}
+
 rootID=0
 
 _runAsRoot() {
@@ -542,9 +549,23 @@ ZSH=${ZSH:-${HOME}/.oh-my-zsh}
 ZSH_CUSTOM=${ZSH_CUSTOM:-${ZSH}/custom}
 
 check(){
-    _require_command git
-    _require_command curl
-    _require_command zsh
+    errorCount=1
+    if ! _need_command git;then
+        errorCount=((errorCount+1))
+    fi
+
+    if ! _need_command curl;then
+        errorCount=((errorCount+1))
+    fi
+
+    if ! _need_command zsh;then
+        errorCount=((errorCount+1))
+    fi
+
+    if ((errorCount > 0)); then
+        exit 1
+    fi
+
 }
 
 install() {
