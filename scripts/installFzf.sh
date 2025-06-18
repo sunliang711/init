@@ -65,6 +65,13 @@ _require_command() {
     fi
 }
 
+_need_command() {
+    if ! _command_exists "$1"; then
+        echo "need command $1" 1>&2
+        return 1
+    fi
+}
+
 rootID=0
 
 _runAsRoot() {
@@ -537,8 +544,16 @@ _printf_new() {
 ###############################################################################
 # write your code below (just define function[s])
 ###############################################################################
-check(){
-    _require_command git
+check() {
+    errorCount=0
+
+    if ! _need_command git; then
+        errorCount=$((errorCount + 1))
+    fi
+
+    if ((errorCount > 0)); then
+        exit 1
+    fi
 }
 install() {
     cd "${this}"

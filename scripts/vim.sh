@@ -75,6 +75,13 @@ _require_command() {
     fi
 }
 
+_need_command() {
+    if ! _command_exists "$1"; then
+        echo "need command $1" 1>&2
+        return 1
+    fi
+}
+
 function _ensureDir() {
     local dirs=$@
     for dir in ${dirs}; do
@@ -368,7 +375,15 @@ macOSGlobalPath=/usr/share/vim/vimrc
 userPath=$HOME/.vimrc
 
 check() {
-    _require_command vim
+    errorCount=0
+
+    if ! _need_command vim; then
+        errorCount=$((errorCount + 1))
+    fi
+
+    if ((errorCount > 0)); then
+        exit 1
+    fi
 }
 
 global() {

@@ -67,7 +67,7 @@ _require_command() {
 
 _need_command() {
     if ! _command_exists "$1"; then
-        echo "require command $1" 1>&2
+        echo "need command $1" 1>&2
         return 1
     fi
 }
