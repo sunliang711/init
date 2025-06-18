@@ -548,18 +548,18 @@ _printf_new() {
 ZSH=${ZSH:-${HOME}/.oh-my-zsh}
 ZSH_CUSTOM=${ZSH_CUSTOM:-${ZSH}/custom}
 
-check(){
-    errorCount=1
-    if ! _need_command git;then
-        errorCount=$((errorCount+1))
+check() {
+    errorCount=0
+    if ! _need_command git; then
+        errorCount=$((errorCount + 1))
     fi
 
-    if ! _need_command curl;then
-        errorCount=$((errorCount+1))
+    if ! _need_command curl; then
+        errorCount=$((errorCount + 1))
     fi
 
-    if ! _need_command zsh;then
-        errorCount=$((errorCount+1))
+    if ! _need_command zsh; then
+        errorCount=$((errorCount + 1))
     fi
 
     if ((errorCount > 0)); then
@@ -606,7 +606,7 @@ install() {
     ln -svf "${this}"/../softlinks/sshconfig "$HOME"/.ssh/config
 }
 
-linksshpems(){
+linksshpems() {
     ln -svf "${this}"/../softlinks/sshpems "$HOME"/.ssh/sshpems
     chmod 0600 "$HOME"/.ssh/sshpems/*
 }
