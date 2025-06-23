@@ -72,6 +72,26 @@ _need_command() {
     fi
 }
 
+_need_command() {
+    if ! _command_exists "$1"; then
+        echo "need command $1" 1>&2
+    fi
+}
+
+_require_commands() {
+    errorNo=0
+    for i in "$@";then
+        if ! _command_exists "$i"; then
+            echo "need command $i" 1>&2
+            errorNo=$((errorNo+1))
+        fi
+    fi
+
+    if ((errorNo > 0 ));then
+        exit ${err_require_command}
+    fi
+}
+
 rootID=0
 
 _runAsRoot() {
@@ -547,13 +567,7 @@ _printf_new() {
 check() {
     errorCount=0
 
-    if ! _need_command git; then
-        errorCount=$((errorCount + 1))
-    fi
-
-    if ((errorCount > 0)); then
-        exit 1
-    fi
+    _require_commands git
 }
 install() {
     cd "${this}"

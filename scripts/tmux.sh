@@ -82,6 +82,26 @@ _need_command() {
     fi
 }
 
+_need_command() {
+    if ! _command_exists "$1"; then
+        echo "need command $1" 1>&2
+    fi
+}
+
+_require_commands() {
+    errorNo=0
+    for i in "$@";then
+        if ! _command_exists "$i"; then
+            echo "need command $i" 1>&2
+            errorNo=$((errorNo+1))
+        fi
+    fi
+
+    if ((errorNo > 0 ));then
+        exit ${err_require_command}
+    fi
+}
+
 function _ensureDir() {
     local dirs=$@
     for dir in ${dirs}; do
@@ -373,13 +393,7 @@ show_help() {
 check() {
     errorCount=0
 
-    if ! _need_command tmux; then
-        errorCount=$((errorCount + 1))
-    fi
-
-    if ((errorCount > 0)); then
-        exit 1
-    fi
+    _require_commands tmux
 }
 
 # 示例子命令函数

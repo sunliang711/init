@@ -72,6 +72,26 @@ _need_command() {
     fi
 }
 
+_need_command() {
+    if ! _command_exists "$1"; then
+        echo "need command $1" 1>&2
+    fi
+}
+
+_require_commands() {
+    errorNo=0
+    for i in "$@";then
+        if ! _command_exists "$i"; then
+            echo "need command $i" 1>&2
+            errorNo=$((errorNo+1))
+        fi
+    fi
+
+    if ((errorNo > 0 ));then
+        exit ${err_require_command}
+    fi
+}
+
 rootID=0
 
 _runAsRoot() {
@@ -549,23 +569,7 @@ ZSH=${ZSH:-${HOME}/.oh-my-zsh}
 ZSH_CUSTOM=${ZSH_CUSTOM:-${ZSH}/custom}
 
 check() {
-    errorCount=0
-    if ! _need_command git; then
-        errorCount=$((errorCount + 1))
-    fi
-
-    if ! _need_command curl; then
-        errorCount=$((errorCount + 1))
-    fi
-
-    if ! _need_command zsh; then
-        errorCount=$((errorCount + 1))
-    fi
-
-    if ((errorCount > 0)); then
-        exit 1
-    fi
-
+    _require_commands git curl zsh
 }
 
 install() {
