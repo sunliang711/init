@@ -54,6 +54,11 @@ function install_xray(){
 
 function config_xray(){
     echo "config xray"
+
+    echo "get public ip"
+    publicIp=$(curl -4 ifconfig.me)
+    echo "public ip: $publicIp"
+
     website="www.microsoft.com"
     shortId=$(echo -n "$website" | sha256sum | cut -d' ' -f1 | head -c 8)
     echo "shortId: $shortId"
@@ -158,12 +163,12 @@ EOF
 
     systemctl restart xray
 
-    echo "clash config segment"
     cat<<EOF2
+=========clash config segment begin=========
 proxies:
   - name: bwg
     type: vless
-    server: <IP>
+    server: ${publicIp}
     port: 443
     uuid: $uuid
     network: tcp
@@ -176,7 +181,54 @@ proxies:
       public-key: $publicKey
       short-id: $shortId
     client-fingerprint: chrome
+=========clash config segment end=========
 EOF2
+
+cat<<EOF3
+=========shadowrocket config begin=========
+{
+  "host" : "$publicIp",
+  "obfsParam" : "",
+  "alpn" : "",
+  "cert" : "",
+  "created" : 1752035905.2086039,
+  "updated" : 1752036056.454201,
+  "tls" : true,
+  "mtu" : "",
+  "flag" : "US",
+  "privateKey" : "",
+  "hpkp" : "",
+  "uuid" : "$uuid",
+  "path" : "",
+  "downmbps" : "",
+  "type" : "VLESS",
+  "user" : "",
+  "xtls" : 2,
+  "ech" : "",
+  "plugin" : "none",
+  "method" : "auto",
+  "data" : "",
+  "filter" : "",
+  "protoParam" : "",
+  "reserved" : "",
+  "alterId" : "",
+  "upmbps" : "",
+  "keepalive" : "",
+  "port" : "443",
+  "obfs" : "none",
+  "dns" : "",
+  "publicKey" : "$publicKey",
+  "peer" : "$website",
+  "weight" : 1752035905,
+  "ip" : "",
+  "title" : "yangBwg",
+  "proto" : "",
+  "password" : "$uuid",
+  "chain" : "",
+  "shortId" : "$shortId"
+}
+=========shadowrocket config end=========
+EOF3
 }
 
 set -e
