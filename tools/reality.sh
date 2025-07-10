@@ -61,7 +61,8 @@ function config_xray(){
     echo "public ip: $publicIp"
 
     website="www.microsoft.com"
-    shortId=$(echo -n "$website" | sha256sum | cut -d' ' -f1 | head -c 8)
+    date=$(date +%s)
+    shortId=$(echo -n "$website$date" | sha256sum | cut -d' ' -f1 | head -c 8)
     echo "shortId: $shortId"
 
     uuid=$(xray uuid)
