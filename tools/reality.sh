@@ -21,7 +21,8 @@ function install_lsof() {
 
 function find_sshd_port() {
     # find the port of sshd
-    lsof -i -P -n | grep sshd | grep -i listen | grep -oE ':[0-9]+' | grep -oE '[0-9]+'
+    # may be 2 port (ipv4 ipv6), so use head -1
+    lsof -i -P -n | grep sshd | grep -i listen | head -1 | grep -oE ':[0-9]+' | grep -oE '[0-9]+'
 }
 
 function set_firewall() {
