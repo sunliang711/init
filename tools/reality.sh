@@ -151,6 +151,7 @@ function config_xray(){
                     "$website"
                 ],
                 "privateKey": "$privateKey",
+                "publicKey": "$publicKey",
                 "minClientVer": "",
                 "maxClientVer": "",
                 "maxTimeDiff": 0,
