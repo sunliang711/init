@@ -210,7 +210,7 @@ proxies:
       short-id: $shortId
     client-fingerprint: chrome
 =========clash config segment end=========
-EOF2
+EOF2 1>&2
 
 cat<<EOF3
 =========shadowrocket config begin=========
@@ -256,7 +256,7 @@ cat<<EOF3
   "shortId" : "$shortId"
 }
 =========shadowrocket config end=========
-EOF3
+EOF3 1>&2
 }
 
 set -e
