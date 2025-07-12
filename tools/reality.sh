@@ -191,7 +191,7 @@ EOF
 
     systemctl restart xray
 
-    cat<<EOF2
+    cat<<EOF2 1>&2
 =========clash config segment begin=========
 proxies:
   - name: bwg
@@ -210,9 +210,9 @@ proxies:
       short-id: $shortId
     client-fingerprint: chrome
 =========clash config segment end=========
-EOF2 1>&2
+EOF2
 
-cat<<EOF3
+cat<<EOF3 1>&2
 =========shadowrocket config begin=========
 {
   "host" : "$publicIp",
@@ -256,7 +256,7 @@ cat<<EOF3
   "shortId" : "$shortId"
 }
 =========shadowrocket config end=========
-EOF3 1>&2
+EOF3
 }
 
 set -e
