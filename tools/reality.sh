@@ -10,13 +10,30 @@ function check_os() {
     fi
 }
 
+function redirect_stdout_to_file() {
+    file_name=/tmp/reality.log
+    echo ">> redirect stdout to file: $file_name"
+    exec 1>> "$file_name"
+}
+
+function update_apt() {
+    echo ">> update apt.."
+    apt-get update >/dev/null
+}
+
+function install_package() {
+    if ! command -v $1 > /dev/null; then
+        echo ">> $1 command not found, install $1.."
+        apt-get install $1 -y >/dev/null
+    fi
+}
+
 function install_ufw() {
-    apt-get update
-    apt-get install ufw -y
+    install_package ufw
 }
 
 function install_lsof() {
-    apt-get install lsof -y
+    install_package lsof
 }
 
 function find_sshd_port() {
@@ -26,7 +43,7 @@ function find_sshd_port() {
 }
 
 function set_firewall() {
-    echo "allow ssh port $1"
+    echo ">> allow ssh port $1"
     sshd_port=$(find_sshd_port)
     if [ -z "$sshd_port" ]; then
         echo "sshd port not found, exit"
@@ -34,46 +51,50 @@ function set_firewall() {
     fi
     ufw allow $sshd_port/tcp
 
-    echo "allow https port 443"
+    echo ">> allow https port 443"
     ufw allow 443/tcp
 
-    echo "enable ufw"
+    echo ">> enable ufw"
     ufw enable
 }
 
 function enable_bbr(){
-    echo "enable bbr"
-    echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-    sysctl -p
+    if grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf && grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf; then
+        echo ">> bbr already enabled, skip"
+    else
+        echo ">> enable bbr"
+        echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+        echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+        sysctl -p
+    fi
 }
 
 function install_xray(){
-    echo "install xray"
+    echo ">> install xray"
     bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root 
 }
 
 function config_xray(){
-    echo "config xray"
+    echo ">> config xray"
 
-    echo "get public ip"
+    echo ">> get public ip"
     publicIp=$(curl -4 ifconfig.me)
-    echo "public ip: $publicIp"
+    echo ">> public ip: $publicIp"
 
     website="www.microsoft.com"
     date=$(date +%s)
     shortId=$(echo -n "$website$date" | sha256sum | cut -d' ' -f1 | head -c 8)
-    echo "shortId: $shortId"
+    echo ">> shortId: $shortId"
 
     uuid=$(xray uuid)
-    echo "uuid: $uuid"
+    echo ">> uuid: $uuid"
     
 
     keyPair=$(xray x25519)
     publicKey=$(echo "$keyPair" | grep -oE 'Public key: [^ ]+' | cut -d' ' -f3)
     privateKey=$(echo "$keyPair" | grep -oE 'Private key: [^ ]+' | cut -d' ' -f3)
-    echo "publicKey: $publicKey"
-    echo "privateKey: $privateKey"
+    echo ">> publicKey: $publicKey"
+    echo ">> privateKey: $privateKey"
 
     echo "generate config file to /usr/local/etc/xray/config.json"
     cat<<EOF>/usr/local/etc/xray/config.json
@@ -234,6 +255,9 @@ EOF3
 }
 
 set -e
+
+redirect_stdout_to_file
+update_apt
 check_os
 install_ufw
 install_lsof
