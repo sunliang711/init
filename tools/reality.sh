@@ -48,12 +48,12 @@ function find_sshd_port() {
 }
 
 function set_firewall() {
-    log "allow ssh port $1"
     sshd_port=$(find_sshd_port)
     if [ -z "$sshd_port" ]; then
-        echo "sshd port not found, exit"
+        log "sshd port not found, exit"
         exit 1
     fi
+    log "allow ssh port $sshd_port"
     ufw allow $sshd_port/tcp
 
     log "allow https port 443"
