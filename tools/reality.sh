@@ -1,18 +1,18 @@
 #!/bin/bash
-function check_os() {
-    if lsb_release -a | grep -q "Ubuntu"; then
-        echo "the os is ubuntu, ok"
-    elif lsb_release -a | grep -q "Debian"; then
-        echo "the os is debian, ok"
-    else
-        echo "unknown os, exit"
-        exit 1
-    fi
-}
-
 function log() {
     # redirect to stderr, because stdout is redirected to file
     echo ">> $@" 1>&2
+}
+
+function check_os() {
+    if lsb_release -a | grep -q "Ubuntu"; then
+        log "the os is ubuntu, ok"
+    elif lsb_release -a | grep -q "Debian"; then
+        log "the os is debian, ok"
+    else
+        log "unknown os, exit"
+        exit 1
+    fi
 }
 
 function redirect_stdout_to_file() {
@@ -101,7 +101,7 @@ function config_xray(){
     log "publicKey: $publicKey"
     log "privateKey: $privateKey"
 
-    echo "generate config file to /usr/local/etc/xray/config.json"
+    log "generate config file to /usr/local/etc/xray/config.json"
     cat<<EOF>/usr/local/etc/xray/config.json
 {
 "log": {
