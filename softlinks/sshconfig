@@ -174,5 +174,6 @@ Host bwg
     Port 29837
 
 Host yang
-    HostName 154.17.4.62
+    # HostName 154.17.4.62
+    HostName 104.194.66.229
     User root
