@@ -15,6 +15,13 @@ function check_os() {
     fi
 }
 
+function require_root() {
+	if [ "${EUID}" -ne 0 ]; then
+		log "this script must be run as root, exit"
+		exit 1
+	fi
+}
+
 function export_path(){
 	export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 	log "export PATH: $PATH"
@@ -310,6 +317,7 @@ EOF4
 
 set -e
 
+require_root
 export_path
 redirect_stdout_to_file
 update_apt
