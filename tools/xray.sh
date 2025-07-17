@@ -381,7 +381,7 @@ show_help() {
 
 # ------------------------------------------------------------
 # 子命令数组
-COMMANDS=("help" "start_pre" "config_client")
+COMMANDS=("help" "mkconfig" "config_client" "config" "restart")
 
 basicConfigFile=basic.json
 clientsConfigFile=clients.json
