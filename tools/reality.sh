@@ -289,6 +289,12 @@ cat<<EOF3 1>&2
 =========shadowrocket config end=========
 EOF3
 
+cat<<EOF4 1>&2
+=========xray client config begin=========
+TODO
+=========xray client config end=========
+EOF4
+
 cp xray.sh /usr/local/bin/xray.sh && chmod +x /usr/local/bin/xray.sh
 
 	# drop in
