@@ -15,6 +15,11 @@ function check_os() {
     fi
 }
 
+function export_path(){
+	export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+	log "export PATH: $PATH"
+}
+
 function redirect_stdout_to_file() {
     file_name=/tmp/reality.log
     log "redirect stdout to file: $file_name"
@@ -60,7 +65,7 @@ function set_firewall() {
     ufw allow 443/tcp
 
     log "enable ufw"
-    ufw enable
+    ufw --force enable
 }
 
 function enable_bbr(){
@@ -76,7 +81,11 @@ function enable_bbr(){
 
 function install_xray(){
     log "install xray"
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root 
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root
+    if [ ! -e /usr/local/bin/xray ]; then
+		log "xray install failed, exit"
+		exit 1
+	fi
 }
 
 function config_xray(){
@@ -93,7 +102,7 @@ function config_xray(){
 
     uuid=$(xray uuid)
     log "uuid: $uuid"
-    
+
 
     keyPair=$(xray x25519)
     publicKey=$(echo "$keyPair" | grep -oE 'Public key: [^ ]+' | cut -d' ' -f3)
@@ -187,7 +196,7 @@ function config_xray(){
         }
     }
 }
-}     
+}
 EOF
 
     systemctl restart xray
@@ -262,6 +271,7 @@ EOF3
 
 set -e
 
+export_path
 redirect_stdout_to_file
 update_apt
 check_os
@@ -271,5 +281,3 @@ set_firewall
 enable_bbr
 install_xray
 config_xray
-
-
