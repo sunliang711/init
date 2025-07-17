@@ -410,7 +410,7 @@ config_client() {
 	# md5sum after
 	after=$(md5sum "${clientsConfigFile}" | awk '{print $1}')
 	if [ "${before}" != "${after}" ]; then
-		log INFO "clients.json has been modified, stop xray service and re-generate config file."
+		log INFO "clients.json has been modified, restart xray service to apply changes."
 	else
 		log INFO "clients.json has not been modified, no need to re-generate config file."
 	fi
