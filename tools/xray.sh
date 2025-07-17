@@ -403,6 +403,7 @@ mkconfig() {
 
 config_client() {
 	_require_commands vim md5sum
+	cd "${dest}"
 	# md5sum before
 	before=$(md5sum "${clientsConfigFile}" | awk '{print $1}')
 	vim "${clientsConfigFile}"
