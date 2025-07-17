@@ -219,6 +219,7 @@ EOF
 ]
 EOF10
 
+    systemctl daemon-reload
     systemctl restart xray
 
     cat<<EOF2 1>&2
