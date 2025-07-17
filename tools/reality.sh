@@ -219,9 +219,6 @@ EOF
 ]
 EOF10
 
-    systemctl daemon-reload
-    systemctl restart xray
-
     cat<<EOF2 1>&2
 =========clash config segment begin=========
 proxies:
@@ -306,6 +303,11 @@ ExecStartPre=/usr/local/bin/xray.sh mkconfig
 EOF4
 }
 
+  function restart(){
+	  systemctl daemon-reload
+	  systemctl restart xray
+  }
+
 set -e
 
 export_path
@@ -319,3 +321,4 @@ set_firewall
 enable_bbr
 install_xray
 config_xray
+restart
