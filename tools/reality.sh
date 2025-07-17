@@ -16,7 +16,7 @@ function check_os() {
 }
 
 function export_path(){
-	export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+	export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 	log "export PATH: $PATH"
 }
 
