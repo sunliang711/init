@@ -38,6 +38,10 @@ function install_package() {
     fi
 }
 
+function install_jq(){
+	install_package jq
+}
+
 function install_ufw() {
     install_package ufw
 }
@@ -80,6 +84,11 @@ function enable_bbr(){
 }
 
 function install_xray(){
+	if [ -e /usr/local/bin/xray ]; then
+		log "xray already installed, skip"
+		return 0
+	fi
+
     log "install xray"
     bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install -u root
     if [ ! -e /usr/local/bin/xray ]; then
@@ -110,8 +119,8 @@ function config_xray(){
     log "publicKey: $publicKey"
     log "privateKey: $privateKey"
 
-    log "generate config file to /usr/local/etc/xray/config.json"
-    cat<<EOF>/usr/local/etc/xray/config.json
+    log "generate config file to /usr/local/etc/xray/basic.json"
+    cat<<EOF>/usr/local/etc/xray/basic.json
 {
 "log": {
     "loglevel": "warning"
@@ -199,6 +208,17 @@ function config_xray(){
 }
 EOF
 
+	cat<<EOF10 >/usr/local/etc/xray/clients.json
+[
+	{
+	    "id": "$uuid",
+	    "flow": "xtls-rprx-vision",
+	    "email": "default@example.com",
+		"level": 0
+	}
+]
+EOF10
+
     systemctl restart xray
 
     cat<<EOF2 1>&2
@@ -267,6 +287,16 @@ cat<<EOF3 1>&2
 }
 =========shadowrocket config end=========
 EOF3
+
+cp xray.sh /usr/local/bin/xray.sh && chmod +x /usr/local/bin/xray.sh
+
+	# drop in
+	mkdir -p /etc/systemd/system/xray.service.d
+	cat<<EOF4 >/etc/systemd/system/xray.service.d/override.conf
+[Service]
+ExecStartPre=/usr/local/bin/xray.sh mkconfig
+
+EOF4
 }
 
 set -e
@@ -275,6 +305,7 @@ export_path
 redirect_stdout_to_file
 update_apt
 check_os
+install_jq
 install_ufw
 install_lsof
 set_firewall
