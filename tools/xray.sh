@@ -416,6 +416,25 @@ config_client() {
 	fi
 }
 
+config(){
+	_require_commands vim md5sum
+	cd "${dest}"
+	# md5sum before
+	before=$(md5sum "${basicConfigFile}" | awk '{print $1}')
+	vim "${basicConfigFile}"
+	# md5sum after
+	after=$(md5sum "${basicConfigFile}" | awk '{print $1}')
+	if [ "${before}" != "${after}" ]; then
+		log INFO "basic.json has been modified, restart xray service to apply changes."
+	else
+		log INFO "basic.json has not been modified, no need to re-generate config file."
+	fi
+}
+
+restart(){
+	systemctl restart xray
+}
+
 # ------------------------------------------------------------
 
 # 解析命令行参数
