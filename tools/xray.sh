@@ -381,7 +381,7 @@ show_help() {
 
 # ------------------------------------------------------------
 # 子命令数组
-COMMANDS=("help" "mkconfig" "config_client" "config" "restart")
+COMMANDS=("help" "mkconfig" "config_client" "config" "restart" "log" "export_client")
 
 basicConfigFile=basic.json
 clientsConfigFile=clients.json
@@ -433,6 +433,19 @@ config(){
 
 restart(){
 	systemctl restart xray
+}
+
+log(){
+	journalctl -u xray -f
+}
+
+export_client(){
+	cd "${dest}"
+	if [ ! -f "${clientsConfigFile}" ]; then
+		log ERROR "clients.json does not exist in ${dest}."
+		exit 1
+	fi
+	cat "${clientsConfigFile}"
 }
 
 # ------------------------------------------------------------
