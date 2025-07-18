@@ -14,6 +14,15 @@ function iface() {
     ip r | grep default | awk '{print $5}' | xargs ip a s
 }
 
+function formatjson(){
+    file="${1:?'missing json file'}"
+    tmpFile=${file}.tmp.$$
+    jq '.' "$file" > "${tmpFile}" && mv "${tmpFile}" "${file}" || {
+		echo "format json file failed, please check the file: ${file}"
+		return 1
+	}
+}
+
 function dockerps0() {
     # available: ID Image Command CreatedAt RunningFor Ports Status Size Names Labels Mounts Networks
     docker ps --format "table {{.Names}}\t{{.ID}}\t{{.Status}}\t{{.Ports}}"
