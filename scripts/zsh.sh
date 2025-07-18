@@ -582,6 +582,7 @@ install() {
     if [ ! -e "$HOME"/.inputrc ] || ! grep -q 'set editing-mode vi' "$HOME/.inputrc"; then
         echo 'set editing-mode vi' >>"$HOME/.inputrc"
     fi
+    set -e
 
     # install omz
     (
