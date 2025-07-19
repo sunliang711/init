@@ -19,10 +19,6 @@ Host 10.1.9.220
     HostName 10.1.9.220
     User root
 
-Host m2mini
-    HostName 10.1.1.138
-    User eagle
-
 Host aliyunChain
     HostName aliyun.gitez.cc
     User eagle
@@ -163,10 +159,13 @@ Host atom121
     HostName 10.1.9.121
     User root
 
-Host mbp2020
-    HostName gitez.cc
+Host dev82
+    HostName 10.2.1.82
     User eagle
-    Port 7705
+
+Host server83
+    HostName 10.2.1.83
+    User root
 
 Host bwg
     HostName 45.78.51.79
