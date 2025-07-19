@@ -10,27 +10,8 @@ Include ~/.ssh/local
 Host *
   IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 
-Host dmit
-    HostName 154.17.4.62
-    User root
-
-
-Host 10.1.9.220
-    HostName 10.1.9.220
-    User root
-
-Host aliyunChain
-    HostName aliyun.gitez.cc
-    User eagle
-    Port 2000
-    ProxyJump socks
-
-Host aliyun
-    HostName aliyun.gitez.cc
-    User eagle
-    Port 2000
-
-
+##################################################
+# home hosts
 Host shros
     HostName sh.gitez.cc
     User userxx1
@@ -41,96 +22,6 @@ Host shroslan
     User userxx1
     Port 20000
 
-##################################################
-# atom sh.gitez.cc
-Host a8aliyun
-    HostName atom8.gitez.cc
-    User root
-    # IdentityFile ~/.ssh/sshpems/a8aliyun.pem
-
-Host a8eagle128
-    HostName 10.1.9.128
-    User eagle
-
-Host a8eagle0
-    HostName 10.1.9.128
-    User eagle
-
-Host a8eagle112
-    HostName 10.1.9.112
-    User eagle
-
-Host a8pve0
-    HostName 10.1.9.2
-    User root
-
-Host a8frpc0
-    HostName 10.1.9.105
-    User root
-
-Host 115
-    HostName 10.1.9.115
-    User root
-
-Host a8pve1
-    HostName sh.gitez.cc
-    Port 30003
-    User root
-
-Host a8frpc1
-    HostName sh.gitez.cc
-    Port 30007
-    User root
-
-Host a8eagle1
-    HostName sh.gitez.cc
-    Port 30006
-    User eagle
-
-Host a8chuan1
-    HostName sh.gitez.cc
-    User root
-    Port 30005
-
-Host atom112
-    HostName 10.1.9.112
-    User root
-    Port 22
-
-# atom gitez.cc
-Host a8frpc2
-    HostName gitez.cc
-    User root
-    Port 7101
-
-Host a8pve2
-    HostName gitez.cc
-    User root
-    Port 7103
-
-Host a8eagle2
-    HostName gitez.cc
-    User eagle
-    Port 7108
-
-Host a8chuan2
-    HostName gitez.cc
-    User root
-    Port 7109
-##################################################
-# ATOM LOCAL VMs
-Host atompve
-    HostName 10.1.9.2
-    User root
-
-Host atomfrpc
-    HostName 10.1.9.113
-    User eagle
-
-
-# ATOM LOCAL VMs
-##################################################
-# LOCAL
 Host gateway
     HostName 10.1.1.15
     User eagle
@@ -139,24 +30,15 @@ Host socks
     HostName 10.1.1.16
     User eagle
 
-Host portmonitor
-    HostName 10.1.1.27
-    User eagle
-
-Host grafana
-    HostName 10.1.1.129
-    User eagle
-
 Host service135
     HostName 10.1.1.135
     User eagle
+##################################################
 
-Host dev142
-    HostName 10.1.1.142
-    User eagle
-
-Host atom121
-    HostName 10.1.9.121
+##################################################
+# chief hosts
+Host frp200
+    HostName 10.2.1.200
     User root
 
 Host dev82
@@ -167,6 +49,10 @@ Host server83
     HostName 10.2.1.83
     User root
 
+##################################################
+
+##################################################
+# vps hosts
 Host bwg
     HostName 45.78.51.79
     User root
@@ -176,3 +62,136 @@ Host yang
     # HostName 154.17.4.62
     HostName 104.194.66.229
     User root
+
+Host dmit
+    HostName 154.17.4.62
+    User root
+
+Host aliyun
+    HostName aliyun.gitez.cc
+    User eagle
+    Port 2000
+
+Host aliyunChain
+    HostName aliyun.gitez.cc
+    User eagle
+    Port 2000
+    ProxyJump socks
+
+Host a8aliyun
+    HostName atom8.gitez.cc
+    User root
+##################################################
+
+
+
+# Host 10.1.9.220
+#     HostName 10.1.9.220
+#     User root
+# 
+# ##################################################
+# # atom sh.gitez.cc
+#     # IdentityFile ~/.ssh/sshpems/a8aliyun.pem
+# 
+# Host a8eagle128
+#     HostName 10.1.9.128
+#     User eagle
+# 
+# Host a8eagle0
+#     HostName 10.1.9.128
+#     User eagle
+# 
+# Host a8eagle112
+#     HostName 10.1.9.112
+#     User eagle
+# 
+# Host a8pve0
+#     HostName 10.1.9.2
+#     User root
+# 
+# Host a8frpc0
+#     HostName 10.1.9.105
+#     User root
+# 
+# Host 115
+#     HostName 10.1.9.115
+#     User root
+# 
+# Host a8pve1
+#     HostName sh.gitez.cc
+#     Port 30003
+#     User root
+# 
+# Host a8frpc1
+#     HostName sh.gitez.cc
+#     Port 30007
+#     User root
+# 
+# Host a8eagle1
+#     HostName sh.gitez.cc
+#     Port 30006
+#     User eagle
+# 
+# Host a8chuan1
+#     HostName sh.gitez.cc
+#     User root
+#     Port 30005
+# 
+# Host atom112
+#     HostName 10.1.9.112
+#     User root
+#     Port 22
+# 
+# # atom gitez.cc
+# Host a8frpc2
+#     HostName gitez.cc
+#     User root
+#     Port 7101
+# 
+# Host a8pve2
+#     HostName gitez.cc
+#     User root
+#     Port 7103
+# 
+# Host a8eagle2
+#     HostName gitez.cc
+#     User eagle
+#     Port 7108
+# 
+# Host a8chuan2
+#     HostName gitez.cc
+#     User root
+#     Port 7109
+# ##################################################
+# # ATOM LOCAL VMs
+# Host atompve
+#     HostName 10.1.9.2
+#     User root
+# 
+# Host atomfrpc
+#     HostName 10.1.9.113
+#     User eagle
+# 
+# 
+# # ATOM LOCAL VMs
+# ##################################################
+# # LOCAL
+# 
+# Host portmonitor
+#     HostName 10.1.1.27
+#     User eagle
+# 
+# Host grafana
+#     HostName 10.1.1.129
+#     User eagle
+# 
+# 
+# Host dev142
+#     HostName 10.1.1.142
+#     User eagle
+# 
+# Host atom121
+#     HostName 10.1.9.121
+#     User root
+# 
+# 
