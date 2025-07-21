@@ -81,6 +81,10 @@ Host aliyunChain
 Host a8aliyun
     HostName atom8.gitez.cc
     User root
+
+Host yunqing
+    HostName 124.156.226.147
+    User ubuntu
 ##################################################
 
 
