@@ -251,14 +251,15 @@ cat<<EOF40 1>&2
 =========xray client config begin=========
 TODO
 =========xray client config end=========
-EOF4
+EOF40
 
 }
 
-  function restart(){
-	  systemctl daemon-reload
-	  systemctl restart hysteria-server
-  }
+function restart(){
+  systemctl daemon-reload
+  systemctl restart hysteria-server
+  log "restart hysteria success"
+}
 
 set -e
 
