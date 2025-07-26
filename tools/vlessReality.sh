@@ -270,6 +270,7 @@ cat<<EOF4 1>&2
 TODO
 =========xray client config end=========
 EOF4
+}
 
 function restart(){
 	  systemctl daemon-reload
