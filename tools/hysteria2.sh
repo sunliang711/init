@@ -227,6 +227,8 @@ acme:
     - ${domain}
   email: ${email}
 EOF3
+    fi
+
 
     cat<<EOF20 1>&2
 =========clash config segment begin=========
