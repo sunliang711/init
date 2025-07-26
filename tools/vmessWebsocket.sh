@@ -338,9 +338,9 @@ domain="${2:?domain is required}"
 require_root
 export_path
 redirect_stdout_to_file
-update_apt
 check_os
 check_domain_resolve "$domain"
+update_apt
 install_jq
 install_lsof
 install_ufw
