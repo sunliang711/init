@@ -15,6 +15,23 @@ function check_os() {
     fi
 }
 
+function check_domain_resole(){
+    domain=${1:?"domain is required"}
+    log "check domain $domain resolve"
+    publicIp=$(curl -4 ifconfig.me)
+    log "public ip: $publicIp"
+
+    resolveIp=$(nslookup $domain | grep -oE 'Address: [^ ]+' | grep -oE '[0-9.]+')
+    log "resolve ip: $resolveIp"
+
+    if [ "$publicIp" != "$resolveIp" ]; then
+        log "domain $domain resolve failed, exit"
+        exit 1
+    fi
+
+    log "domain $domain resolve success"
+}
+
 function require_root() {
 	if [ "${EUID}" -ne 0 ]; then
 		log "this script must be run as root, exit"
@@ -93,6 +110,53 @@ function enable_bbr(){
     fi
 }
 
+function install_acme(){
+    email=${1:?"email is required"}
+    log "install socat"
+    install_package socat
+
+    if [ -e /root/.acme.sh/acme.sh ]; then
+        log "acme already installed, skip"
+        return 0
+    fi
+
+    log "install acme"
+    curl https://get.acme.sh | sh -s email="$email"
+
+    if [ ! -e /root/.acme.sh/acme.sh ]; then
+        log "acme install failed, exit"
+        exit 1
+    fi
+
+    log "acme install success"
+}
+
+function issue_cert(){
+    domain=${1:?"domain is required"}
+    log "issue cert for $domain"
+    # ufw allow 80/tcp
+    /root/.acme.sh/acme.sh --issue -d "$domain" --standalone 
+
+    if [ ! -e /root/.acme.sh/${domain}_ecc/${domain}.cer ]; then
+        log "issue cert failed, exit"
+        exit 1
+    fi
+
+    log "issue cert success"
+
+    log "install cert to $certDir"
+    mkdir -p "$certDir"
+    /root/.acme.sh/acme.sh --install-cert -d "$domain" --key-file "$certDir/${domain}.key" --fullchain-file "$certDir/${domain}.pem"
+
+    if [ ! -e "$certDir/${domain}.pem" ]; then
+        log "cert install failed, exit"
+        exit 1
+    fi
+
+    log "cert install success"
+}
+
+
 function install_h2(){
 	if [ -e /usr/local/bin/hysteria ]; then
 		log "hysteria already installed, skip"
@@ -111,17 +175,12 @@ function install_h2(){
 function config_h2(){
 	domain=${1:?'missing domain'}
 	email=${2:?'missing email'}
+    withAcme=${3:-false}
 
 	configFile="/etc/hysteria/config.yaml"
     log "generate config file to $configFile"
     cat<<EOF>$configFile
 listen: :443
-
-acme:
-  domains:
-    - ${domain}
-  email: ${email}
-
 
 auth:
   # type: password
@@ -153,7 +212,23 @@ trafficStats:
   # secret: some_secret
 EOF
 
-    cat<<EOF2 1>&2
+    if [ "$withAcme" = true ]; then
+        cat<<EOF2>>$configFile
+tls: 
+  cert: /root/certs/${domain}.pem
+  key: /root/certs/${domain}.key
+  # sniGuard: strict | disable | dns-san
+  sniGuard: disable
+EOF2
+    else
+        cat<<EOF3>>$configFile
+acme:
+  domains:
+    - ${domain}
+  email: ${email}
+EOF3
+
+    cat<<EOF20 1>&2
 =========clash config segment begin=========
 proxies:
 - name: hy2
@@ -164,15 +239,15 @@ proxies:
   sni: ''
   skip-cert-verify: true
 =========clash config segment end=========
-EOF2
+EOF20
 
-cat<<EOF3 1>&2
+cat<<EOF30 1>&2
 =========shadowrocket config begin=========
 TODO
 =========shadowrocket config end=========
-EOF3
+EOF30
 
-cat<<EOF4 1>&2
+cat<<EOF40 1>&2
 =========xray client config begin=========
 TODO
 =========xray client config end=========
@@ -189,17 +264,23 @@ set -e
 
 domain=${1:?'missing domain'}
 email=${2:?'missing email'}
+withAcme=${3:-false}
 
 require_root
 export_path
 redirect_stdout_to_file
 update_apt
 check_os
+check_domain_resole "$domain"
 install_jq
 install_ufw
 install_lsof
 set_firewall
 enable_bbr
+if [ "$withAcme" = true ]; then
+    install_acme "$email"
+    issue_cert "$domain"
+fi
 install_h2
-config_h2 $domain $email
+config_h2 $domain $email $withAcme
 restart
