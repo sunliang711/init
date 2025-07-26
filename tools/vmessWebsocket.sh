@@ -69,7 +69,7 @@ function find_sshd_port() {
     lsof -i -P -n | grep sshd | grep -i listen | head -1 | grep -oE ':[0-9]+' | grep -oE '[0-9]+'
 }
 
-function check_domain_resole(){
+function check_domain_resolve(){
     domain=${1:?"domain is required"}
     log "check domain $domain resolve"
     publicIp=$(curl -4 ifconfig.me)
