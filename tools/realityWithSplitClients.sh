@@ -160,7 +160,8 @@ function config_xray(){
             "clients": [
                 {
                     "id": "$uuid",
-                    "flow": "xtls-rprx-vision"
+                    "flow": "xtls-rprx-vision",
+                    "email": "default@example.com"
                 }
             ],
             "decryption": "none"
@@ -251,43 +252,19 @@ cat<<EOF3 1>&2
 =========shadowrocket config begin=========
 {
   "host" : "$publicIp",
-  "obfsParam" : "",
-  "alpn" : "",
-  "cert" : "",
-  "created" : 1752035905.2086039,
-  "updated" : 1752036056.454201,
   "tls" : true,
-  "mtu" : "",
   "flag" : "US",
-  "privateKey" : "",
-  "hpkp" : "",
   "uuid" : "$uuid",
-  "path" : "",
-  "downmbps" : "",
   "type" : "VLESS",
-  "user" : "",
   "xtls" : 2,
-  "ech" : "",
   "plugin" : "none",
   "method" : "auto",
-  "data" : "",
-  "filter" : "",
-  "protoParam" : "",
-  "reserved" : "",
-  "alterId" : "",
-  "upmbps" : "",
-  "keepalive" : "",
   "port" : "443",
   "obfs" : "none",
-  "dns" : "",
   "publicKey" : "$publicKey",
   "peer" : "$website",
-  "weight" : 1752035905,
-  "ip" : "",
   "title" : "yangBwg",
-  "proto" : "",
   "password" : "$uuid",
-  "chain" : "",
   "shortId" : "$shortId"
 }
 =========shadowrocket config end=========
@@ -301,19 +278,19 @@ EOF4
 
 cp xray.sh /usr/local/bin/xray.sh && chmod +x /usr/local/bin/xray.sh
 
-	# drop in
-	mkdir -p /etc/systemd/system/xray.service.d
-	cat<<EOF4 >/etc/systemd/system/xray.service.d/override.conf
+# drop in
+mkdir -p /etc/systemd/system/xray.service.d
+cat<<EOF5 >/etc/systemd/system/xray.service.d/override.conf
 [Service]
 ExecStartPre=/usr/local/bin/xray.sh mkconfig
 
-EOF4
+EOF5
 }
 
-  function restart(){
+function restart(){
 	  systemctl daemon-reload
 	  systemctl restart xray
-  }
+}
 
 set -e
 
