@@ -267,7 +267,7 @@ set -e
 
 domain=${1:?'missing domain'}
 email=${2:?'missing email'}
-withAcme=${3:-false}
+withAcme=${3:?'missing withAcme: true | false'}
 
 require_root
 export_path
