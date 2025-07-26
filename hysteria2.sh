@@ -187,6 +187,9 @@ EOF4
 
 set -e
 
+domain=${1:?'missing domain'}
+email=${2:?'missing email'}
+
 require_root
 export_path
 redirect_stdout_to_file
@@ -198,5 +201,5 @@ install_lsof
 set_firewall
 enable_bbr
 install_h2
-config_h2
+config_h2 $domain $email
 restart
