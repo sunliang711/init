@@ -28,7 +28,7 @@ function export_path(){
 }
 
 function redirect_stdout_to_file() {
-    file_name=/tmp/hysteria2.log
+    file_name=/tmp/hysteria.log
     log "redirect stdout to file: $file_name"
     exec 1>> "$file_name"
 }
@@ -94,16 +94,16 @@ function enable_bbr(){
 }
 
 function install_h2(){
-	if [ -e /usr/local/bin/hysteria2 ]; then
-		log "hysteria2 already installed, skip"
+	if [ -e /usr/local/bin/hysteria ]; then
+		log "hysteria already installed, skip"
 		return 0
 	fi
 
-    log "install hysteria2"
+    log "install hysteria"
     bash <(curl -fsSL https://get.hy2.sh/)
 
-    if [ ! -e /usr/local/bin/hysteria2 ]; then
-		log "hysteria2 install failed, exit"
+    if [ ! -e /usr/local/bin/hysteria ]; then
+		log "hysteria install failed, exit"
 		exit 1
 	fi
 }
@@ -112,7 +112,7 @@ function config_h2(){
 	domain=${1:?'missing domain'}
 	email=${2:?'missing email'}
 
-	configFile="/etc/hysteria2/config.yaml"
+	configFile="/etc/hysteria/config.yaml"
     log "generate config file to $configFile"
     cat<<EOF>$configFile
 listen: :443
