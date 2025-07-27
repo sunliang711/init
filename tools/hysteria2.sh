@@ -225,9 +225,18 @@ tls:
   key: /root/certs/${domain}.key
   # sniGuard: strict | disable | dns-san
   sniGuard: disable
+# acme:
+#   domains:
+#     - ${domain}
+#   email: ${email}
 EOF2
     else
         cat<<EOF3>>$configFile
+# tls:
+#   cert: /root/certs/${domain}.pem
+#   key: /root/certs/${domain}.key
+#   # sniGuard: strict | disable | dns-san
+#   sniGuard: disable
 acme:
   domains:
     - ${domain}
