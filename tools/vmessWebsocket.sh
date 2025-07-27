@@ -288,10 +288,10 @@ proxies:
         skip-cert-verify: false    # 是否跳过证书验证，建议为 false 以确保安全
         servername: $domain        # TLS 的 SNI，需与服务器证书域名一致
         network: ws                # 传输协议为 WebSocket
-        ws-opts:                   # WebSocket 配置
-	      path: "$wsPath"            # WebSocket 路径，需与服务器端一致
-	      headers:
-	        Host: $domain          # WebSocket Host
+        ws-opts:                   # WebSocket 配置(在clash中(mihomo),这行不需要，而且下面的配置不在这个节点的下一级，奇怪了)
+	    path: "$wsPath"            # WebSocket 路径，需与服务器端一致
+	    headers:
+	      Host: $domain          # WebSocket Host
 =========clash config segment end=========
 EOF2
 
