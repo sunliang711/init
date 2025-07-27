@@ -137,7 +137,7 @@ function issue_cert(){
     if [ ! -e /root/.acme.sh/${domain}_ecc/${domain}.cer ]; then
         log "issue cert for $domain"
         # ufw allow 80/tcp
-        /root/.acme.sh/acme.sh --issue -d "$domain" --standalone 
+        /root/.acme.sh/acme.sh --issue -d "$domain" --standalone
     else
         log "cert issued, skip"
     fi
@@ -181,7 +181,9 @@ function install_h2(){
 function config_h2(){
 	domain=${1:?'missing domain'}
 	email=${2:?'missing email'}
-    withAcme=${3:-false}
+    # withAcme=${3:-false}
+    # TODO 暂时不支持自动配置acme，因为生成的证书会有权限问题，以后修复
+    withAcme=false
 
 	configFile="/etc/hysteria/config.yaml"
     log "generate config file to $configFile"
@@ -220,7 +222,7 @@ EOF
 
     if [ "$withAcme" = true ]; then
         cat<<EOF2>>$configFile
-tls: 
+tls:
   cert: /root/certs/${domain}.pem
   key: /root/certs/${domain}.key
   # sniGuard: strict | disable | dns-san
