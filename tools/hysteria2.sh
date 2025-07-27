@@ -133,9 +133,15 @@ function install_acme(){
 
 function issue_cert(){
     domain=${1:?"domain is required"}
-    log "issue cert for $domain"
-    # ufw allow 80/tcp
-    /root/.acme.sh/acme.sh --issue -d "$domain" --standalone 
+
+    if [ ! -e /root/.acme.sh/${domain}_ecc/${domain}.cer ]; then
+        log "issue cert for $domain"
+        # ufw allow 80/tcp
+        /root/.acme.sh/acme.sh --issue -d "$domain" --standalone 
+    else
+        log "cert issued, skip"
+    fi
+
 
     if [ ! -e /root/.acme.sh/${domain}_ecc/${domain}.cer ]; then
         log "issue cert failed, exit"
@@ -268,6 +274,7 @@ set -e
 domain=${1:?'missing domain'}
 email=${2:?'missing email'}
 withAcme=${3:?'missing withAcme: true | false'}
+certDir=/root/certs
 
 require_root
 export_path
