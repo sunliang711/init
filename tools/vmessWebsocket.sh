@@ -142,7 +142,7 @@ function issue_cert(){
     domain=${1:?"domain is required"}
     log "issue cert for $domain"
     # ufw allow 80/tcp
-    /root/.acme.sh/acme.sh --issue -d "$domain" --standalone 
+    /root/.acme.sh/acme.sh --issue -d "$domain" --standalone
 
     if [ ! -e /root/.acme.sh/${domain}_ecc/${domain}.cer ]; then
         log "issue cert failed, exit"
@@ -276,7 +276,7 @@ EOF
     cat<<EOF2 1>&2
 =========clash config segment begin=========
 proxies:
-    - name: "vmess-ws-tls"    
+    - name: "vmess-ws-tls"
         type: vmess                # 协议类型为 VMess
         server: $domain            # 服务器地址（域名或 IP）
         port: 443                  # 服务器端口，通常为 443 以使用 HTTPS 端口
@@ -289,9 +289,9 @@ proxies:
         servername: $domain        # TLS 的 SNI，需与服务器证书域名一致
         network: ws                # 传输协议为 WebSocket
         ws-opts:                   # WebSocket 配置
-        path: "$wsPath"            # WebSocket 路径，需与服务器端一致
-        headers:
-            Host: $domain          # WebSocket Host
+	      path: "$wsPath"            # WebSocket 路径，需与服务器端一致
+	      headers:
+	        Host: $domain          # WebSocket Host
 =========clash config segment end=========
 EOF2
 
