@@ -503,7 +503,9 @@ runAsRoot2() {
 dockerproxyon() {
     local dest=/etc/systemd/system/docker.service.d
     local cfg=${dest}/proxy.conf
-    checkRoot
+    if ! checkRoot;then
+    	return 1
+    fi
 
     if ! _linux; then
         return 1
