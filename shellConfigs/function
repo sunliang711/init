@@ -281,9 +281,9 @@ _restartDocker() {
         return 1
     fi
     echo "systemctl daemon-reload..."
-    runAsRoot "systemctl daemon-reload"
+    runAsRoot systemctl daemon-reload
     echo "restart docker..."
-    runAsRoot "systemctl restart docker"
+    runAsRoot systemctl restart docker
 }
 
 _command_exists() {
@@ -350,7 +350,79 @@ topOf() {
     esac
 }
 
+checkRoot() {
+    if [ "$(id -u)" -ne 0 ]; then
+        # 检查是否有 sudo 命令
+        if ! command -v sudo >/dev/null 2>&1; then
+            echo "Error: 'sudo' command is required." >&2
+            return 1
+        fi
+
+        # 检查用户是否在 sudoers 中
+        echo "Checking if you have sudo privileges..."
+        if ! sudo -v 2>/dev/null; then
+            echo "You do NOT have sudo privileges or failed to enter password." >&2
+            return 1
+        fi
+    fi
+}
+
 runAsRoot() {
+    local trace=0
+    local subshell=0
+    local nostdout=0
+    local nostderr=0
+
+    local optNum=0
+    for opt in "$@"; do
+        case "$opt" in
+            --trace | -x) trace=1 ;;
+            --subshell | -s) subshell=1 ;;
+            --no-stdout) nostdout=1 ;;
+            --no-stderr) nostderr=1 ;;
+            *) break ;;
+        esac
+        ((optNum++))
+    done
+
+    shift "$optNum"
+    local cmd=("$@")
+    local bash_c=(bash -c)
+    if [ "$(id -u)" -ne 0 ]; then
+        if command -v sudo >/dev/null 2>&1; then
+            bash_c=(sudo -E bash -c)
+        elif command -v su >/dev/null 2>&1; then
+            bash_c=(su -c)
+        else
+            echo "Error: need sudo or su to run commands as root." >&2
+            return 1
+        fi
+    fi
+
+    local stdout="/dev/stdout"
+    local stderr="/dev/stderr"
+    [ $nostdout -eq 1 ] && stdout="/dev/null"
+    [ $nostderr -eq 1 ] && stderr="/dev/null"
+
+    local quoted_cmd
+    quoted_cmd="$(printf '%q ' "${cmd[@]}")"
+
+    if [ $subshell -eq 1 ]; then
+        (
+            [ $trace -eq 1 ] && set -x
+            "${bash_c[@]}" "$quoted_cmd" >"$stdout" 2>"$stderr"
+        )
+    else
+        [ $trace -eq 1 ] && set -x
+        "${bash_c[@]}" "$quoted_cmd" >"$stdout" 2>"$stderr"
+        local ret=$?
+        [ $trace -eq 1 ] && { set +x; } 2>/dev/null
+        return $ret
+    fi
+}
+
+
+runAsRoot2() {
     local trace=0
     local subshell=0
     local nostdout=0
@@ -431,6 +503,7 @@ runAsRoot() {
 dockerproxyon() {
     local dest=/etc/systemd/system/docker.service.d
     local cfg=${dest}/proxy.conf
+    checkRoot
 
     if ! _linux; then
         return 1
@@ -443,7 +516,7 @@ dockerproxyon() {
 
     if [ ! -d ${dest} ]; then
         echo "mkdir ${dest}..."
-        runAsRoot "mkdir ${dest}"
+        runAsRoot mkdir "${dest}"
     fi
 
     if [ -e ${cfg} ]; then
@@ -459,7 +532,7 @@ dockerproxyon() {
 	EOF
 
     echo "Write proxy info to file: ${cfg}"
-    runAsRoot "mv ${tmpFile} ${cfg}"
+    runAsRoot mv "${tmpFile}" "${cfg}"
 
     _restartDocker
 }
@@ -467,7 +540,7 @@ dockerproxyon() {
 dockerproxyoff() {
     local dest=/etc/systemd/system/docker.service.d
     local cfg=${dest}/proxy.conf
-    runAsRoot "rm ${cfg}"
+    runAsRoot rm "${cfg}"
     _restartDocker
 }
 
