@@ -7,7 +7,7 @@ function Source() {
 }
 
 function halt() {
-    runAsRoot -x shutdown -h now
+    runAsRoot shutdown -h now
 }
 
 function iface() {
@@ -368,47 +368,16 @@ checkRoot() {
 }
 
 runAsRoot() {
-    local trace=0
-    local subshell=0
-
-    local optNum=0
-    for opt in "$@"; do
-        case "$opt" in
-            --trace | -x) trace=1 ;;
-            --subshell | -s) subshell=1 ;;
-            *) break ;;
-        esac
-        ((optNum++))
-    done
-
-    shift "$optNum"
-    local cmd=("$@")
-    local bash_c=(bash -c)
-    if [ "$(id -u)" -ne 0 ]; then
-        if command -v sudo >/dev/null 2>&1; then
-            bash_c=(sudo -E bash -c)
-        elif command -v su >/dev/null 2>&1; then
-            bash_c=(su -c)
-        else
-            echo "Error: need sudo or su to run commands as root." >&2
+    if [ "$(id -u)" -eq 0 ]; then
+        echo "Running as root: $*"
+        "$@"
+    else
+        if ! command -v sudo >/dev/null 2>&1; then
+            echo "Error: 'sudo' is required but not found." >&2
             return 1
         fi
-    fi
-
-    local quoted_cmd
-    quoted_cmd="$(printf '%q ' "${cmd[@]}")"
-
-    if [ $subshell -eq 1 ]; then
-        (
-            [ $trace -eq 1 ] && set -x
-            "${bash_c[@]}" "$quoted_cmd" >"$stdout" 2>"$stderr"
-        )
-    else
-        [ $trace -eq 1 ] && set -x
-        "${bash_c[@]}" "$quoted_cmd" >"$stdout" 2>"$stderr"
-        local ret=$?
-        [ $trace -eq 1 ] && { set +x; } 2>/dev/null
-        return $ret
+        echo "Using sudo: $*"
+        sudo "$@"
     fi
 }
 
