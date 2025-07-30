@@ -399,10 +399,9 @@ runAsRoot() {
         fi
     fi
 
-    local stdout="/dev/stdout"
-    local stderr="/dev/stderr"
-    [ $nostdout -eq 1 ] && stdout="/dev/null"
-    [ $nostderr -eq 1 ] && stderr="/dev/null"
+    local redirect=""
+    [ $nostdout -eq 1 ] && redirect+=" > /dev/null"
+    [ $nostderr -eq 1 ] && redirect+=" 2> /dev/null"
 
     local quoted_cmd
     quoted_cmd="$(printf '%q ' "${cmd[@]}")"
