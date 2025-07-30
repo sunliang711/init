@@ -370,16 +370,12 @@ checkRoot() {
 runAsRoot() {
     local trace=0
     local subshell=0
-    local nostdout=0
-    local nostderr=0
 
     local optNum=0
     for opt in "$@"; do
         case "$opt" in
             --trace | -x) trace=1 ;;
             --subshell | -s) subshell=1 ;;
-            --no-stdout) nostdout=1 ;;
-            --no-stderr) nostderr=1 ;;
             *) break ;;
         esac
         ((optNum++))
@@ -398,10 +394,6 @@ runAsRoot() {
             return 1
         fi
     fi
-
-    local redirect=""
-    [ $nostdout -eq 1 ] && redirect+=" > /dev/null"
-    [ $nostderr -eq 1 ] && redirect+=" 2> /dev/null"
 
     local quoted_cmd
     quoted_cmd="$(printf '%q ' "${cmd[@]}")"
