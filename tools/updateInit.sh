@@ -344,15 +344,7 @@ uninstall() {
 }
 
 check() {
-    errorCount=0
-
-    if ! _need_command crontab; then
-        errorCount=$((errorCount + 1))
-    fi
-
-    if ((errorCount > 0)); then
-        exit 1
-    fi
+    _require_commands crontab
 }
 
 update() {

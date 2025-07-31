@@ -331,8 +331,6 @@ show_help() {
 COMMANDS=("help" "check" "install" "uninstall")
 
 check() {
-    errorCount=0
-
     _require_commands git
 }
 
