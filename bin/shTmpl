@@ -60,9 +60,10 @@ LOG_LEVEL=$LOG_LEVEL_INFO
 # 导出 PATH 环境变量
 export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-err_require_command=1
-err_require_root=2
-err_require_linux=3
+err_require_command=100
+err_require_root=200
+err_require_linux=300
+err_create_dir=400
 
 _command_exists() {
     command -v "$1" >/dev/null 2>&1
@@ -72,12 +73,6 @@ _require_command() {
     if ! _command_exists "$1"; then
         echo "Require command $1" 1>&2
         exit ${err_require_command}
-    fi
-}
-
-_need_command() {
-    if ! _command_exists "$1"; then
-        echo "need command $1" 1>&2
     fi
 }
 
@@ -101,15 +96,17 @@ function _ensureDir() {
         if [ ! -d ${dir} ]; then
             mkdir -p ${dir} || {
                 echo "create $dir failed!"
-                exit 1
+                exit $err_create_dir
             }
         fi
     done
 }
 
+rootID=0
+
 function _root() {
     if [ ${EUID} -ne ${rootID} ]; then
-        echo "Require root privilege." 1>&2
+        echo "need root privilege." 1>&2
         return $err_require_root
     fi
 }
@@ -122,7 +119,7 @@ function _require_root() {
 
 function _linux() {
     if [ "$(uname)" != "Linux" ]; then
-        echo "Require Linux" 1>&2
+        echo "need Linux" 1>&2
         return $err_require_linux
     fi
 }
@@ -194,7 +191,22 @@ if [ -n "${editor}" ]; then
     ed=${editor}
 fi
 
-rootID=0
+checkRoot() {
+    if [ "$(id -u)" -ne 0 ]; then
+        # 检查是否有 sudo 命令
+        if ! command -v sudo >/dev/null 2>&1; then
+            echo "Error: 'sudo' command is required." >&2
+            return 1
+        fi
+
+        # 检查用户是否在 sudoers 中
+        echo "Checking if you have sudo privileges..."
+        if ! sudo -v 2>/dev/null; then
+            echo "You do NOT have sudo privileges or failed to enter password." >&2
+            return 1
+        fi
+    fi
+}
 
 runAsRoot() {
     if [ "$(id -u)" -eq 0 ]; then
@@ -209,84 +221,6 @@ runAsRoot() {
         sudo "$@"
     fi
 }
-# # 用法: _runAsRoot [-x] [-s] [--no-stdout] [--no-stderr] <command>
-# _runAsRoot() {
-#     local trace=0
-#     local subshell=0
-#     local nostdout=0
-#     local nostderr=0
-
-#     local optNum=0
-#     for opt in ${@}; do
-#         case "${opt}" in
-#         --trace | -x)
-#             trace=1
-#             ((optNum++))
-#             ;;
-#         --subshell | -s)
-#             subshell=1
-#             ((optNum++))
-#             ;;
-#         --no-stdout)
-#             nostdout=1
-#             ((optNum++))
-#             ;;
-#         --no-stderr)
-#             nostderr=1
-#             ((optNum++))
-#             ;;
-#         *)
-#             break
-#             ;;
-#         esac
-#     done
-
-#     shift $(($optNum))
-#     local cmd="${*}"
-#     bash_c='bash -c'
-#     if [ "${EUID}" -ne "${rootID}" ]; then
-#         if _command_exists sudo; then
-#             bash_c='sudo -E bash -c'
-#         elif _command_exists su; then
-#             bash_c='su -c'
-#         else
-#             cat >&2 <<-'EOF'
-# 			Error: this installer needs the ability to run commands as root.
-# 			We are unable to find either "sudo" or "su" available to make this happen.
-# 			EOF
-#             return 1
-#         fi
-#     fi
-
-#     local fullcommand="${bash_c} ${cmd}"
-#     if [ $nostdout -eq 1 ]; then
-#         cmd="${cmd} >/dev/null"
-#     fi
-#     if [ $nostderr -eq 1 ]; then
-#         cmd="${cmd} 2>/dev/null"
-#     fi
-
-#     if [ $subshell -eq 1 ]; then
-#         if [ $trace -eq 1 ]; then
-#             (
-#                 { set -x; } 2>/dev/null
-#                 ${bash_c} "${cmd}"
-#             )
-#         else
-#             (${bash_c} "${cmd}")
-#         fi
-#     else
-#         if [ $trace -eq 1 ]; then
-#             { set -x; } 2>/dev/null
-#             ${bash_c} "${cmd}"
-#             local ret=$?
-#             { set +x; } 2>/dev/null
-#             return $ret
-#         else
-#             ${bash_c} "${cmd}"
-#         fi
-#     fi
-# }
 
 # 日志级别名称数组及最大长度计算
 LOG_LEVELS=("FATAL" "ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
