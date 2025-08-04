@@ -355,9 +355,9 @@ install() {
 
     cd "${dirName}"
     log INFO "install to ${dest}.."
-    runAsRoot cp bin/* ${dest}/bin
-    runAsRoot cp lib/* ${dest}/lib
-    runAsRoot cp share/* ${dest}/share
+    runAsRoot cp -r bin/* ${dest}/bin
+    runAsRoot cp -r lib/* ${dest}/lib
+    runAsRoot cp -r share/* ${dest}/share
 
     rm -rf "${downloadDir}"
 }
