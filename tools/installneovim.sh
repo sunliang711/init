@@ -333,10 +333,8 @@ COMMANDS=("help" "install")
 
 install() {
 	set -e
-    # curl -s https://api.github.com/repos/${repoUser}/${repoName}/releases/latest | grep browser_download_url | cut -d '"' -f 4
-    log INFO "get lazygit latest link.."
-    link="$( curl -s https://api.github.com/repos/neovim/neovim/releases/latest | grep browser_download_url|grep -i $(uname -s) |  grep -i $(uname -m) | cut -d '"' -f 4   | grep tar
-   mage$)"
+    log INFO "get neovim latest link.."
+    link="$(curl -s https://api.github.com/repos/neovim/neovim/releases/latest | grep browser_download_url|grep -i $(uname -s) |  grep -i $(uname -m) | cut -d '"' -f 4   | grep tar)"
     log INFO "latest link: ${link}"
     tarfileName="${link##*/}"
 
