@@ -340,6 +340,7 @@ install() {
     tarfileName="${link##*/}"
 
     downloadDir=/tmp/lazygit_download
+    [ ! -d "${downloadDir}" ] && mkdir "${downloadDir}"
     log INFO "download lazygit to ${downloadDir}.."
 
     cd ${downloadDir}
