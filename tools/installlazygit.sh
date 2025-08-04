@@ -354,6 +354,8 @@ install() {
 
     log INFO "install to ${dest}.."
     runAsRoot cp lazygit ${dest}
+
+    rm -rf "${downloadDir}"
 }
 
 # checKernel(){
