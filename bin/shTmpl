@@ -191,6 +191,7 @@ if [ -n "${editor}" ]; then
     ed=${editor}
 fi
 
+rootID=0
 checkRoot() {
     if [ "$(id -u)" -ne 0 ]; then
         # 检查是否有 sudo 命令

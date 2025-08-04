@@ -12,6 +12,18 @@
 			"host": "a8eagle128",
 			"projects": [
 				{
+					"paths": ["/home/eagle/Sync/atom8/exchange-admin-backend"]
+				},
+				{
+					"paths": ["/home/eagle/Sync/atom8/exchange-funding-backend"]
+				},
+				{
+					"paths": ["/home/eagle/Sync/atom8/exchange-user-attribute-backend"]
+				},
+				{
+					"paths": ["/home/eagle/Sync/standard-tokens-2025"]
+				},
+				{
 					"paths": ["~/Sync/atom8/exchange-admin-backend"]
 				},
 				{
@@ -30,7 +42,7 @@
 	"show_edit_predictions": true,
 	"edit_predictions": {
 		"disabled_globs": [],
-		"mode": "eager"
+		"mode": "subtle"
 	},
 	"icon_theme": "Catppuccin Mocha",
 	"languages": {
@@ -70,10 +82,11 @@
 		"edit_prediction_provider": "copilot"
 	},
 	"agent": {
-		"default_profile": "ask",
+		"always_allow_tool_actions": true,
+		"default_profile": "write",
 		"default_model": {
 			"provider": "copilot_chat",
-			"model": "claude-3.7-sonnet"
+			"model": "claude-sonnet-4"
 		},
 		"button": true,
 		"version": "2"
@@ -96,5 +109,14 @@
 	"tabs": {
 		"file_icons": true,
 		"git_status": true
+	},
+	"lsp": {
+		"rust-analyzer": {
+			"initialization_options": {
+				"rust": {
+					"analyzerTargetDir": true
+				}
+			}
+		}
 	}
 }
