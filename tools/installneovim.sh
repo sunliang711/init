@@ -337,6 +337,7 @@ install() {
     link="$(curl -s https://api.github.com/repos/neovim/neovim/releases/latest | grep browser_download_url|grep -i $(uname -s) |  grep -i $(uname -m) | cut -d '"' -f 4   | grep tar)"
     log INFO "latest link: ${link}"
     tarfileName="${link##*/}"
+    dirName="${tarfileName%%.tar.*}"
 
     downloadDir=/tmp/nvim_download
     [ ! -d "${downloadDir}" ] && mkdir "${downloadDir}"
@@ -351,6 +352,8 @@ install() {
     dest="/usr/local"
     [ ! -d "${dest}" ] && mkdir "${dest}"
 
+
+    cd "${dirName}"
     log INFO "install to ${dest}.."
     runAsRoot cp bin/* ${dest}/bin
     runAsRoot cp lib/* ${dest}/lib
