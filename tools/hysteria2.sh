@@ -277,6 +277,7 @@ EOF40
 function restart(){
   systemctl daemon-reload
   systemctl restart hysteria-server
+  systemctl enable hysteria-server
   log "restart hysteria success"
 }
 
