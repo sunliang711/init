@@ -776,30 +776,30 @@ proxyon() {
     gitproxyon "${proxy}"
     envProxyOn "${proxy}" -s
 
-    echo
+    # echo
 
-    npmproxyon
-    pipproxyon
+    # npmproxyon
+    # pipproxyon
 
-    case $(uname) in
-    Darwin)
-        macproxyon "${proxy}"
-        ;;
-    esac
+    # case $(uname) in
+    # Darwin)
+    #     macproxyon "${proxy}"
+    #     ;;
+    # esac
 }
 
 proxyoff() {
     gitproxyoff
     envProxyOff -s
 
-    npmproxyoff
-    pipproxyoff
+    # npmproxyoff
+    # pipproxyoff
 
-    case $(uname) in
-    Darwin)
-        macproxyoff
-        ;;
-    esac
+    # case $(uname) in
+    # Darwin)
+    #     macproxyoff
+    #     ;;
+    # esac
 }
 
 #创建目录并进入该目录
