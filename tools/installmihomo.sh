@@ -333,7 +333,7 @@ COMMANDS=("help" "install")
 
 install() {
   set -e
-  dest=${1:-/usr/local/bin}
+  dest=${1:-"/usr/local/bin"}
   log INFO "get mihomo latest link.."
   machine=
   case $(uname -m) in
@@ -369,7 +369,8 @@ install() {
   mv ${extractedFile} ${standardFile}
 
   log INFO "install mihomo to ${dest}"
-  _runAsRoot install -m 755 "${standardFile}" -t "${dest}"
+  # 这里要用全路径，否则会递归调用本函数!!
+  _runAsRoot /usr/bin/install -m 755 "${standardFile}" -t "${dest}"
 
   cd /tmp && rm -rf "${downloadDir}"
 }
