@@ -352,7 +352,7 @@ install() {
   link="$(curl -s https://api.github.com/repos/metacubex/mihomo/releases/latest | grep browser_download_url|grep -i $(uname -s) | grep -i ${machine} | grep gz | head -1 | cut -d '"' -f 4)"
   log INFO "latest link: ${link}"
   gzFile="${link##*/}"
-  extractedFile="${gzFile##.gz}"
+  extractedFile="${gzFile%.gz}"
   standardFile=mihomo
 
   downloadDir=/tmp/mihomo_download
