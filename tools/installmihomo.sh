@@ -348,7 +348,7 @@ install() {
   fi
 
   # mihomo的链接里用的是amd64和386,不是uname -m 输出的x86_64和i686
-  link="$(curl -s https://api.github.com/repos/metacubex/mihomo/releases/latest | grep browser_download_url|grep -i $(uname -s)" | grep -i "${machine}" | grep gz | head -1)"
+  link="$(curl -s https://api.github.com/repos/metacubex/mihomo/releases/latest | grep browser_download_url|grep -i $(uname -s) | grep -i ${machine} | grep gz | head -1)"
   log INFO "latest link: ${link}"
   gzFile="${link##*/}"
   extractedFile="${gzFile##.gz}"
