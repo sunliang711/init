@@ -333,6 +333,7 @@ COMMANDS=("help" "install")
 
 install() {
   set -e
+  dest=${1:-/usr/local/bin}
   log INFO "get mihomo latest link.."
   machine=
   case $(uname -m) in
@@ -352,6 +353,7 @@ install() {
   log INFO "latest link: ${link}"
   gzFile="${link##*/}"
   extractedFile="${gzFile##.gz}"
+  standardFile=mihomo
 
   downloadDir=/tmp/mihomo_download
   [ ! -d "${downloadDir}" ] && mkdir "${downloadDir}"
@@ -363,6 +365,13 @@ install() {
   log INFO "extract ${gzFile}.."
   gunzip "${gzFile}"
 
+  # rename
+  mv ${extractedFile} ${standardFile}
+
+  log INFO "install mihomo to ${dest}"
+  _runAsRoot install -m 755 "${standardFile}" -t "${dest}"
+
+  cd /tmp && rm -rf "${downloadDir}"
 }
 
 # ------------------------------------------------------------
