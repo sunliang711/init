@@ -341,8 +341,8 @@ install() {
     fi
 
     log INFO "get neovim link from ${link}.."
-    link="$(curl -s ${link} | grep browser_download_url|grep -i $(uname -s) |  grep -i $(uname -m) | cut -d '"' -f 4   | grep tar.gz)"
-    log INFO "latest link: ${link}"
+    link="$(curl -s ${link} | grep browser_download_url|grep -i $(uname -s) |  grep -i $(uname -m) | cut -d '"' -f 4   | grep 'tar.gz$')"
+    log INFO "link: ${link}"
     tarfileName="${link##*/}"
     dirName="${tarfileName%%.tar.*}"
 
