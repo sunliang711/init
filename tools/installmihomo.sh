@@ -348,8 +348,13 @@ install() {
   	log FATAL "detect machine failed"
   fi
 
+  [ ! -d "${dest}" ] && mkdir "${dest}"
+
   latestLink=https://api.github.com/repos/metacubex/mihomo/releases/latest
   specificLink=https://api.github.com/repos/metacubex/mihomo/releases/tags/v${version}
+
+  mmdbLink="https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb"
+  mmdbFile="${mmdbLink##*/}"
 
   # mihomo的链接里用的是amd64和386,不是uname -m 输出的x86_64和i686
   link="$(curl -s https://api.github.com/repos/metacubex/mihomo/releases/latest | grep browser_download_url|grep -i $(uname -s) | grep -i ${machine} | grep gz | head -1 | cut -d '"' -f 4)"
@@ -363,7 +368,8 @@ install() {
   log INFO "download mihomo to ${downloadDir}.."
 
   cd "${downloadDir}"
-  curl -LO "${link}" || { echo "download mihomo failed"; exit 1; }
+  curl -LO "${link}" || { log FATAL "download mihomo failed";  }
+  curl -LO "${mmdbLink}" || { log FATAL "download mmdb failed"; }
 
   log INFO "extract ${gzFile}.."
   gunzip "${gzFile}"
@@ -374,6 +380,7 @@ install() {
   log INFO "install mihomo to ${dest}"
   # 这里要用全路径，否则会递归调用本函数!!
   _runAsRoot /usr/bin/install -m 755 "${standardFile}" -t "${dest}"
+  _runAsRoot /usr/bin/install -m 777 "${mmdbFile}" -t "${dest}"
 
   cd /tmp && rm -rf "${downloadDir}"
 }
