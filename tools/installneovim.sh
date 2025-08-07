@@ -339,6 +339,7 @@ install() {
     else
         link="https://api.github.com/repos/neovim/neovim/releases/tags/v${version}"
     fi
+    log INFO "minimum version: 0.10.4(glibc 2.31)"
 
     log INFO "get neovim link from ${link}.."
     link="$(curl -s ${link} | grep browser_download_url|grep -i $(uname -s) |  grep -i $(uname -m) | cut -d '"' -f 4   | grep 'tar.gz$')"
