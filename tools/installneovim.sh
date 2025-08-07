@@ -340,7 +340,7 @@ install() {
         link="https://api.github.com/repos/neovim/neovim/releases/tags/v${version}"
     fi
 
-    log INFO "get neovim latest link.."
+    log INFO "get neovim link from ${link}.."
     link="$(curl -s ${link} | grep browser_download_url|grep -i $(uname -s) |  grep -i $(uname -m) | cut -d '"' -f 4   | grep tar)"
     log INFO "latest link: ${link}"
     tarfileName="${link##*/}"
