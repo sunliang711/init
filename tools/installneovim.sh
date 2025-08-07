@@ -333,8 +333,15 @@ COMMANDS=("help" "install")
 
 install() {
 	set -e
+    version=${1}
+    if [ "${version}x" == "x" ];then
+        link="https://api.github.com/repos/neovim/neovim/releases/latest"
+    else
+        link="https://api.github.com/repos/neovim/neovim/releases/tags/v${version}"
+    fi
+
     log INFO "get neovim latest link.."
-    link="$(curl -s https://api.github.com/repos/neovim/neovim/releases/latest | grep browser_download_url|grep -i $(uname -s) |  grep -i $(uname -m) | cut -d '"' -f 4   | grep tar)"
+    link="$(curl -s ${link} | grep browser_download_url|grep -i $(uname -s) |  grep -i $(uname -m) | cut -d '"' -f 4   | grep tar)"
     log INFO "latest link: ${link}"
     tarfileName="${link##*/}"
     dirName="${tarfileName%%.tar.*}"
