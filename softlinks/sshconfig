@@ -26,8 +26,12 @@ Host gateway
     HostName 10.1.1.15
     User eagle
 
-Host socks
+Host socks16
     HostName 10.1.1.16
+    User eagle
+
+Host socks32
+    HostName 10.1.1.32
     User eagle
 
 Host service135
@@ -76,7 +80,7 @@ Host aliyunChain
     HostName aliyun.gitez.cc
     User eagle
     Port 2000
-    ProxyJump socks
+    ProxyJump socks16
 
 Host a8aliyun
     HostName atom8.gitez.cc

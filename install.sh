@@ -190,7 +190,7 @@ if [ -n "${editor}" ]; then
     ed=${editor}
 fi
 
-checkRoot() {
+_checkRoot() {
     if [ "$(id -u)" -ne 0 ]; then
         # 检查是否有 sudo 命令
         if ! command -v sudo >/dev/null 2>&1; then
@@ -207,7 +207,7 @@ checkRoot() {
     fi
 }
 
-runAsRoot() {
+_runAsRoot() {
     if [ "$(id -u)" -eq 0 ]; then
         echo "Running as root: $*"
         "$@"
