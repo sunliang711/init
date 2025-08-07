@@ -365,9 +365,17 @@ COMMANDS=("help" "install")
 
 install() {
 	set -e
-    log INFO "get neovim latest link.."
-    link="$(curl -s https://api.github.com/repos/neovim/neovim/releases/latest | grep browser_download_url|grep -i $(uname -s) |  grep -i $(uname -m) | cut -d '"' -f 4   | grep tar)"
-    log INFO "latest link: ${link}"
+    version=${1}
+    if [ "${version}x" == "x" ];then
+        link="https://api.github.com/repos/neovim/neovim/releases/latest"
+    else
+        link="https://api.github.com/repos/neovim/neovim/releases/tags/v${version}"
+    fi
+    log INFO "minimum version: 0.10.4(glibc 2.31)"
+
+    log INFO "get neovim link from ${link}.."
+    link="$(curl -s ${link} | grep browser_download_url|grep -i $(uname -s) |  grep -i $(uname -m) | cut -d '"' -f 4   | grep 'tar.gz$')"
+    log INFO "link: ${link}"
     tarfileName="${link##*/}"
     dirName="${tarfileName%%.tar.*}"
 
