@@ -361,7 +361,7 @@ show_help() {
 
 # ------------------------------------------------------------
 # 子命令数组
-COMMANDS=("help" "backup" "configFile")
+COMMANDS=("help" "backup" "configFile" "install")
 
 
 configFile(){
