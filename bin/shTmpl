@@ -360,6 +360,10 @@ show_help() {
   echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
 }
 
+em(){
+	$ed $0
+}
+
 # ------------------------------------------------------------
 # 子命令数组
 COMMANDS=("help" "example")
