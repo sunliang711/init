@@ -379,25 +379,29 @@ install(){
   set -e
 
   # Linux x86_64
-  if [ "$(uname -m)" = "x86_64" ]; then
-    log "INFO" "install awscli for x86_64"
-    curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-    unzip awscliv2.zip
-    _runAsRoot <<EOF
-    ./aws/install
+  if [ "$(uname -s)" = "Linux" ]; then
+    if [ "$(uname -m)" = "x86_64" ]; then
+      log "INFO" "install awscli for x86_64"
+      curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+      unzip awscliv2.zip >/dev/null
+      _runAsRoot <<EOF
+./aws/install
 EOF
-    rm -rf awscliv2.zip
-  # Linux arm64
-  elif [ "$(uname -m)" = "aarch64" ]; then
+      rm -rf awscliv2.zip
+    elif [ "$(uname -m)" = "aarch64" ]; then
     log "INFO" "install awscli for aarch64"
     curl "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "awscliv2.zip"
-    unzip awscliv2.zip
+    unzip awscliv2.zip >/dev/null
     _runAsRoot <<EOF
-    ./aws/install
+./aws/install
 EOF
     rm -rf awscliv2.zip
-  else
-    log "ERROR" "unsupported architecture: $(uname -m)"
+    else
+      log "ERROR" "unsupported architecture: $(uname -m)"
+      exit 1
+    fi
+  elif [ "$(uname -s)" = "Darwin" ]; then
+    log "ERROR" "not support now"
     exit 1
   fi
 
