@@ -270,7 +270,6 @@ _runAsRoot() {
 # ...
 # EOF
 _run(){
-  local script="$@"
   if [ -t 0 ]; then
     # interactive mode
     if [ $# -eq 0 ]; then
