@@ -498,6 +498,7 @@ install(){
     set -e
 
     _require_linux
+    _require_commands curl unzip
 
     get_release_link syncthing/syncthing latest 
     if [ -z "$link" ]; then
@@ -507,9 +508,17 @@ install(){
 
     cd /tmp
     curl -LO "$link" && { echo "download ok"; } || { echo "download failed"; exit 1; }
-    zipFile=`echo ${link##*/}`
-    echo "extract $zipFile.."
-    unzip -d /tmp/syncthing $zipFile
+    tarFile=`echo ${link##*/}`
+    echo "extract $tarFile.."
+    tar xf ${tarFile}
+
+    extractedDir="${tarFile%.tar.*}"
+    cd "${extractedDir}"
+    _runAsRoot<<EOF
+cp syncthing /usr/bin
+cp etc/linux-systemd/system/syncthing@.service /etc/systemd/system
+EOF
+    echo "use systemctl start syncthing@XX to start syncthing"
 }
 
 # ------------------------------------------------------------
