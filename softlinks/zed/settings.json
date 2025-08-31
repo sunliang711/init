@@ -8,25 +8,48 @@
 // from the command palette or from `Zed` application menu.
 {
 	"ssh_connections": [
-		{
-			"host": "a8eagle128",
-			"projects": [
-				{
-					"paths": ["~/Sync/atom8/exchange-admin-backend"]
-				},
-				{
-					"paths": ["~/Sync/atom8/exchange-ledger-manager-backend"]
-				},
-				{
-					"paths": ["~/Sync/atom8/exchange-quoter2-backend"]
-				},
-				{
-					"paths": ["~/Sync/rust-tests"]
-				}
-			],
-			"upload_binary_over_ssh": true
-		}
-	],
+    {
+      "host": "a8eagle128",
+      "projects": [
+        {
+          "paths": [
+            "/home/eagle/Sync"
+          ]
+        },
+        {
+          "paths": [
+            "~/Sync/atom8/exchange-admin-backend"
+          ]
+        },
+        {
+          "paths": [
+            "~/Sync/atom8/exchange-ledger-manager-backend"
+          ]
+        },
+        {
+          "paths": [
+            "~/Sync/atom8/exchange-quoter2-backend"
+          ]
+        },
+        {
+          "paths": [
+            "~/Sync/rust-tests"
+          ]
+        }
+      ],
+      "upload_binary_over_ssh": true
+    },
+    {
+      "host": "dev82",
+      "projects": [
+        {
+          "paths": [
+            "/home/eagle/Sync/atom8/exchange-ledger-manager-backend"
+          ]
+        }
+      ]
+    }
+  ],
 	"show_edit_predictions": true,
 	"edit_predictions": {
 		"disabled_globs": [],
@@ -73,10 +96,9 @@
 		"default_profile": "ask",
 		"default_model": {
 			"provider": "copilot_chat",
-			"model": "claude-3.7-sonnet"
+			"model": "claude-sonnet-4"
 		},
 		"button": true,
-		"version": "2"
 	},
 	"chat_panel": {
 		"button": "always"
