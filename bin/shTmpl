@@ -255,6 +255,41 @@ _runAsRoot() {
     fi
 }
 
+# run command with trace in subshell
+# support interactive mode and script mode
+# Usage:
+# 1. 单条命令
+# _run ls -l /root
+# 2. 多行命令
+# script=$(cat<<'EOF'
+# ...
+# EOF)
+# _run <<< "${script}"
+# 3. 多行命令
+# _run<<'EOF'
+# ...
+# EOF
+_run(){
+  local script="$@"
+  if [ -t 0 ]; then
+    # interactive mode
+    if [ $# -eq 0 ]; then
+      echo "Usage: _run <command> [args...]" >&2
+      return 1
+    fi
+    (
+      set -x
+      "$@"
+    )
+  else
+    # script mode
+    (
+      set -x
+      bash -s
+    )
+  fi
+}
+
 
 # 日志级别名称数组及最大长度计算
 LOG_LEVELS=("FATAL" "ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
