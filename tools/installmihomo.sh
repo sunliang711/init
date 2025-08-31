@@ -19,10 +19,6 @@ fi
 user="${SUDO_USER:-$(whoami)}"
 home="$(eval echo ~$user)"
 
-err_require_command=1
-err_require_root=2
-err_require_linux=3
-
 # 定义颜色
 # Use colors, but only if connected to a terminal(-t 1), and that terminal supports them(ncolors >=8.
 if which tput >/dev/null 2>&1; then
@@ -64,6 +60,11 @@ LOG_LEVEL=$LOG_LEVEL_INFO
 # 导出 PATH 环境变量
 export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+err_require_command=100
+err_require_root=200
+err_require_linux=300
+err_create_dir=400
+
 _command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
@@ -75,21 +76,37 @@ _require_command() {
     fi
 }
 
+_require_commands() {
+    errorNo=0
+    for i in "$@";do
+        if ! _command_exists "$i"; then
+            echo "need command $i" 1>&2
+            errorNo=$((errorNo+1))
+        fi
+    done
+
+    if ((errorNo > 0 ));then
+        exit ${err_require_command}
+    fi
+}
+
 function _ensureDir() {
     local dirs=$@
     for dir in ${dirs}; do
         if [ ! -d ${dir} ]; then
             mkdir -p ${dir} || {
                 echo "create $dir failed!"
-                exit 1
+                exit $err_create_dir
             }
         fi
     done
 }
 
+rootID=0
+
 function _root() {
     if [ ${EUID} -ne ${rootID} ]; then
-        echo "Require root privilege." 1>&2
+        echo "need root privilege." 1>&2
         return $err_require_root
     fi
 }
@@ -102,7 +119,7 @@ function _require_root() {
 
 function _linux() {
     if [ "$(uname)" != "Linux" ]; then
-        echo "Require Linux" 1>&2
+        echo "need Linux" 1>&2
         return $err_require_linux
     fi
 }
@@ -175,83 +192,66 @@ if [ -n "${editor}" ]; then
 fi
 
 rootID=0
+_checkRoot() {
+    if [ "$(id -u)" -ne 0 ]; then
+        # 检查是否有 sudo 命令
+        if ! command -v sudo >/dev/null 2>&1; then
+            echo "Error: 'sudo' command is required." >&2
+            return 1
+        fi
 
-# 用法: _runAsRoot [-x] [-s] [--no-stdout] [--no-stderr] <command>
-_runAsRoot() {
-    local trace=0
-    local subshell=0
-    local nostdout=0
-    local nostderr=0
-
-    local optNum=0
-    for opt in ${@}; do
-        case "${opt}" in
-        --trace | -x)
-            trace=1
-            ((optNum++))
-            ;;
-        --subshell | -s)
-            subshell=1
-            ((optNum++))
-            ;;
-        --no-stdout)
-            nostdout=1
-            ((optNum++))
-            ;;
-        --no-stderr)
-            nostderr=1
-            ((optNum++))
-            ;;
-        *)
-            break
-            ;;
-        esac
-    done
-
-    shift $(($optNum))
-    local cmd="${*}"
-    bash_c='bash -c'
-    if [ "${EUID}" -ne "${rootID}" ]; then
-        if _command_exists sudo; then
-            bash_c='sudo -E bash -c'
-        elif _command_exists su; then
-            bash_c='su -c'
-        else
-            cat >&2 <<-'EOF'
-			Error: this installer needs the ability to run commands as root.
-			We are unable to find either "sudo" or "su" available to make this happen.
-			EOF
+        # 检查用户是否在 sudoers 中
+        echo "Checking if you have sudo privileges..."
+        if ! sudo -v 2>/dev/null; then
+            echo "You do NOT have sudo privileges or failed to enter password." >&2
             return 1
         fi
     fi
+}
 
-    local fullcommand="${bash_c} ${cmd}"
-    if [ $nostdout -eq 1 ]; then
-        cmd="${cmd} >/dev/null"
-    fi
-    if [ $nostderr -eq 1 ]; then
-        cmd="${cmd} 2>/dev/null"
+# _runAsRoot Usage:
+# 1. 单条命令
+# _runAsRoot ls -l /root
+# 2. 多行命令
+# script=$(cat<<'EOF'
+# ...
+# EOF)
+# _runAsRoot <<< "${script}"
+# 3. 多行命令
+# _runAsRoot<<'EOF'
+# ...
+# EOF
+_runAsRoot() {
+    local run_as_root
+
+    # 判断当前是否是 root
+    if [ "$(id -u)" -eq 0 ]; then
+        run_as_root="bash -s"
+    elif command -v sudo >/dev/null 2>&1; then
+        run_as_root="sudo -E bash -s"
+    elif command -v su >/dev/null 2>&1; then
+        run_as_root="su -c 'bash -s'"
+    else
+        echo "Error: need sudo or su to run as root." >&2
+        return 1
     fi
 
-    if [ $subshell -eq 1 ]; then
-        if [ $trace -eq 1 ]; then
-            (
-                { set -x; } 2>/dev/null
-                ${bash_c} "${cmd}"
-            )
+    if [ -t 0 ]; then
+        # 交互式 shell：使用命令参数方式
+        if [ $# -eq 0 ]; then
+            echo "Usage: _runAsRootUniversal <command> [args...]" >&2
+            return 1
+        fi
+        echo "[Running as root]: $*"
+        if [ "$(id -u)" -eq 0 ]; then
+            "$@"
         else
-            (${bash_c} "${cmd}")
+            sudo "$@"
         fi
     else
-        if [ $trace -eq 1 ]; then
-            { set -x; } 2>/dev/null
-            ${bash_c} "${cmd}"
-            local ret=$?
-            { set +x; } 2>/dev/null
-            return $ret
-        else
-            ${bash_c} "${cmd}"
-        fi
+        # 标准输入传入：执行多行脚本
+        echo "[Running script as root via stdin]"
+        $run_as_root
     fi
 }
 
@@ -282,38 +282,38 @@ log() {
   case "$level" in
     "FATAL")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
-        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
         exit 1
       fi
       ;;
 
     "ERROR")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
-        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "WARNING")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]; then
-        echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "INFO")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]; then
-        echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "SUCCESS")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]; then
-        echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "DEBUG")
       if [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]; then
-        echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message"
+        echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     *)
-      echo -e "${NC}[$timestamp] [$level] $message"
+      echo -e "${NC}[$timestamp] [$level] $message${NORMAL}"
       ;;
   esac
 }
@@ -346,10 +346,6 @@ set_log_level() {
   esac
 }
 
-# 子命令数组
-# todo
-COMMANDS=("help" "install" "installLatest")
-
 # 显示帮助信息
 show_help() {
   echo "Usage: $0 [-l LOG_LEVEL] <command>"
@@ -363,52 +359,65 @@ show_help() {
   echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
 }
 
-installLatest(){
-    _require_root
-    _require_linux
-
-    name="nvim-linux64"
-    link="https://github.com/neovim/neovim/releases/latest/download/${name}.tar.gz"
-
-    cd /tmp
-    curl -LO "$link" || { echo "download failed!"; exit 1; }
-
-    tar -C /usr/local -xvf ${name}.tar.gz
-    ln -sf /usr/local/${name}/bin/nvim /usr/local/bin
-
-}
+# ------------------------------------------------------------
+# 子命令数组
+COMMANDS=("help" "install")
 
 install() {
-    _require_root
-    _require_linux
+  set -e
+  dest=${1:-"/usr/local/bin"}
+  log INFO "get mihomo latest link.."
+  machine=
+  case $(uname -m) in
+  	x86_64)
+   		machine=amd64
+	   ;;
+   i686)
+   		machine=386
+	   ;;
+  esac
+  if [ "${machine}x" == "x" ];then
+  	log FATAL "detect machine failed"
+  fi
 
-    version="${1:?'missing version,eg: v0.8.3 v0.9.1'}"
-    link="https://github.com/neovim/neovim/releases/download/${version}/nvim.appimage"
-    binary="${link##*/}"
-    dest=/usr/local/nvim/"${version}"
+  [ ! -d "${dest}" ] && mkdir "${dest}"
 
-    set -e
+  latestLink=https://api.github.com/repos/metacubex/mihomo/releases/latest
+  specificLink=https://api.github.com/repos/metacubex/mihomo/releases/tags/v${version}
 
-    cd /tmp
-    if [ ! -e "$binary" ]; then
-        echo "download $link to /tmp .."
-        curl -LO "$link" || {
-            echo "download failed!"
-            exit 1
-        }
-    fi
-    chmod +x "$binary"
-    ./"$binary" --appimage-extract
+  mmdbLink="https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb"
+  mmdbFile="${mmdbLink##*/}"
 
-    if [ ! -e "$dest" ]; then
-        mkdir -p "$dest"
-    fi
+  # mihomo的链接里用的是amd64和386,不是uname -m 输出的x86_64和i686
+  link="$(curl -s https://api.github.com/repos/metacubex/mihomo/releases/latest | grep browser_download_url|grep -i $(uname -s) | grep -i ${machine} | grep gz | head -1 | cut -d '"' -f 4)"
+  log INFO "latest link: ${link}"
+  gzFile="${link##*/}"
+  extractedFile="${gzFile%.gz}"
+  standardFile=mihomo
 
-    echo "install nvim ${version} to ${dest}.."
-    mv squashfs-root/* "$dest"
-    ln -sf "$dest/usr/bin/nvim" /usr/local/bin/nvim
+  downloadDir=/tmp/mihomo_download
+  [ ! -d "${downloadDir}" ] && mkdir "${downloadDir}"
+  log INFO "download mihomo to ${downloadDir}.."
 
+  cd "${downloadDir}"
+  curl -LO "${link}" || { log FATAL "download mihomo failed";  }
+  curl -LO "${mmdbLink}" || { log FATAL "download mmdb failed"; }
+
+  log INFO "extract ${gzFile}.."
+  gunzip "${gzFile}"
+
+  # rename
+  mv ${extractedFile} ${standardFile}
+
+  log INFO "install mihomo to ${dest}"
+  # 这里要用全路径，否则会递归调用本函数!!
+  _runAsRoot /usr/bin/install -m 755 "${standardFile}" -t "${dest}"
+  _runAsRoot /usr/bin/install -m 777 "${mmdbFile}" -t "${dest}"
+
+  cd /tmp && rm -rf "${downloadDir}"
 }
+
+# ------------------------------------------------------------
 
 # 解析命令行参数
 while getopts ":l:" opt; do
@@ -427,6 +436,7 @@ while getopts ":l:" opt; do
       ;;
   esac
 done
+# NOTE: 这里全局使用了OPTIND，如果在某个函数中也使用了getopts，那么在函数的开头需要重置OPTIND (OPTIND=1)
 shift $((OPTIND -1))
 
 # 解析子命令
@@ -442,15 +452,7 @@ case "$command" in
   help)
     show_help
     ;;
-  install)
-    install "$@"
-    ;;
-  installLatest)
-    installLatest "$@"
-    ;;
   *)
-    echo "Unknown command: $command" 1>&2
-    show_help
-    exit 1
+    ${command} "$@"
     ;;
 esac

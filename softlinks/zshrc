@@ -1,3 +1,5 @@
+# Amazon Q pre block. Keep at the top of this file.
+[[ -f "${HOME}/Library/Application Support/amazon-q/shell/zshrc.pre.zsh" ]] && builtin source "${HOME}/Library/Application Support/amazon-q/shell/zshrc.pre.zsh"
 # zeta插件中的git 信息失效，使用下面的临时解决
 # https://github.com/ohmyzsh/ohmyzsh/issues/12328#issuecomment-2043492331
 zstyle ':omz:alpha:lib:git' async-prompt no 
@@ -114,3 +116,6 @@ bindkey ',,' autosuggest-accept
 
 
 [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
+
+# Amazon Q post block. Keep at the bottom of this file.
+[[ -f "${HOME}/Library/Application Support/amazon-q/shell/zshrc.post.zsh" ]] && builtin source "${HOME}/Library/Application Support/amazon-q/shell/zshrc.post.zsh"

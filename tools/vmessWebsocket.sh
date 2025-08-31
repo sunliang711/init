@@ -327,6 +327,7 @@ EOF4
 function restart(){
 	  systemctl daemon-reload
 	  systemctl restart xray@${serviceName}
+	  systemctl enable xray@${serviceName}
       log "restart xray success"
 }
 

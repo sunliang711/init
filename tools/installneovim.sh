@@ -191,7 +191,8 @@ if [ -n "${editor}" ]; then
     ed=${editor}
 fi
 
-checkRoot() {
+rootID=0
+_checkRoot() {
     if [ "$(id -u)" -ne 0 ]; then
         # 检查是否有 sudo 命令
         if ! command -v sudo >/dev/null 2>&1; then
@@ -208,17 +209,49 @@ checkRoot() {
     fi
 }
 
-runAsRoot() {
+# _runAsRoot Usage:
+# 1. 单条命令
+# _runAsRoot ls -l /root
+# 2. 多行命令
+# script=$(cat<<'EOF'
+# ...
+# EOF)
+# _runAsRoot <<< "${script}"
+# 3. 多行命令
+# _runAsRoot<<'EOF'
+# ...
+# EOF
+_runAsRoot() {
+    local run_as_root
+
+    # 判断当前是否是 root
     if [ "$(id -u)" -eq 0 ]; then
-        echo "Running as root: $*"
-        "$@"
+        run_as_root="bash -s"
+    elif command -v sudo >/dev/null 2>&1; then
+        run_as_root="sudo -E bash -s"
+    elif command -v su >/dev/null 2>&1; then
+        run_as_root="su -c 'bash -s'"
     else
-        if ! command -v sudo >/dev/null 2>&1; then
-            echo "Error: 'sudo' is required but not found." >&2
+        echo "Error: need sudo or su to run as root." >&2
+        return 1
+    fi
+
+    if [ -t 0 ]; then
+        # 交互式 shell：使用命令参数方式
+        if [ $# -eq 0 ]; then
+            echo "Usage: _runAsRootUniversal <command> [args...]" >&2
             return 1
         fi
-        echo "Using sudo: $*"
-        sudo "$@"
+        echo "[Running as root]: $*"
+        if [ "$(id -u)" -eq 0 ]; then
+            "$@"
+        else
+            sudo "$@"
+        fi
+    else
+        # 标准输入传入：执行多行脚本
+        echo "[Running script as root via stdin]"
+        $run_as_root
     fi
 }
 
@@ -328,129 +361,63 @@ show_help() {
 
 # ------------------------------------------------------------
 # 子命令数组
-COMMANDS=("help" "check" "install" "uninstall" "reinstall")
+COMMANDS=("help" "install")
 
-
-check() {
-    errorCount=0
-
-    _require_commands tmux
-}
-
-# 示例子命令函数
 install() {
-    check
-    set -e
+	set -e
+    version=${1}
+    if [ "${version}x" == "x" ];then
+        link="https://api.github.com/repos/neovim/neovim/releases/latest"
+    else
+        link="https://api.github.com/repos/neovim/neovim/releases/tags/v${version}"
+    fi
+    log INFO "minimum version: 0.10.4(glibc 2.31)"
 
-    log INFO "Install tmux plugins..."
-    git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+    log INFO "get neovim link from ${link}.."
+    link="$(curl -s ${link} | grep browser_download_url|grep -i $(uname -s) |  grep -i $(uname -m) | cut -d '"' -f 4   | grep 'tar.gz$')"
+    log INFO "link: ${link}"
+    tarfileName="${link##*/}"
+    dirName="${tarfileName%%.tar.*}"
 
-    cat <<EOF >$home/.tmux.conf
-##################################################
-# enable vi mode
-set-window-option -g mode-keys vi
-set -g display-panes-time 10000 #10s
+    downloadDir=/tmp/nvim_download
+    [ ! -d "${downloadDir}" ] && mkdir "${downloadDir}"
+    log INFO "download lazygit to ${downloadDir}.."
 
-##################################################
-# set croll history limit
-set -g history-limit 8000
+    cd ${downloadDir}
+    curl -LO "${link}" || { echo "download lazygit failed"; exit 1 ; }
 
-##################################################
-# secape time: fix vim esc delay in tmux problem
-set -s escape-time 0
+    log INFO "extract ${tarfileName}.."
+    tar xvf ${tarfileName}
 
-##################################################
-# split window
-bind | split-window -h -c "#{pane_current_path}"
-bind - split-window -v -c "#{pane_current_path}"
-
-##################################################
-# enable mouse
-set -g mouse on
-
-##################################################
-# vi mode copy
-# version 2.4+
- bind-key -T copy-mode-vi 'v' send -X begin-selection
- bind-key -T copy-mode-vi 'y' send -X copy-selection
-
-# old version
-# bind-key -t vi-copy v begin-selection;
-# bind-key -t vi-copy y copy-selection;
-
-# not work
-# bind-key -T vi-copy 'v' begin-selection
-# bind-key -T vi-copy 'y' copy-selection
-
-##################################################
-# select pane
-bind k select-pane -U
-bind j select-pane -D
-bind h select-pane -L
-bind l select-pane -R
-
-##################################################
-# resize pane
-bind H resize-pane -L 4
-bind L resize-pane -R 4
-bind J resize-pane -D 4
-bind K resize-pane -U 4
-
-##################################################
-# edit .tmux.conf
-bind e new-window -n '~/.tmux.conf' "sh -c 'vim ~/.tmux.conf && tmux source ~/.tmux.conf'"
-
-##################################################
-# search text in current pane
-bind-key / copy-mode \; send-key ?
-
-##################################################
-# reload config file
-bind r source-file ~/.tmux.conf \; display "Reloaded tmux config!"
-
-##################################################
-# show options
-bind o show-options -g
+    dest="/usr/local"
+    [ ! -d "${dest}" ] && mkdir "${dest}"
 
 
-#### TMP Section
-# List of plugins
-set -g @plugin 'tmux-plugins/tpm'
-set -g @plugin 'tmux-plugins/tmux-sensible'
+    cd "${dirName}"
+    log INFO "install to ${dest}.."
+    _runAsRoot cp -r bin/* ${dest}/bin
+    _runAsRoot cp -r lib/* ${dest}/lib
+    _runAsRoot cp -r share/* ${dest}/share
 
-#set -g @plugin 'wfxr/tmux-power'
-set -g @plugin 'egel/tmux-gruvbox'
-set -g @tmux-gruvbox 'light' # or 'dark'
-
-# Other examples:
-# set -g @plugin 'github_username/plugin_name'
-# set -g @plugin 'github_username/plugin_name#branch'
-# set -g @plugin 'git@github.com:user/plugin'
-# set -g @plugin 'git@bitbucket.com:user/plugin'
-
-# Initialize TMUX plugin manager (keep this line at the very bottom of tmux.conf)
-run '~/.tmux/plugins/tpm/tpm'
-EOF
-
-    log SUCCESS "start tmux,then press <prefix> + I to install plugins"
+    rm -rf "${downloadDir}"
 }
 
-uninstall() {
-    log INFO "Uninstall tmux plugins..."
-
-    log INFO "Remove $home/.tmux.conf"
-    /bin/rm -rf $home/.tmux.conf
-
-    log INFO "Remove $home/.tmux"
-    /bin/rm -rf $home/.tmux
-
-    log SUCCESS "Uninstall tmux plugins success!"
-}
-
-reinstall() {
-    uninstall
-    install
-}
+# checKernel(){
+# 	case $(uname -s) in
+# 		Linux)
+# 		;;
+# 		Darwin)
+# 		;;
+# 		FreeBSD)
+# 		;;
+# 	esac
+# 	case $(uname -m) in
+# 		x86_64|amd64)
+# 		;;
+# 		arm64)
+# 		;;
+# 	esac
+# }
 
 # ------------------------------------------------------------
 

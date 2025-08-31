@@ -191,7 +191,8 @@ if [ -n "${editor}" ]; then
     ed=${editor}
 fi
 
-checkRoot() {
+rootID=0
+_checkRoot() {
     if [ "$(id -u)" -ne 0 ]; then
         # 检查是否有 sudo 命令
         if ! command -v sudo >/dev/null 2>&1; then
@@ -208,19 +209,52 @@ checkRoot() {
     fi
 }
 
-runAsRoot() {
+# _runAsRoot Usage:
+# 1. 单条命令
+# _runAsRoot ls -l /root
+# 2. 多行命令
+# script=$(cat<<'EOF'
+# ...
+# EOF)
+# _runAsRoot <<< "${script}"
+# 3. 多行命令
+# _runAsRoot<<'EOF'
+# ...
+# EOF
+_runAsRoot() {
+    local run_as_root
+
+    # 判断当前是否是 root
     if [ "$(id -u)" -eq 0 ]; then
-        echo "Running as root: $*"
-        "$@"
+        run_as_root="bash -s"
+    elif command -v sudo >/dev/null 2>&1; then
+        run_as_root="sudo -E bash -s"
+    elif command -v su >/dev/null 2>&1; then
+        run_as_root="su -c 'bash -s'"
     else
-        if ! command -v sudo >/dev/null 2>&1; then
-            echo "Error: 'sudo' is required but not found." >&2
+        echo "Error: need sudo or su to run as root." >&2
+        return 1
+    fi
+
+    if [ -t 0 ]; then
+        # 交互式 shell：使用命令参数方式
+        if [ $# -eq 0 ]; then
+            echo "Usage: _runAsRootUniversal <command> [args...]" >&2
             return 1
         fi
-        echo "Using sudo: $*"
-        sudo "$@"
+        echo "[Running as root]: $*"
+        if [ "$(id -u)" -eq 0 ]; then
+            "$@"
+        else
+            sudo "$@"
+        fi
+    else
+        # 标准输入传入：执行多行脚本
+        echo "[Running script as root via stdin]"
+        $run_as_root
     fi
 }
+
 
 # 日志级别名称数组及最大长度计算
 LOG_LEVELS=("FATAL" "ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
@@ -326,130 +360,165 @@ show_help() {
   echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
 }
 
+extract() {
+  local file="$1"
+  
+  if [ -f "$file" ]; then
+    file_type=$(file --mime-type -b "$file")
+    
+    case "$file_type" in
+      application/x-bzip2)
+        echo "Extracting bunzip2: $file"
+        bunzip2 "$file"
+        _extract "${file%.bz2}"
+        ;;
+      application/gzip|application/x-gzip)
+        echo "Extracting gunzip: $file"
+        gunzip "$file"
+        _extract "${file%.gz}"
+        ;;
+      application/x-xz)
+        echo "Extracting unxz: $file"
+        unxz "$file"
+        _extract "${file%.xz}"
+        ;;
+      application/zip)
+        echo "Extracting unzip: $file"
+        unzip -d "${file%.zip}" "$file"
+        ;;
+      application/x-rar)
+        echo "Extracting unrar: $file"
+        unrar x "$file"
+        ;;
+      application/x-7z-compressed)
+        echo "Extracting 7z: $file"
+        7z x "$file"
+        ;;
+      application/x-tar)
+        echo "Extracting tar: $file"
+        tar xvf "$file"
+        ;;
+      *)
+        if [[ "$file" == *.tar.gz ]]; then
+          echo "Extracting tar.gz: $file"
+          tar xvzf "$file"
+          _extract "${file%.tar.gz}"
+        else
+          echo "Cannot extract '$file' - unsupported file type: $file_type"
+        fi
+        ;;
+    esac
+  else
+    echo "'$file' is not a valid file"
+  fi
+}
+
+detect_os(){
+  osRE=
+  machineRE=
+  case $(uname -s) in
+    Linux)
+      osRE='linux'
+      ;;
+    Darwin)
+      osRE='darwin|mac'
+      ;;
+    *)
+      log FATAL "unsupported os: $(uname -s)"
+      ;;
+  esac
+  log INFO "osRE: ${osRE}"
+  case $(uname -m) in
+  x86_64 | amd64)
+    machineRE='amd64|x86_64'
+    ;;
+  i686 | 386)
+    machineRE='386|i686'
+    ;;
+  arm64 | aarch64)
+    machineRE='arm64|aarch64'
+    ;;
+  esac
+  log INFO "machineRE: ${machineRE}"
+  export osRE
+  export machineRE
+}
+
+em(){
+	$ed $0
+}
+
 # ------------------------------------------------------------
 # 子命令数组
-COMMANDS=("help" "check" "install" "uninstall" "reinstall")
+COMMANDS=("help" "install")
 
+get_release_link(){
+  local repo=$1
+  local version=$2
+  # 如果version为latest，则获取latest
+  if [ "$version" == "latest" ]; then
+    resultLink="https://api.github.com/repos/${repo}/releases/latest"
+  else
+    # check version with regex(1.2 1.2.3)
+    if [[ "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+      resultLink="https://api.github.com/repos/${repo}/releases/tags/v${version}"
+    else
+      log FATAL "invalid version: $version"
+    fi
+  fi
+  log INFO "resultLink: ${resultLink}"
 
-check() {
-    errorCount=0
+  detect_os
 
-    _require_commands tmux
+  # 移除参数
+  shift 2
+  # 剩下的所有参数为过滤参数:形式为各种shell命令,比如: grep gz, grep aa, head -1
+  local filters=("$@")
+
+  # get unique link
+  # 1. grep browser_download_url
+  # 2. grep -i ${osRE}
+  # 3. grep -i ${machineRE}
+  # 4. apply filters to ensure get unique link
+  # 5. cut -d '"' -f 4
+  link0=$(curl -s ${resultLink} | grep browser_download_url | grep -iE "${osRE}" | grep -iE "${machineRE}")
+  log INFO "link0: ${link0}"
+  for filter in "${filters[@]}"; do
+    log INFO "apply filter: ${filter}"
+    link0=$(echo $link0 | $filter)
+    log INFO "filtered link0: ${link0}"
+  done
+  link=$(echo $link0 | cut -d '"' -f 4)
+  log INFO "link: ${link}"
+  
+  export link
 }
 
-# 示例子命令函数
-install() {
-    check
+install(){
     set -e
 
-    log INFO "Install tmux plugins..."
-    git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+    _require_linux
+    _require_commands curl tar
 
-    cat <<EOF >$home/.tmux.conf
-##################################################
-# enable vi mode
-set-window-option -g mode-keys vi
-set -g display-panes-time 10000 #10s
+    get_release_link syncthing/syncthing latest 
+    if [ -z "$link" ]; then
+        log FATAL "download link is empty"
+        exit 1
+    fi
 
-##################################################
-# set croll history limit
-set -g history-limit 8000
+    cd /tmp
+    curl -LO "$link" && { echo "download ok"; } || { echo "download failed"; exit 1; }
+    tarFile=`echo ${link##*/}`
+    echo "extract $tarFile.."
+    tar xf ${tarFile}
 
-##################################################
-# secape time: fix vim esc delay in tmux problem
-set -s escape-time 0
-
-##################################################
-# split window
-bind | split-window -h -c "#{pane_current_path}"
-bind - split-window -v -c "#{pane_current_path}"
-
-##################################################
-# enable mouse
-set -g mouse on
-
-##################################################
-# vi mode copy
-# version 2.4+
- bind-key -T copy-mode-vi 'v' send -X begin-selection
- bind-key -T copy-mode-vi 'y' send -X copy-selection
-
-# old version
-# bind-key -t vi-copy v begin-selection;
-# bind-key -t vi-copy y copy-selection;
-
-# not work
-# bind-key -T vi-copy 'v' begin-selection
-# bind-key -T vi-copy 'y' copy-selection
-
-##################################################
-# select pane
-bind k select-pane -U
-bind j select-pane -D
-bind h select-pane -L
-bind l select-pane -R
-
-##################################################
-# resize pane
-bind H resize-pane -L 4
-bind L resize-pane -R 4
-bind J resize-pane -D 4
-bind K resize-pane -U 4
-
-##################################################
-# edit .tmux.conf
-bind e new-window -n '~/.tmux.conf' "sh -c 'vim ~/.tmux.conf && tmux source ~/.tmux.conf'"
-
-##################################################
-# search text in current pane
-bind-key / copy-mode \; send-key ?
-
-##################################################
-# reload config file
-bind r source-file ~/.tmux.conf \; display "Reloaded tmux config!"
-
-##################################################
-# show options
-bind o show-options -g
-
-
-#### TMP Section
-# List of plugins
-set -g @plugin 'tmux-plugins/tpm'
-set -g @plugin 'tmux-plugins/tmux-sensible'
-
-#set -g @plugin 'wfxr/tmux-power'
-set -g @plugin 'egel/tmux-gruvbox'
-set -g @tmux-gruvbox 'light' # or 'dark'
-
-# Other examples:
-# set -g @plugin 'github_username/plugin_name'
-# set -g @plugin 'github_username/plugin_name#branch'
-# set -g @plugin 'git@github.com:user/plugin'
-# set -g @plugin 'git@bitbucket.com:user/plugin'
-
-# Initialize TMUX plugin manager (keep this line at the very bottom of tmux.conf)
-run '~/.tmux/plugins/tpm/tpm'
+    extractedDir="${tarFile%.tar.*}"
+    cd "${extractedDir}"
+    _runAsRoot<<EOF
+cp syncthing /usr/bin
+cp etc/linux-systemd/system/syncthing@.service /etc/systemd/system
 EOF
-
-    log SUCCESS "start tmux,then press <prefix> + I to install plugins"
-}
-
-uninstall() {
-    log INFO "Uninstall tmux plugins..."
-
-    log INFO "Remove $home/.tmux.conf"
-    /bin/rm -rf $home/.tmux.conf
-
-    log INFO "Remove $home/.tmux"
-    /bin/rm -rf $home/.tmux
-
-    log SUCCESS "Uninstall tmux plugins success!"
-}
-
-reinstall() {
-    uninstall
-    install
+    echo "use systemctl start syncthing@XX to start syncthing"
 }
 
 # ------------------------------------------------------------

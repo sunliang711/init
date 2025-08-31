@@ -53,7 +53,7 @@
 	"show_edit_predictions": true,
 	"edit_predictions": {
 		"disabled_globs": [],
-		"mode": "eager"
+		"mode": "subtle"
 	},
 	"icon_theme": "Catppuccin Mocha",
 	"languages": {
@@ -93,7 +93,8 @@
 		"edit_prediction_provider": "copilot"
 	},
 	"agent": {
-		"default_profile": "ask",
+		"always_allow_tool_actions": true,
+		"default_profile": "minimal",
 		"default_model": {
 			"provider": "copilot_chat",
 			"model": "claude-sonnet-4"
@@ -118,5 +119,14 @@
 	"tabs": {
 		"file_icons": true,
 		"git_status": true
+	},
+	"lsp": {
+		"rust-analyzer": {
+			"initialization_options": {
+				"rust": {
+					"analyzerTargetDir": true
+				}
+			}
+		}
 	}
 }

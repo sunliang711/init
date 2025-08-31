@@ -60,9 +60,10 @@ LOG_LEVEL=$LOG_LEVEL_INFO
 # 导出 PATH 环境变量
 export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-err_require_command=1
-err_require_root=2
-err_require_linux=3
+err_require_command=100
+err_require_root=200
+err_require_linux=300
+err_create_dir=400
 
 _command_exists() {
     command -v "$1" >/dev/null 2>&1
@@ -72,12 +73,6 @@ _require_command() {
     if ! _command_exists "$1"; then
         echo "Require command $1" 1>&2
         exit ${err_require_command}
-    fi
-}
-
-_need_command() {
-    if ! _command_exists "$1"; then
-        echo "need command $1" 1>&2
     fi
 }
 
@@ -101,15 +96,17 @@ function _ensureDir() {
         if [ ! -d ${dir} ]; then
             mkdir -p ${dir} || {
                 echo "create $dir failed!"
-                exit 1
+                exit $err_create_dir
             }
         fi
     done
 }
 
+rootID=0
+
 function _root() {
     if [ ${EUID} -ne ${rootID} ]; then
-        echo "Require root privilege." 1>&2
+        echo "need root privilege." 1>&2
         return $err_require_root
     fi
 }
@@ -122,7 +119,7 @@ function _require_root() {
 
 function _linux() {
     if [ "$(uname)" != "Linux" ]; then
-        echo "Require Linux" 1>&2
+        echo "need Linux" 1>&2
         return $err_require_linux
     fi
 }
@@ -195,7 +192,7 @@ if [ -n "${editor}" ]; then
 fi
 
 rootID=0
-checkRoot() {
+_checkRoot() {
     if [ "$(id -u)" -ne 0 ]; then
         # 检查是否有 sudo 命令
         if ! command -v sudo >/dev/null 2>&1; then
@@ -212,97 +209,86 @@ checkRoot() {
     fi
 }
 
-runAsRoot() {
+# _runAsRoot Usage:
+# 1. 单条命令
+# _runAsRoot ls -l /root
+# 2. 多行命令
+# script=$(cat<<'EOF'
+# ...
+# EOF)
+# _runAsRoot <<< "${script}"
+# 3. 多行命令
+# _runAsRoot<<'EOF'
+# ...
+# EOF
+_runAsRoot() {
+    local run_as_root
+
+    # 判断当前是否是 root
     if [ "$(id -u)" -eq 0 ]; then
-        echo "Running as root: $*"
-        "$@"
+        run_as_root="bash -s"
+    elif command -v sudo >/dev/null 2>&1; then
+        run_as_root="sudo -E bash -s"
+    elif command -v su >/dev/null 2>&1; then
+        run_as_root="su -c 'bash -s'"
     else
-        if ! command -v sudo >/dev/null 2>&1; then
-            echo "Error: 'sudo' is required but not found." >&2
+        echo "Error: need sudo or su to run as root." >&2
+        return 1
+    fi
+
+    if [ -t 0 ]; then
+        # 交互式 shell：使用命令参数方式
+        if [ $# -eq 0 ]; then
+            echo "Usage: _runAsRootUniversal <command> [args...]" >&2
             return 1
         fi
-        echo "Using sudo: $*"
-        sudo "$@"
+        echo "[Running as root]: $*"
+        if [ "$(id -u)" -eq 0 ]; then
+            "$@"
+        else
+            sudo "$@"
+        fi
+    else
+        # 标准输入传入：执行多行脚本
+        echo "[Running script as root via stdin]"
+        $run_as_root
     fi
 }
-# # 用法: _runAsRoot [-x] [-s] [--no-stdout] [--no-stderr] <command>
-# _runAsRoot() {
-#     local trace=0
-#     local subshell=0
-#     local nostdout=0
-#     local nostderr=0
 
-#     local optNum=0
-#     for opt in ${@}; do
-#         case "${opt}" in
-#         --trace | -x)
-#             trace=1
-#             ((optNum++))
-#             ;;
-#         --subshell | -s)
-#             subshell=1
-#             ((optNum++))
-#             ;;
-#         --no-stdout)
-#             nostdout=1
-#             ((optNum++))
-#             ;;
-#         --no-stderr)
-#             nostderr=1
-#             ((optNum++))
-#             ;;
-#         *)
-#             break
-#             ;;
-#         esac
-#     done
+# run command with trace in subshell
+# support interactive mode and script mode
+# Usage:
+# 1. 单条命令
+# _run ls -l /root
+# 2. 多行命令
+# script=$(cat<<'EOF'
+# ...
+# EOF)
+# _run <<< "${script}"
+# 3. 多行命令
+# _run<<'EOF'
+# ...
+# EOF
+_run(){
+  if [ -t 0 ]; then
+    # interactive mode
+    if [ $# -eq 0 ]; then
+      echo "Usage: _run <command> [args...]" >&2
+      return 1
+    fi
+    (
+      set -x
+      "$@"
+    )
+  else
+    # script mode
+    (
+      set -x
+      bash -s
+    )
+  fi
+}
 
-#     shift $(($optNum))
-#     local cmd="${*}"
-#     bash_c='bash -c'
-#     if [ "${EUID}" -ne "${rootID}" ]; then
-#         if _command_exists sudo; then
-#             bash_c='sudo -E bash -c'
-#         elif _command_exists su; then
-#             bash_c='su -c'
-#         else
-#             cat >&2 <<-'EOF'
-# 			Error: this installer needs the ability to run commands as root.
-# 			We are unable to find either "sudo" or "su" available to make this happen.
-# 			EOF
-#             return 1
-#         fi
-#     fi
-
-#     local fullcommand="${bash_c} ${cmd}"
-#     if [ $nostdout -eq 1 ]; then
-#         cmd="${cmd} >/dev/null"
-#     fi
-#     if [ $nostderr -eq 1 ]; then
-#         cmd="${cmd} 2>/dev/null"
-#     fi
-
-#     if [ $subshell -eq 1 ]; then
-#         if [ $trace -eq 1 ]; then
-#             (
-#                 { set -x; } 2>/dev/null
-#                 ${bash_c} "${cmd}"
-#             )
-#         else
-#             (${bash_c} "${cmd}")
-#         fi
-#     else
-#         if [ $trace -eq 1 ]; then
-#             { set -x; } 2>/dev/null
-#             ${bash_c} "${cmd}"
-#             local ret=$?
-#             { set +x; } 2>/dev/null
-#             return $ret
-#         else
-#             ${bash_c} "${cmd}"
-#         fi
-#     fi
-# }
 
 # 日志级别名称数组及最大长度计算
 LOG_LEVELS=("FATAL" "ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
@@ -406,6 +392,83 @@ show_help() {
   echo ""
   echo "Options:"
   echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
+}
+
+detect_os(){
+  osRE=
+  machineRE=
+  case $(uname -s) in
+    Linux)
+      osRE='linux'
+      ;;
+    Darwin)
+      osRE='darwin|mac'
+      ;;
+    *)
+      log FATAL "unsupported os: $(uname -s)"
+      ;;
+  esac
+  log INFO "osRE: ${osRE}"
+  case $(uname -m) in
+  x86_64 | amd64)
+    machineRE='amd64|x86_64'
+    ;;
+  i686 | 386)
+    machineRE='386|i686'
+    ;;
+  arm64 | aarch64)
+    machineRE='arm64|aarch64'
+    ;;
+  esac
+  log INFO "machineRE: ${machineRE}"
+  export osRE
+  export machineRE
+}
+
+get_release_link(){
+  local repo=$1
+  local version=$2
+  # 如果version为latest，则获取latest
+  if [ "$version" == "latest" ]; then
+    resultLink="https://api.github.com/repos/${repo}/releases/latest"
+  else
+    # check version with regex(1.2 1.2.3)
+    if [[ "$version" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+      resultLink="https://api.github.com/repos/${repo}/releases/tags/v${version}"
+    else
+      log FATAL "invalid version: $version"
+    fi
+  fi
+  log INFO "resultLink: ${resultLink}"
+
+  detect_os
+
+  # 移除参数
+  shift 2
+  # 剩下的所有参数为过滤参数:形式为各种shell命令,比如: grep gz, grep aa, head -1
+  local filters=("$@")
+
+  # get unique link
+  # 1. grep browser_download_url
+  # 2. grep -i ${osRE}
+  # 3. grep -i ${machineRE}
+  # 4. apply filters to ensure get unique link
+  # 5. cut -d '"' -f 4
+  link0=$(curl -s ${resultLink} | grep browser_download_url | grep -iE "${osRE}" | grep -iE "${machineRE}")
+  log INFO "link0: ${link0}"
+  for filter in "${filters[@]}"; do
+    log INFO "apply filter: ${filter}"
+    link0=$(echo $link0 | $filter)
+    log INFO "filtered link0: ${link0}"
+  done
+  link=$(echo $link0 | cut -d '"' -f 4)
+  log INFO "link: ${link}"
+  
+  export link
+}
+
+em(){
+	$ed $0
 }
 
 # ------------------------------------------------------------

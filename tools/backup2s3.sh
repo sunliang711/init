@@ -60,9 +60,10 @@ LOG_LEVEL=$LOG_LEVEL_INFO
 # 导出 PATH 环境变量
 export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-err_require_command=1
-err_require_root=2
-err_require_linux=3
+err_require_command=100
+err_require_root=200
+err_require_linux=300
+err_create_dir=400
 
 _command_exists() {
     command -v "$1" >/dev/null 2>&1
@@ -75,21 +76,37 @@ _require_command() {
     fi
 }
 
+_require_commands() {
+    errorNo=0
+    for i in "$@";do
+        if ! _command_exists "$i"; then
+            echo "need command $i" 1>&2
+            errorNo=$((errorNo+1))
+        fi
+    done
+
+    if ((errorNo > 0 ));then
+        exit ${err_require_command}
+    fi
+}
+
 function _ensureDir() {
     local dirs=$@
     for dir in ${dirs}; do
         if [ ! -d ${dir} ]; then
             mkdir -p ${dir} || {
                 echo "create $dir failed!"
-                exit 1
+                exit $err_create_dir
             }
         fi
     done
 }
 
+rootID=0
+
 function _root() {
     if [ ${EUID} -ne ${rootID} ]; then
-        echo "Require root privilege." 1>&2
+        echo "need root privilege." 1>&2
         return $err_require_root
     fi
 }
@@ -102,7 +119,7 @@ function _require_root() {
 
 function _linux() {
     if [ "$(uname)" != "Linux" ]; then
-        echo "Require Linux" 1>&2
+        echo "need Linux" 1>&2
         return $err_require_linux
     fi
 }
@@ -175,85 +192,69 @@ if [ -n "${editor}" ]; then
 fi
 
 rootID=0
+_checkRoot() {
+    if [ "$(id -u)" -ne 0 ]; then
+        # 检查是否有 sudo 命令
+        if ! command -v sudo >/dev/null 2>&1; then
+            echo "Error: 'sudo' command is required." >&2
+            return 1
+        fi
 
-# 用法: _runAsRoot [-x] [-s] [--no-stdout] [--no-stderr] <command>
-_runAsRoot() {
-    local trace=0
-    local subshell=0
-    local nostdout=0
-    local nostderr=0
-
-    local optNum=0
-    for opt in ${@}; do
-        case "${opt}" in
-        --trace | -x)
-            trace=1
-            ((optNum++))
-            ;;
-        --subshell | -s)
-            subshell=1
-            ((optNum++))
-            ;;
-        --no-stdout)
-            nostdout=1
-            ((optNum++))
-            ;;
-        --no-stderr)
-            nostderr=1
-            ((optNum++))
-            ;;
-        *)
-            break
-            ;;
-        esac
-    done
-
-    shift $(($optNum))
-    local cmd="${*}"
-    bash_c='bash -c'
-    if [ "${EUID}" -ne "${rootID}" ]; then
-        if _command_exists sudo; then
-            bash_c='sudo -E bash -c'
-        elif _command_exists su; then
-            bash_c='su -c'
-        else
-            cat >&2 <<-'EOF'
-			Error: this installer needs the ability to run commands as root.
-			We are unable to find either "sudo" or "su" available to make this happen.
-			EOF
+        # 检查用户是否在 sudoers 中
+        echo "Checking if you have sudo privileges..."
+        if ! sudo -v 2>/dev/null; then
+            echo "You do NOT have sudo privileges or failed to enter password." >&2
             return 1
         fi
     fi
+}
 
-    local fullcommand="${bash_c} ${cmd}"
-    if [ $nostdout -eq 1 ]; then
-        cmd="${cmd} >/dev/null"
-    fi
-    if [ $nostderr -eq 1 ]; then
-        cmd="${cmd} 2>/dev/null"
+# _runAsRoot Usage:
+# 1. 单条命令
+# _runAsRoot ls -l /root
+# 2. 多行命令
+# script=$(cat<<'EOF'
+# ...
+# EOF)
+# _runAsRoot <<< "${script}"
+# 3. 多行命令
+# _runAsRoot<<'EOF'
+# ...
+# EOF
+_runAsRoot() {
+    local run_as_root
+
+    # 判断当前是否是 root
+    if [ "$(id -u)" -eq 0 ]; then
+        run_as_root="bash -s"
+    elif command -v sudo >/dev/null 2>&1; then
+        run_as_root="sudo -E bash -s"
+    elif command -v su >/dev/null 2>&1; then
+        run_as_root="su -c 'bash -s'"
+    else
+        echo "Error: need sudo or su to run as root." >&2
+        return 1
     fi
 
-    if [ $subshell -eq 1 ]; then
-        if [ $trace -eq 1 ]; then
-            (
-                { set -x; } 2>/dev/null
-                ${bash_c} "${cmd}"
-            )
+    if [ -t 0 ]; then
+        # 交互式 shell：使用命令参数方式
+        if [ $# -eq 0 ]; then
+            echo "Usage: _runAsRootUniversal <command> [args...]" >&2
+            return 1
+        fi
+        echo "[Running as root]: $*"
+        if [ "$(id -u)" -eq 0 ]; then
+            "$@"
         else
-            (${bash_c} "${cmd}")
+            sudo "$@"
         fi
     else
-        if [ $trace -eq 1 ]; then
-            { set -x; } 2>/dev/null
-            ${bash_c} "${cmd}"
-            local ret=$?
-            { set +x; } 2>/dev/null
-            return $ret
-        else
-            ${bash_c} "${cmd}"
-        fi
+        # 标准输入传入：执行多行脚本
+        echo "[Running script as root via stdin]"
+        $run_as_root
     fi
 }
+
 
 # 日志级别名称数组及最大长度计算
 LOG_LEVELS=("FATAL" "ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
@@ -359,9 +360,13 @@ show_help() {
   echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
 }
 
+em(){
+	$ed $0
+}
+
 # ------------------------------------------------------------
 # 子命令数组
-COMMANDS=("help" "backup" "configFile")
+COMMANDS=("help" "backup" "configFile" "install")
 
 
 configFile(){
@@ -372,6 +377,39 @@ declare -A fileOrDirs
 fileOrDirs[etc]="/etc"
 fileOrDirs[frpc]="/usr/local/frp/frpc/"
 EOF
+}
+
+install(){
+  # install awscli
+  set -e
+
+  # Linux x86_64
+  if [ "$(uname -s)" = "Linux" ]; then
+    if [ "$(uname -m)" = "x86_64" ]; then
+      log "INFO" "install awscli for x86_64"
+      curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+      unzip awscliv2.zip >/dev/null
+      _runAsRoot <<EOF
+./aws/install
+EOF
+      rm -rf awscliv2.zip
+    elif [ "$(uname -m)" = "aarch64" ]; then
+    log "INFO" "install awscli for aarch64"
+    curl "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "awscliv2.zip"
+    unzip awscliv2.zip >/dev/null
+    _runAsRoot <<EOF
+./aws/install
+EOF
+    rm -rf awscliv2.zip
+    else
+      log "ERROR" "unsupported architecture: $(uname -m)"
+      exit 1
+    fi
+  elif [ "$(uname -s)" = "Darwin" ]; then
+    log "ERROR" "not support now"
+    exit 1
+  fi
+
 }
 
 backup() {
@@ -387,6 +425,47 @@ backup() {
   done
 
 }
+
+
+# ------------------------------------------------------------
+
+# 解析命令行参数
+while getopts ":l:" opt; do
+  case ${opt} in
+    l )
+      set_log_level "$OPTARG"
+      ;;
+    \? )
+      show_help
+      exit 1
+      ;;
+    : )
+      echo "Invalid option: $OPTARG requires an argument" 1>&2
+      show_help
+      exit 1
+      ;;
+  esac
+done
+# NOTE: 这里全局使用了OPTIND，如果在某个函数中也使用了getopts，那么在函数的开头需要重置OPTIND (OPTIND=1)
+shift $((OPTIND -1))
+
+# 解析子命令
+command=$1
+shift
+
+if [[ -z "$command" ]]; then
+  show_help
+  exit 0
+fi
+
+case "$command" in
+  help)
+    show_help
+    ;;
+  *)
+    ${command} "$@"
+    ;;
+esac
 
 # ------------------------------------------------------------
 

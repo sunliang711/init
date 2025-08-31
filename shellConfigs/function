@@ -516,6 +516,10 @@ aptproxyon() {
         return 1
     fi
 
+    if ! checkRoot;then
+        return 1
+    fi
+
     local proxy="$(parseProxy ${1})"
     if [ -z "${proxy}" ]; then
         echo "Cannot get proxy value,exit."
@@ -528,7 +532,7 @@ aptproxyon() {
 Acquire::http::proxy "$proxy";
 Acquire::https::proxy "$proxy";
 EOF
-    sudo mv /tmp/httpProxy $proxyFile || { echo "mv /tmp/httpProxy $proxyFile failed, please issue it mannually!"; }
+    runAsRoot mv /tmp/httpProxy $proxyFile
 }
 
 aptproxyoff() {
@@ -540,8 +544,12 @@ aptproxyoff() {
         echo "No apt command found,skip"
         return 1
     fi
+    if ! checkRoot;then
+    	return 1
+    fi
+
     local proxyFile=/etc/apt/apt.conf.d/httpProxy
-    sudo /bin/rm -rf ${proxyFile} || { echo "remove ${proxyFile} failed, please remove it mannually!"; }
+    runAsRoot /bin/rm -rf "${proxyFile}" || { echo "remove ${proxyFile} failed, please remove it mannually!"; }
 
 }
 
@@ -768,30 +776,30 @@ proxyon() {
     gitproxyon "${proxy}"
     envProxyOn "${proxy}" -s
 
-    echo
+    # echo
 
-    npmproxyon
-    pipproxyon
+    # npmproxyon
+    # pipproxyon
 
-    case $(uname) in
-    Darwin)
-        macproxyon "${proxy}"
-        ;;
-    esac
+    # case $(uname) in
+    # Darwin)
+    #     macproxyon "${proxy}"
+    #     ;;
+    # esac
 }
 
 proxyoff() {
     gitproxyoff
     envProxyOff -s
 
-    npmproxyoff
-    pipproxyoff
+    # npmproxyoff
+    # pipproxyoff
 
-    case $(uname) in
-    Darwin)
-        macproxyoff
-        ;;
-    esac
+    # case $(uname) in
+    # Darwin)
+    #     macproxyoff
+    #     ;;
+    # esac
 }
 
 #创建目录并进入该目录
@@ -812,11 +820,12 @@ clearSystemdLog() {
         echo "no journalctl command!"
         return 1
     fi
+    if ! checkRoot;then
+    	return 1
+    fi
 
-    set -x
-    sudo journalctl --rotate
-    sudo journalctl --vacuum-time=1s
-    { set +x; } >/dev/null 2>&1
+    runAsRoot journalctl --rotate
+    runAsRoot journalctl --vacuum-time=1s
 }
 
 date2timestamp() {

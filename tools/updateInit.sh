@@ -60,9 +60,10 @@ LOG_LEVEL=$LOG_LEVEL_INFO
 # 导出 PATH 环境变量
 export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-err_require_command=1
-err_require_root=2
-err_require_linux=3
+err_require_command=100
+err_require_root=200
+err_require_linux=300
+err_create_dir=400
 
 _command_exists() {
     command -v "$1" >/dev/null 2>&1
@@ -75,10 +76,17 @@ _require_command() {
     fi
 }
 
-_need_command() {
-    if ! _command_exists "$1"; then
-        echo "need command $1" 1>&2
-        return 1
+_require_commands() {
+    errorNo=0
+    for i in "$@";do
+        if ! _command_exists "$i"; then
+            echo "need command $i" 1>&2
+            errorNo=$((errorNo+1))
+        fi
+    done
+
+    if ((errorNo > 0 ));then
+        exit ${err_require_command}
     fi
 }
 
@@ -88,15 +96,17 @@ function _ensureDir() {
         if [ ! -d ${dir} ]; then
             mkdir -p ${dir} || {
                 echo "create $dir failed!"
-                exit 1
+                exit $err_create_dir
             }
         fi
     done
 }
 
+rootID=0
+
 function _root() {
     if [ ${EUID} -ne ${rootID} ]; then
-        echo "Require root privilege." 1>&2
+        echo "need root privilege." 1>&2
         return $err_require_root
     fi
 }
@@ -109,7 +119,7 @@ function _require_root() {
 
 function _linux() {
     if [ "$(uname)" != "Linux" ]; then
-        echo "Require Linux" 1>&2
+        echo "need Linux" 1>&2
         return $err_require_linux
     fi
 }
@@ -181,84 +191,66 @@ if [ -n "${editor}" ]; then
     ed=${editor}
 fi
 
-rootID=0
+_checkRoot() {
+    if [ "$(id -u)" -ne 0 ]; then
+        # 检查是否有 sudo 命令
+        if ! command -v sudo >/dev/null 2>&1; then
+            echo "Error: 'sudo' command is required." >&2
+            return 1
+        fi
 
-# 用法: _runAsRoot [-x] [-s] [--no-stdout] [--no-stderr] <command>
-_runAsRoot() {
-    local trace=0
-    local subshell=0
-    local nostdout=0
-    local nostderr=0
-
-    local optNum=0
-    for opt in ${@}; do
-        case "${opt}" in
-        --trace | -x)
-            trace=1
-            ((optNum++))
-            ;;
-        --subshell | -s)
-            subshell=1
-            ((optNum++))
-            ;;
-        --no-stdout)
-            nostdout=1
-            ((optNum++))
-            ;;
-        --no-stderr)
-            nostderr=1
-            ((optNum++))
-            ;;
-        *)
-            break
-            ;;
-        esac
-    done
-
-    shift $(($optNum))
-    local cmd="${*}"
-    bash_c='bash -c'
-    if [ "${EUID}" -ne "${rootID}" ]; then
-        if _command_exists sudo; then
-            bash_c='sudo -E bash -c'
-        elif _command_exists su; then
-            bash_c='su -c'
-        else
-            cat >&2 <<-'EOF'
-			Error: this installer needs the ability to run commands as root.
-			We are unable to find either "sudo" or "su" available to make this happen.
-			EOF
+        # 检查用户是否在 sudoers 中
+        echo "Checking if you have sudo privileges..."
+        if ! sudo -v 2>/dev/null; then
+            echo "You do NOT have sudo privileges or failed to enter password." >&2
             return 1
         fi
     fi
+}
 
-    local fullcommand="${bash_c} ${cmd}"
-    if [ $nostdout -eq 1 ]; then
-        cmd="${cmd} >/dev/null"
-    fi
-    if [ $nostderr -eq 1 ]; then
-        cmd="${cmd} 2>/dev/null"
+# _runAsRoot Usage:
+# 1. 单条命令
+# _runAsRoot ls -l /root
+# 2. 多行命令
+# script=$(cat<<'EOF'
+# ...
+# EOF)
+# _runAsRoot <<< "${script}"
+# 3. 多行命令
+# _runAsRoot<<'EOF'
+# ...
+# EOF
+_runAsRoot() {
+    local run_as_root
+
+    # 判断当前是否是 root
+    if [ "$(id -u)" -eq 0 ]; then
+        run_as_root="bash -s"
+    elif command -v sudo >/dev/null 2>&1; then
+        run_as_root="sudo -E bash -s"
+    elif command -v su >/dev/null 2>&1; then
+        run_as_root="su -c 'bash -s'"
+    else
+        echo "Error: need sudo or su to run as root." >&2
+        return 1
     fi
 
-    if [ $subshell -eq 1 ]; then
-        if [ $trace -eq 1 ]; then
-            (
-                { set -x; } 2>/dev/null
-                ${bash_c} "${cmd}"
-            )
+    if [ -t 0 ]; then
+        # 交互式 shell：使用命令参数方式
+        if [ $# -eq 0 ]; then
+            echo "Usage: _runAsRootUniversal <command> [args...]" >&2
+            return 1
+        fi
+        echo "[Running as root]: $*"
+        if [ "$(id -u)" -eq 0 ]; then
+            "$@"
         else
-            (${bash_c} "${cmd}")
+            sudo "$@"
         fi
     else
-        if [ $trace -eq 1 ]; then
-            { set -x; } 2>/dev/null
-            ${bash_c} "${cmd}"
-            local ret=$?
-            { set +x; } 2>/dev/null
-            return $ret
-        else
-            ${bash_c} "${cmd}"
-        fi
+        # 标准输入传入：执行多行脚本
+        echo "[Running script as root via stdin]"
+        $run_as_root
     fi
 }
 
@@ -267,108 +259,108 @@ LOG_LEVELS=("FATAL" "ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
 MAX_LEVEL_LENGTH=0
 
 for level in "${LOG_LEVELS[@]}"; do
-    len=${#level}
-    if ((len > MAX_LEVEL_LENGTH)); then
-        MAX_LEVEL_LENGTH=$len
-    fi
+  len=${#level}
+  if (( len > MAX_LEVEL_LENGTH )); then
+    MAX_LEVEL_LENGTH=$len
+  fi
 done
-MAX_LEVEL_LENGTH=$((MAX_LEVEL_LENGTH + 2))
+MAX_LEVEL_LENGTH=$((MAX_LEVEL_LENGTH+2))
 
 # 日志级别名称填充
 pad_level() {
-    printf "%-${MAX_LEVEL_LENGTH}s" "[$1]"
+  printf "%-${MAX_LEVEL_LENGTH}s" "[$1]"
 }
 
 # 打印带颜色的日志函数
 log() {
-    local level="$(echo "$1" | awk '{print toupper($0)}')" # 转换为大写以支持大小写敏感
-    shift
-    local message="$@"
-    local padded_level=$(pad_level "$level")
-    local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
-    case "$level" in
+  local level="$(echo "$1" | awk '{print toupper($0)}')" # 转换为大写以支持大小写敏感
+  shift
+  local message="$@"
+  local padded_level=$(pad_level "$level")
+  local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
+  case "$level" in
     "FATAL")
-        if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
-            echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-            exit 1
-        fi
-        ;;
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
+        exit 1
+      fi
+      ;;
 
     "ERROR")
-        if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
-            echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-        fi
-        ;;
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
+        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
+      fi
+      ;;
     "WARNING")
-        if [ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]; then
-            echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-        fi
-        ;;
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]; then
+        echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
+      fi
+      ;;
     "INFO")
-        if [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]; then
-            echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-        fi
-        ;;
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]; then
+        echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
+      fi
+      ;;
     "SUCCESS")
-        if [ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]; then
-            echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-        fi
-        ;;
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]; then
+        echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
+      fi
+      ;;
     "DEBUG")
-        if [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]; then
-            echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-        fi
-        ;;
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]; then
+        echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
+      fi
+      ;;
     *)
-        echo -e "${NC}[$timestamp] [$level] $message${NORMAL}"
-        ;;
-    esac
+      echo -e "${NC}[$timestamp] [$level] $message${NORMAL}"
+      ;;
+  esac
 }
 
 # 设置日志级别的函数
 set_log_level() {
-    local level="$(echo "$1" | awk '{print toupper($0)}')"
-    case "$level" in
+  local level="$(echo "$1" | awk '{print toupper($0)}')"
+  case "$level" in
     "FATAL")
-        LOG_LEVEL=$LOG_LEVEL_FATAL
-        ;;
+      LOG_LEVEL=$LOG_LEVEL_FATAL
+      ;;
     "ERROR")
-        LOG_LEVEL=$LOG_LEVEL_ERROR
-        ;;
+      LOG_LEVEL=$LOG_LEVEL_ERROR
+      ;;
     "WARNING")
-        LOG_LEVEL=$LOG_LEVEL_WARNING
-        ;;
+      LOG_LEVEL=$LOG_LEVEL_WARNING
+      ;;
     "INFO")
-        LOG_LEVEL=$LOG_LEVEL_INFO
-        ;;
+      LOG_LEVEL=$LOG_LEVEL_INFO
+      ;;
     "SUCCESS")
-        LOG_LEVEL=$LOG_LEVEL_SUCCESS
-        ;;
+      LOG_LEVEL=$LOG_LEVEL_SUCCESS
+      ;;
     "DEBUG")
-        LOG_LEVEL=$LOG_LEVEL_DEBUG
-        ;;
+      LOG_LEVEL=$LOG_LEVEL_DEBUG
+      ;;
     *)
-        echo "无效的日志级别: $1"
-        ;;
-    esac
+      echo "无效的日志级别: $1"
+      ;;
+  esac
 }
 
 # 显示帮助信息
 show_help() {
-    echo "Usage: $0 [-l LOG_LEVEL] <command>"
-    echo ""
-    echo "Commands:"
-    for cmd in "${COMMANDS[@]}"; do
-        echo "  $cmd"
-    done
-    echo ""
-    echo "Options:"
-    echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
+  echo "Usage: $0 [-l LOG_LEVEL] <command>"
+  echo ""
+  echo "Commands:"
+  for cmd in "${COMMANDS[@]}"; do
+    echo "  $cmd"
+  done
+  echo ""
+  echo "Options:"
+  echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
 }
 
 # ------------------------------------------------------------
 # 子命令数组
-COMMANDS=("help" "update" "install" "uninstall")
+COMMANDS=("help" "install" "uninstall" "check" "update")
 
 thisScript="${this}/updateInit.sh"
 # install to crontab
@@ -384,15 +376,7 @@ uninstall() {
 }
 
 check() {
-    errorCount=0
-
-    if ! _need_command crontab; then
-        errorCount=$((errorCount + 1))
-    fi
-
-    if ((errorCount > 0)); then
-        exit 1
-    fi
+    _require_commands crontab
 }
 
 update() {
@@ -406,42 +390,43 @@ update() {
     fi
 }
 
+
 # ------------------------------------------------------------
 
 # 解析命令行参数
 while getopts ":l:" opt; do
-    case ${opt} in
-    l)
-        set_log_level "$OPTARG"
-        ;;
-    \?)
-        show_help
-        exit 1
-        ;;
-    :)
-        echo "Invalid option: $OPTARG requires an argument" 1>&2
-        show_help
-        exit 1
-        ;;
-    esac
+  case ${opt} in
+    l )
+      set_log_level "$OPTARG"
+      ;;
+    \? )
+      show_help
+      exit 1
+      ;;
+    : )
+      echo "Invalid option: $OPTARG requires an argument" 1>&2
+      show_help
+      exit 1
+      ;;
+  esac
 done
 # NOTE: 这里全局使用了OPTIND，如果在某个函数中也使用了getopts，那么在函数的开头需要重置OPTIND (OPTIND=1)
-shift $((OPTIND - 1))
+shift $((OPTIND -1))
 
 # 解析子命令
 command=$1
 shift
 
 if [[ -z "$command" ]]; then
-    show_help
-    exit 0
+  show_help
+  exit 0
 fi
 
 case "$command" in
-help)
+  help)
     show_help
     ;;
-*)
+  *)
     ${command} "$@"
     ;;
 esac
