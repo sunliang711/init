@@ -360,6 +360,59 @@ show_help() {
   echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
 }
 
+extract() {
+  local file="$1"
+  
+  if [ -f "$file" ]; then
+    file_type=$(file --mime-type -b "$file")
+    
+    case "$file_type" in
+      application/x-bzip2)
+        echo "Extracting bunzip2: $file"
+        bunzip2 "$file"
+        _extract "${file%.bz2}"
+        ;;
+      application/gzip|application/x-gzip)
+        echo "Extracting gunzip: $file"
+        gunzip "$file"
+        _extract "${file%.gz}"
+        ;;
+      application/x-xz)
+        echo "Extracting unxz: $file"
+        unxz "$file"
+        _extract "${file%.xz}"
+        ;;
+      application/zip)
+        echo "Extracting unzip: $file"
+        unzip -d "${file%.zip}" "$file"
+        ;;
+      application/x-rar)
+        echo "Extracting unrar: $file"
+        unrar x "$file"
+        ;;
+      application/x-7z-compressed)
+        echo "Extracting 7z: $file"
+        7z x "$file"
+        ;;
+      application/x-tar)
+        echo "Extracting tar: $file"
+        tar xvf "$file"
+        ;;
+      *)
+        if [[ "$file" == *.tar.gz ]]; then
+          echo "Extracting tar.gz: $file"
+          tar xvzf "$file"
+          _extract "${file%.tar.gz}"
+        else
+          echo "Cannot extract '$file' - unsupported file type: $file_type"
+        fi
+        ;;
+    esac
+  else
+    echo "'$file' is not a valid file"
+  fi
+}
+
 detect_os(){
   osRE=
   machineRE=
@@ -390,6 +443,14 @@ detect_os(){
   export osRE
   export machineRE
 }
+
+em(){
+	$ed $0
+}
+
+# ------------------------------------------------------------
+# 子命令数组
+COMMANDS=("help" "install")
 
 get_release_link(){
   local repo=$1
@@ -433,22 +494,22 @@ get_release_link(){
   export link
 }
 
-em(){
-	$ed $0
-}
+install(){
+    set -e
 
-# ------------------------------------------------------------
-# 子命令数组
-COMMANDS=("help" "example")
+    _require_linux
 
-# 示例子命令函数
-example() {
-  log "INFO" "This is an example command."
-  log "DEBUG" "This is some debug information."
-  _wait 3
-  log "SUCCESS" "This is a success message."
-  log "WARNING" "This is a warning message."
-  log "error" "This is an error message."
+    get_release_link syncthing/syncthing latest 
+    if [ -z "$link" ]; then
+        log FATAL "download link is empty"
+        exit 1
+    fi
+
+    cd /tmp
+    curl -LO "$link" && { echo "download ok"; } || { echo "download failed"; exit 1; }
+    zipFile=`echo ${link##*/}`
+    echo "extract $zipFile.."
+    unzip -d /tmp/syncthing $zipFile
 }
 
 # ------------------------------------------------------------
