@@ -498,7 +498,7 @@ install(){
     set -e
 
     _require_linux
-    _require_commands curl unzip
+    _require_commands curl tar
 
     get_release_link syncthing/syncthing latest 
     if [ -z "$link" ]; then
