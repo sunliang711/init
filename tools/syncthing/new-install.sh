@@ -520,6 +520,12 @@ cp syncthing /usr/bin
 cp etc/linux-systemd/system/syncthing@.service /etc/systemd/system
 EOF
     echo "use systemctl start syncthing@XX to start syncthing"
+cat<<EOF
+copy following to /etc/sysctl.conf
+    fs.inotify.max_user_watches=524288
+    fs.inotify.max_user_instances=1024
+    fs.inotify.max_queued_events=32768
+EOF
 }
 
 # ------------------------------------------------------------
