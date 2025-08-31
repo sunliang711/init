@@ -496,11 +496,12 @@ get_release_link(){
 
 install(){
     set -e
+    version=${1:-latest}
 
     _require_linux
     _require_commands curl tar
 
-    get_release_link syncthing/syncthing latest 
+    get_release_link syncthing/syncthing ${version}
     if [ -z "$link" ]; then
         log FATAL "download link is empty"
         exit 1
