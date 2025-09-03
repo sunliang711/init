@@ -16,13 +16,13 @@ addressList=pub_ip
 mappings=(
 "tcp|42400|10.1.1.135|32400|plex server"
 
-"tcp|50000-51000|10.1.1.16||frps tcp"
-"udp|50000-51000|10.1.1.16||frps udp"
+"tcp|50000-51000|10.1.1.33||frps tcp"
+"udp|50000-51000|10.1.1.33||frps udp"
 
-"tcp|4000-4400|10.1.1.16||ss1 tcp"
-"udp|4000-4400|10.1.1.16||ss1 udp"
+"tcp|4000-4400|10.1.1.33||ss1 tcp"
+"udp|4000-4400|10.1.1.33||ss1 udp"
 
-"udp|51820|10.1.1.16||wireguard"
+"udp|51820|10.1.1.33||wireguard"
 
 "tcp|8443|10.1.1.135||syncthing discovery"
 "tcp|22067|10.1.1.135||syncthing relay"
