@@ -178,7 +178,7 @@ $(get_git_prompt)"
 
 function get_prompt_indicator {
     if [[ $? -eq 0 ]]; then
-        echo "%{$magenta_bold%}$zeta %{$reset_color%}"
+        echo "%{$green_bold%}$zeta %{$reset_color%}"
     else
         echo "%{$red_bold%}$zeta %{$reset_color%}"
     fi
