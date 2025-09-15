@@ -496,11 +496,12 @@ get_release_link(){
 
 install(){
     set -e
+    version=${1:-latest}
 
     _require_linux
     _require_commands curl tar
 
-    get_release_link syncthing/syncthing latest 
+    get_release_link syncthing/syncthing ${version}
     if [ -z "$link" ]; then
         log FATAL "download link is empty"
         exit 1
@@ -519,6 +520,12 @@ cp syncthing /usr/bin
 cp etc/linux-systemd/system/syncthing@.service /etc/systemd/system
 EOF
     echo "use systemctl start syncthing@XX to start syncthing"
+cat<<EOF
+copy following to /etc/sysctl.conf
+    fs.inotify.max_user_watches=524288
+    fs.inotify.max_user_instances=1024
+    fs.inotify.max_queued_events=32768
+EOF
 }
 
 # ------------------------------------------------------------
