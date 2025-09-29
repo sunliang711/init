@@ -2212,6 +2212,16 @@ function opendir() {
 
 }
 
+function wgkeypair(){
+    if ! command -v wg >/dev/null;then
+        echo "need wg command!"
+        echo "brew install wireguard-tools on macos"
+        echo "apt install wireguard on ubuntu/debian"
+        return 1
+    fi
+    wg genkey | tee >(wg pubkey)
+}
+
 function newgitignore() {
     dest=${1:-"${PWD}"}
     ignorefile="${dest}/.gitignore"
