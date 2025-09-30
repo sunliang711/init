@@ -492,6 +492,7 @@ defaultWireguardSshPort=22
 # wireguard server public key
 defaultWireguardPublicKey=
 
+defaultClientNetwork="192.168.100.0/24"
 # client dns
 defaultClientDns="223.5.5.5, 223.6.6.6"
 # client mtu
@@ -499,7 +500,7 @@ defaultClientMtu=1500
 # client keepalive
 defaultClientKeepalive=30
 
-usage="Usage: $0 addClient <clientName> <clientIp> <allowedIps:0.0.0.0/0,::/0> <dryRun:true|false>"
+usage="Usage: $0 addClient <clientName> [allowedIps:0.0.0.0/0,::/0] [dryRun:true|false]"
 
 configFile="wireguard.conf"
 
@@ -511,24 +512,22 @@ addClient(){
         source ${configFile}
     fi
 
-    if [ $# -lt 3 ]; then
+    if [ $# -lt 1 ]; then
         log FATAL "invalid arguments: $usage"
     fi
 
     clientName=${1:?'missing client name'}
-    clientIp=${2:?'missing client ip'}
-    allowedIps=${3:-'0.0.0.0/0,::/0'}
-    dryRun=${4:-'false'}
+    allowedIps=${2:-'0.0.0.0/0,::/0'}
+    dryRun=${3:-'false'}
 
     # check args
-    # check client ip with ipcalc
-    if ipcalc -n ${clientIp} | grep -iq "invalid"; then
-        log FATAL "invalid client ip: ${clientIp}"
-    fi
     # check allowIps with ipcalc
-    if ipcalc -n ${allowedIps} | grep -iq "invalid"; then
-        log FATAL "invalid allowedIps: ${allowedIps}"
-    fi
+    IFS=',' read -r -a allowedIpsArray <<< "${allowedIps}"
+    for allowedIp in "${allowedIpsArray[@]}"; do
+        if ipcalc -n ${allowedIp} | grep -iq "invalid"; then
+            log FATAL "invalid allowedIp: ${allowedIp}"
+        fi
+    done
 
     # check dryRun
     case ${dryRun} in
@@ -549,6 +548,7 @@ addClient(){
     wireguardSshPort=${wireguardSshPort:-$defaultWireguardSshPort}
     wireguardPublicKey=${wireguardPublicKey:-$defaultWireguardPublicKey}
 
+    clientNetwork=${clientNetwork:-$defaultClientNetwork}
     clientDns=${clientDns:-$defaultClientDns}
     clientMtu=${clientMtu:-$defaultClientMtu}
     clientKeepalive=${clientKeepalive:-$defaultClientKeepalive}
@@ -566,9 +566,37 @@ addClient(){
     set -e
 
     # calc network address of client Ip
-    clientNetwork=$(ipcalc -n ${clientIp}| grep Network | awk '{print $2}')
-    log INFO "clientNetwork: ${clientNetwork}"
+    # clientNetwork=$(ipcalc -n ${clientIp}| grep Network | awk '{print $2}')
+    # log INFO "clientNetwork: ${clientNetwork}"
+    netmaskPrefix=$(ipcalc -n ${clientNetwork} | grep Netmask | awk '{print $4}')
+    log INFO "netmaskPrefix: ${netmaskPrefix}"
+    # netmask 必须是255.255.255.0, 前缀必须是24
+    if [ "${netmaskPrefix}" != "24" ]; then
+        log FATAL "netmask prefix must be 24, but got ${netmaskPrefix}"
+    fi
 
+    # 根据clientNetwork计算出可用的client ip
+    clientIp=$(traverse_ip_range ${clientNetwork})
+    log DEBUG "clientIp: ${clientIp}"
+    # 遍历clientIp
+    # for ip in ${clientIp}; do
+    #     log INFO "ip address: ${ip}/24"
+    # done
+
+    # ssh -p 20000 userxx1@10.1.1.1 "/interface wireguard peers export" | grep allowed-address      
+    # 获取所有peer的allowed-address
+    peerAllowedAddresses=$(ssh -p ${wireguardSshPort} ${wireguardSshUser}@${wireguardSshHost} "/interface wireguard peers export" | grep allowed-address)
+    log DEBUG "peerAllowedAddresses: ${peerAllowedAddresses}"
+    # 遍历clientIp,查看其是否在peerAllowedAddresses中
+    for ip in ${clientIp}; do
+        if echo ${peerAllowedAddresses} | grep -q "${ip}/24"; then
+            log INFO "ip address: ${ip}/24 is already in peerAllowedAddresses"
+        else
+            log INFO "ip address: ${ip}/24 is not in peerAllowedAddresses, use it"
+            clientIp=${ip}
+            break
+        fi
+    done
 
     # generate client keypairs
     keypairFile="keypair-$(date +%F%T)"
@@ -579,23 +607,25 @@ addClient(){
     log INFO "publicKey: ${publicKey}"
     rm -rf ${keypairFile}
 
+    log INFO "allowedIps: ${allowedIps}"
     # add wireguard peer to server by ssh
     if [ "${dryRun}" == "false" ]; then
         log INFO "add wireguard peer to server by ssh"
         (
             set -x
-            ssh -p ${wireguardSshPort} ${wireguardSshUser}@${wireguardSshHost} "/interface wireguard peers add allowed-address=\"${clientIp}\" comment=\"${clientName}\" interface=\"${wireguardInterface}\" name=\"${clientName}\" persistent-keepalive=\"${clientKeepalive}s\" public-key=\"${publicKey}\""
+            ssh -p ${wireguardSshPort} ${wireguardSshUser}@${wireguardSshHost} "/interface wireguard peers add allowed-address=\"${clientIp}/${netmaskPrefix}\" comment=\"${clientName}\" interface=\"${wireguardInterface}\" name=\"${clientName}\" persistent-keepalive=\"${clientKeepalive}s\" public-key=\"${publicKey}\""
         )
     else
         log WARNING "dryRun is true, skip add wireguard peer to server by ssh"
     fi
+    log INFO "allowedIps: ${allowedIps}"
 
     # generate client config
     clientConfigFile="client-${clientName}.conf"
     cat<<EOF>${clientConfigFile}
 [Interface]
 PrivateKey = ${privateKey}
-Address = ${clientIp}
+Address = ${clientIp}/${netmaskPrefix}
 DNS = ${clientDns}
 MTU = ${clientMtu}
 
@@ -610,6 +640,46 @@ EOF
     qrencode -t ansiutf8 < ${clientConfigFile}
     cat ${clientConfigFile}
 
+}
+
+# 遍历指定网段的ip
+# 结果输出到stdout，日志输出到stderr
+traverse_ip_range() {
+    local network=$1
+    
+    # 获取 HostMin 和 HostMax
+    local hostmin=$(ipcalc "$network" | grep "HostMin:" | awk '{print $2}')
+    local hostmax=$(ipcalc "$network" | grep "HostMax:" | awk '{print $2}')
+
+    
+    # 日志输出到stderr
+    echo "网段: $network" 1>&2
+    echo "起始IP: $hostmin" 1>&2
+    echo "结束IP: $hostmax" 1>&2
+    echo "开始遍历..." 1>&2
+    
+    # 将IP转换为整数进行计算
+    ip_to_int() {
+        local ip=$1
+        IFS='.' read -r a b c d <<< "$ip"
+        echo $((a * 256**3 + b * 256**2 + c * 256 + d))
+    }
+    
+    # 将整数转换为IP
+    int_to_ip() {
+        local int=$1
+        # 结果输出到stdout
+        echo "$((int >> 24 & 0xFF)).$((int >> 16 & 0xFF)).$((int >> 8 & 0xFF)).$((int & 0xFF))"
+    }
+    
+    local start_int=$(ip_to_int "$hostmin")
+    local end_int=$(ip_to_int "$hostmax")
+    
+    # 遍历IP范围
+    # 从start_int+1开始，因为start_int是网段起始IP，用作服务端
+    for ((i=start_int+1; i<=end_int; i++)); do
+        int_to_ip $i
+    done
 }
 
 
