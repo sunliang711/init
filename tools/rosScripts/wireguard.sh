@@ -583,9 +583,12 @@ addClient(){
     #     log INFO "ip address: ${ip}/24"
     # done
 
+    # 如果当前没有peer，那么grep的时候会出错，导致脚本退出，所以需要设置set +e
+    set +e
     # ssh -p 20000 userxx1@10.1.1.1 "/interface wireguard peers export" | grep allowed-address      
     # 获取所有peer的allowed-address
     peerAllowedAddresses=$(ssh -p ${wireguardSshPort} ${wireguardSshUser}@${wireguardSshHost} "/interface wireguard peers export" | grep allowed-address)
+    set -e
     log DEBUG "peerAllowedAddresses: ${peerAllowedAddresses}"
     # 遍历clientIp,查看其是否在peerAllowedAddresses中
     for ip in ${clientIp}; do
