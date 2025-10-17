@@ -500,7 +500,15 @@ uninstall(){
 _start_pre(){
     echo "_start_pre()"
     # 生成服务端配置文件
-    gwInterface=$(ip -o -4 route show to default | awk '{print $5}')
+    while true;do
+		gwInterface=$(ip -o -4 route show to default | awk '{print $5}')
+		if [ -n "${gwInterface}" ];then
+			break
+		fi
+		echo "cannot get gateway interface, retry after 2 seconds..."
+		sleep 2
+	done
+    # gwInterface=$(ip -o -4 route show to default | awk '{print $5}')
     echo "gateway interface: ${gwInterface}"
     cat<<-EOF>${wireguardRoot}/${serverConfigFile}
 		[Interface]
