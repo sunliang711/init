@@ -416,6 +416,12 @@ install(){
     echo -n "Enter client DNS:"
     read clientDns
 
+    echo -n "Enter allowed IPs(for client, default 0.0.0.0/0, ::0/0):"
+	read allowedIPs
+	if [ -z "${allowedIPs}" ];then
+		allowedIPs="0.0.0.0/0, ::0/0"
+	fi
+
     ln -sf ${this}/wireguard.sh /usr/local/bin
 
     if [ ! -d ${wireguardRoot} ];then
@@ -433,6 +439,7 @@ install(){
 		serverPrikey=${serverPrikey}
 		interfaceName=${interfaceName}
 		serverConfigFile=\${interfaceName}.conf
+		allowedIPs=${allowedIPs}
 		MTU=1420
 		tableNo=10
 	EOF
@@ -775,6 +782,10 @@ exportClient(){
         exit 1
     fi
 
+    if [ -z ${allowedIPs}];then
+		allowedIPs="0.0.0.0/0, ::0/0"
+	fi
+
     local name hostnumber privatekey publickey
     for r in ${records};do
         IFS=$'|'
@@ -791,7 +802,7 @@ exportClient(){
 			[Peer]
 			    PublicKey = $(cat ${wireguardRoot}/${serverPubkey})
 			    Endpoint = ${serverEndpoint}:${serverPort}
-			    AllowedIPs = 0.0.0.0/0, ::0/0
+			    AllowedIPs = ${allowedIPs}
 			    PersistentKeepalive = 25
 
 		EOF
