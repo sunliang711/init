@@ -617,6 +617,8 @@ EOF
   log INFO "mv /tmp/client.hcl /etc/nomad.d/client.hcl"
   # _runAsRoot mv /tmp/client.hcl /etc/nomad.d/client.hcl
 
+  rm -rf nomad_${NOMAD_VERSION}_linux_amd64.zip
+
 }
 
 uninstall(){
