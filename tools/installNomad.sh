@@ -564,19 +564,8 @@ EOF
   cat<<-EOF>/tmp/nomad.hcl
   datacenter = "dc1"
   data_dir = "/opt/nomad/data"
-  plugin_dir = "/opt/nomad/plugins"
   bind_addr = "0.0.0.0"
   log_level = "INFO"
-  
-  server {
-    enabled = true
-    bootstrap_expect = 1
-  }
-  
-  client {
-    enabled = true
-    servers = ["127.0.0.1"]
-  }
 EOF
   log INFO "mv /tmp/nomad.hcl /etc/nomad.d/nomad.hcl"
   _runAsRoot mv /tmp/nomad.hcl /etc/nomad.d/nomad.hcl
@@ -586,15 +575,43 @@ EOF
   server {
     enabled = true
     bootstrap_expect = 1
+    default_scheduler_config {
+      scheduler_algorithm = "spread"
+      memory_oversubscription_enabled = true
+    }
   }
 EOF
   log INFO "mv /tmp/server.hcl /etc/nomad.d/server.hcl"
-  # _runAsRoot mv /tmp/server.hcl /etc/nomad.d/server.hcl
+  _runAsRoot mv /tmp/server.hcl /etc/nomad.d/server.hcl
 
   # 创建client配置文件
   cat<<-EOF>/tmp/client.hcl
   client {
     enabled = true
+  }
+  plugin "docker" {
+    config {
+      allow_privileged = true
+      volumes {
+        enabled = true
+      }
+      auth {
+        config = "/etc/docker/config.json"
+      }
+      gc {
+        image = true
+        image_delay = "100h"
+        container = true
+
+        dangling_containers {
+          enabled = true
+          dry_run = false
+          period = "10m"
+          creation_grace = "10m"
+        }
+      }
+      extra_labels = ["job_name", "task_group_name", "task_name", "namespace", "node_name", "short_alloc_id"]
+    }
   }
 EOF
   log INFO "mv /tmp/client.hcl /etc/nomad.d/client.hcl"
