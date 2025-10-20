@@ -566,59 +566,59 @@ EOF1
   _runAsRoot chmod 755 /etc/nomad.d
 
   # 创建nomad配置文件
-  cat>/tmp/nomad.hcl<<EOF2
-  datacenter = "dc1"
-  data_dir = "/opt/nomad/data"
-  bind_addr = "0.0.0.0"
-  log_level = "INFO"
-EOF2
+  cat>/tmp/nomad.hcl<<-EOF2
+	datacenter = "dc1"
+	data_dir = "/opt/nomad/data"
+	bind_addr = "0.0.0.0"
+	log_level = "INFO"
+	EOF2
   log INFO "mv /tmp/nomad.hcl /etc/nomad.d/nomad.hcl"
   _runAsRoot mv /tmp/nomad.hcl /etc/nomad.d/nomad.hcl
 
   # 创建server配置文件
   cat>/tmp/server.hcl<<EOF3
-  server {
-    enabled = true
-    bootstrap_expect = 1
-    default_scheduler_config {
-      scheduler_algorithm = "spread"
-      memory_oversubscription_enabled = true
-    }
-  }
-EOF3
+	server {
+	  enabled = true
+	  bootstrap_expect = 1
+	  default_scheduler_config {
+	    scheduler_algorithm = "spread"
+	    memory_oversubscription_enabled = true
+	  }
+	}
+	EOF3
   log INFO "mv /tmp/server.hcl /etc/nomad.d/server.hcl"
   _runAsRoot mv /tmp/server.hcl /etc/nomad.d/server.hcl
 
   # 创建client配置文件
   cat>/tmp/client.hcl<<EOF4
-  client {
-    enabled = true
-  }
-  plugin "docker" {
-    config {
-      allow_privileged = true
-      volumes {
-        enabled = true
-      }
-      auth {
-        config = "/etc/docker/config.json"
-      }
-      gc {
-        image = true
-        image_delay = "100h"
-        container = true
-
-        dangling_containers {
-          enabled = true
-          dry_run = false
-          period = "10m"
-          creation_grace = "10m"
-        }
-      }
-      extra_labels = ["job_name", "task_group_name", "task_name", "namespace", "node_name", "short_alloc_id"]
-    }
-  }
-EOF4
+	client {
+	  enabled = true
+	}
+	plugin "docker" {
+	  config {
+	    allow_privileged = true
+	    volumes {
+	      enabled = true
+	    }
+	    auth {
+	      config = "/etc/docker/config.json"
+	    }
+	    gc {
+	      image = true
+	      image_delay = "100h"
+	      container = true
+	
+	      dangling_containers {
+	        enabled = true
+	        dry_run = false
+	        period = "10m"
+	        creation_grace = "10m"
+	      }
+	    }
+	    extra_labels = ["job_name", "task_group_name", "task_name", "namespace", "node_name", "short_alloc_id"]
+	  }
+	}
+	EOF4
   log INFO "mv /tmp/client.hcl /etc/nomad.d/client.hcl"
    _runAsRoot mv /tmp/client.hcl /etc/nomad.d/client.hcl
 

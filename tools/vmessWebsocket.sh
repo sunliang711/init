@@ -45,14 +45,20 @@ function update_apt() {
 }
 
 function install_package() {
-    if ! command -v $1 > /dev/null; then
+	cmd=${1}
+	pkg=${2:-$1}
+    if ! command -v ${cmd} > /dev/null; then
         log "$1 command not found, install $1.."
-        apt-get install $1 -y >/dev/null
+        apt-get install ${pkg} -y >/dev/null
     fi
 }
 
 function install_jq(){
 	install_package jq
+}
+
+function install_nslookup() {
+	install_package dnsutils
 }
 
 function install_ufw() {
@@ -343,6 +349,7 @@ check_os
 check_domain_resolve "$domain"
 update_apt
 install_jq
+install_nslookup
 install_lsof
 install_ufw
 set_firewall
