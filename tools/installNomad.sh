@@ -489,7 +489,7 @@ install(){
   cd nomadDir
   _runAsRoot chown root:root nomad
   _runAsRoot mv nomad /usr/local/bin/
-  rm -rf nomadDir
+  cd .. && rm -rf nomadDir
 
   nomad version
   nomad -autocomplete-install || true
