@@ -576,7 +576,7 @@ EOF1
   _runAsRoot mv /tmp/nomad.hcl /etc/nomad.d/nomad.hcl
 
   # 创建server配置文件
-  cat>/tmp/server.hcl<<EOF3
+  cat>/tmp/server.hcl<<-EOF3
 	server {
 	  enabled = true
 	  bootstrap_expect = 1
@@ -590,7 +590,7 @@ EOF1
   _runAsRoot mv /tmp/server.hcl /etc/nomad.d/server.hcl
 
   # 创建client配置文件
-  cat>/tmp/client.hcl<<EOF4
+  cat>/tmp/client.hcl<<-EOF4
 	client {
 	  enabled = true
 	}
