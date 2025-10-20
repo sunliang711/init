@@ -501,7 +501,7 @@ install(){
 
   # 创建nomad服务文件
   log INFO "cat<<-EOF>/tmp/nomad.service"
-  cat<<-EOF>/tmp/nomad.service
+  cat<<-EOF1>/tmp/nomad.service
 [Unit]
 Description=Nomad
 Documentation=https://www.nomadproject.io/docs/
@@ -551,7 +551,7 @@ OOMScoreAdjust=-1000
 [Install]
 WantedBy=multi-user.target
 
-EOF
+EOF1
   log INFO "mv /tmp/nomad.service /etc/systemd/system/nomad.service"
   _runAsRoot mv /tmp/nomad.service /etc/systemd/system/nomad.service
 
@@ -561,17 +561,17 @@ EOF
   _runAsRoot chmod 755 /etc/nomad.d
 
   # 创建nomad配置文件
-  cat<<-EOF>/tmp/nomad.hcl
+  cat<<-EOF2>/tmp/nomad.hcl
   datacenter = "dc1"
   data_dir = "/opt/nomad/data"
   bind_addr = "0.0.0.0"
   log_level = "INFO"
-EOF
+EOF2
   log INFO "mv /tmp/nomad.hcl /etc/nomad.d/nomad.hcl"
   _runAsRoot mv /tmp/nomad.hcl /etc/nomad.d/nomad.hcl
 
   # 创建server配置文件
-  cat<<-EOF>/tmp/server.hcl
+  cat<<-EOF3>/tmp/server.hcl
   server {
     enabled = true
     bootstrap_expect = 1
@@ -580,12 +580,12 @@ EOF
       memory_oversubscription_enabled = true
     }
   }
-EOF
+EOF3
   log INFO "mv /tmp/server.hcl /etc/nomad.d/server.hcl"
   _runAsRoot mv /tmp/server.hcl /etc/nomad.d/server.hcl
 
   # 创建client配置文件
-  cat<<-EOF>/tmp/client.hcl
+  cat<<-EOF4>/tmp/client.hcl
   client {
     enabled = true
   }
@@ -613,7 +613,7 @@ EOF
       extra_labels = ["job_name", "task_group_name", "task_name", "namespace", "node_name", "short_alloc_id"]
     }
   }
-EOF
+EOF4
   log INFO "mv /tmp/client.hcl /etc/nomad.d/client.hcl"
    _runAsRoot mv /tmp/client.hcl /etc/nomad.d/client.hcl
 
