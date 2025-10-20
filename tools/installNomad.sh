@@ -476,17 +476,23 @@ em(){
 COMMANDS=("help" "install")
 
 install(){
+  _require_commands unzip curl
   set -e
   export NOMAD_VERSION=1.1.0
+  log INFO "downloading nomad ${NOMAD_VERSION}"
   curl --silent --remote-name https://releases.hashicorp.com/nomad/${NOMAD_VERSION}/nomad_${NOMAD_VERSION}_linux_amd64.zip
+  log INFO "unzip nomad_${NOMAD_VERSION}_linux_amd64.zip"
   unzip nomad_${NOMAD_VERSION}_linux_amd64.zip
-  sudo chown root:root nomad
+  _runAsRoot chown root:root nomad
   _runAsRoot mv nomad /usr/local/bin/
   nomad version
   nomad -autocomplete-install
   complete -C /usr/local/bin/nomad nomad
+  log INFO "mkdir --parents /opt/nomad"
   _runAsRoot mkdir --parents /opt/nomad
+  log INFO "useradd --system --home /etc/nomad.d --shell /bin/false nomad"
   _runAsRoot useradd --system --home /etc/nomad.d --shell /bin/false nomad
+  log INFO "cat<<-EOF>/tmp/nomad.service"
   cat<<-EOF>/tmp/nomad.service
 [Unit]
 Description=Nomad
@@ -538,6 +544,7 @@ OOMScoreAdjust=-1000
 WantedBy=multi-user.target
 
 EOF
+  log INFO "mv /tmp/nomad.service /etc/systemd/system/nomad.service"
   _runAsRoot mv /tmp/nomad.service /etc/systemd/system/nomad.service
 
  # common config
@@ -547,6 +554,7 @@ EOF
   datacenter = "dc1"
   data_dir = "/opt/nomad"
 EOF
+  log INFO "mv /tmp/nomad.hcl /etc/nomad.d/nomad.hcl"
   _runAsRoot mv /tmp/nomad.hcl /etc/nomad.d/nomad.hcl
 
   # server config
@@ -556,6 +564,7 @@ EOF
     bootstrap_expect = 1
   }
 EOF
+  log INFO "mv /tmp/server.hcl /etc/nomad.d/server.hcl"
   _runAsRoot mv /tmp/server.hcl /etc/nomad.d/server.hcl
 
   # client config
@@ -564,6 +573,7 @@ EOF
     enabled = true
   }
 EOF
+  log INFO "mv /tmp/client.hcl /etc/nomad.d/client.hcl"
   _runAsRoot mv /tmp/client.hcl /etc/nomad.d/client.hcl
 
 }
