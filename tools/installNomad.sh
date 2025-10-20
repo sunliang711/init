@@ -479,6 +479,7 @@ install(){
   _require_commands unzip curl
   set -e
   export NOMAD_VERSION=1.1.0
+  # 下载nomad
   log INFO "downloading nomad ${NOMAD_VERSION}"
   curl --silent --remote-name https://releases.hashicorp.com/nomad/${NOMAD_VERSION}/nomad_${NOMAD_VERSION}_linux_amd64.zip
   log INFO "unzip nomad_${NOMAD_VERSION}_linux_amd64.zip"
@@ -488,10 +489,17 @@ install(){
   nomad version
   nomad -autocomplete-install
   complete -C /usr/local/bin/nomad nomad
+
+  # 创建nomad用户
+  log INFO "useradd --system --home /etc/nomad.d --shell /bin/false nomad"
+  _runAsRoot useradd --system --home /etc/nomad.d --shell /bin/false nomad || true
+
+  # 创建nomad数据目录
   log INFO "mkdir --parents /opt/nomad"
   _runAsRoot mkdir --parents /opt/nomad
-  log INFO "useradd --system --home /etc/nomad.d --shell /bin/false nomad"
-  _runAsRoot useradd --system --home /etc/nomad.d --shell /bin/false nomad
+  _runAsRoot chown nomad:nomad /opt/nomad
+
+  # 创建nomad服务文件
   log INFO "cat<<-EOF>/tmp/nomad.service"
   cat<<-EOF>/tmp/nomad.service
 [Unit]
@@ -547,9 +555,12 @@ EOF
   log INFO "mv /tmp/nomad.service /etc/systemd/system/nomad.service"
   _runAsRoot mv /tmp/nomad.service /etc/systemd/system/nomad.service
 
- # common config
+  # 创建nomad配置目录
   _runAsRoot mkdir --parents /etc/nomad.d
-  _runAsRoot chown 700 /etc/nomad.d
+  _runAsRoot chown nomad:nomad /etc/nomad.d
+  _runAsRoot chmod 755 /etc/nomad.d
+
+  # 创建nomad配置文件
   cat<<-EOF>/tmp/nomad.hcl
   datacenter = "dc1"
   data_dir = "/opt/nomad"
@@ -557,7 +568,7 @@ EOF
   log INFO "mv /tmp/nomad.hcl /etc/nomad.d/nomad.hcl"
   _runAsRoot mv /tmp/nomad.hcl /etc/nomad.d/nomad.hcl
 
-  # server config
+  # 创建server配置文件
   cat<<-EOF>/tmp/server.hcl
   server {
     enabled = true
@@ -567,7 +578,7 @@ EOF
   log INFO "mv /tmp/server.hcl /etc/nomad.d/server.hcl"
   _runAsRoot mv /tmp/server.hcl /etc/nomad.d/server.hcl
 
-  # client config
+  # 创建client配置文件
   cat<<-EOF>/tmp/client.hcl
   client {
     enabled = true
@@ -576,6 +587,20 @@ EOF
   log INFO "mv /tmp/client.hcl /etc/nomad.d/client.hcl"
   _runAsRoot mv /tmp/client.hcl /etc/nomad.d/client.hcl
 
+}
+
+uninstall(){
+  log INFO "stopping nomad"
+  _runAsRoot systemctl stop nomad
+  log INFO "disabling nomad"
+  _runAsRoot systemctl disable nomad
+  log INFO "removing nomad"
+  _runAsRoot rm -rf /usr/local/bin/nomad
+  _runAsRoot rm -rf /etc/nomad.d
+  _runAsRoot rm -rf /opt/nomad
+  log INFO "removing nomad user"
+  _runAsRoot userdel -r nomad
+  
 }
 
 # ------------------------------------------------------------
