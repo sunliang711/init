@@ -480,12 +480,17 @@ install(){
   set -e
   export NOMAD_VERSION=1.10.5
   # 下载nomad
+  cd /tmp
   log INFO "downloading nomad ${NOMAD_VERSION}"
   curl --silent --remote-name https://releases.hashicorp.com/nomad/${NOMAD_VERSION}/nomad_${NOMAD_VERSION}_linux_amd64.zip
   log INFO "unzip nomad_${NOMAD_VERSION}_linux_amd64.zip"
-  unzip nomad_${NOMAD_VERSION}_linux_amd64.zip
+  unzip -d nomadDir nomad_${NOMAD_VERSION}_linux_amd64.zip
+  rm -rf nomad_${NOMAD_VERSION}_linux_amd64.zip
+  cd nomadDir
   _runAsRoot chown root:root nomad
   _runAsRoot mv nomad /usr/local/bin/
+  rm -rf nomadDir
+
   nomad version
   nomad -autocomplete-install || true
   complete -C /usr/local/bin/nomad nomad || true
@@ -532,8 +537,8 @@ RestartSec=2
 
 ## Configure unit start rate limiting. Units which are started more than
 ## *burst* times within an *interval* time span are not permitted to start any
-## more. Use `StartLimitIntervalSec` or `StartLimitInterval` (depending on
-## systemd version) to configure the checking interval and `StartLimitBurst`
+## more. Use StartLimitIntervalSec or StartLimitInterval (depending on
+## systemd version) to configure the checking interval and StartLimitBurst
 ## to configure how many starts per interval are allowed. The values in the
 ## commented lines are defaults.
 
@@ -616,8 +621,6 @@ EOF3
 EOF4
   log INFO "mv /tmp/client.hcl /etc/nomad.d/client.hcl"
    _runAsRoot mv /tmp/client.hcl /etc/nomad.d/client.hcl
-
-  rm -rf nomad_${NOMAD_VERSION}_linux_amd64.zip
 
 }
 
