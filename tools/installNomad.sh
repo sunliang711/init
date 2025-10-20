@@ -518,8 +518,8 @@ After=network-online.target
 
 # Nomad server should be run as the nomad user. Nomad clients
 # should be run as root
-User=nomad
-Group=nomad
+User=root
+Group=root
 
 ExecReload=/bin/kill -HUP $MAINPID
 ExecStart=/usr/local/bin/nomad agent -config /etc/nomad.d
@@ -550,8 +550,8 @@ OOMScoreAdjust=-1000
 
 [Install]
 WantedBy=multi-user.target
-
 EOF1
+
   log INFO "mv /tmp/nomad.service /etc/systemd/system/nomad.service"
   _runAsRoot mv /tmp/nomad.service /etc/systemd/system/nomad.service
 
