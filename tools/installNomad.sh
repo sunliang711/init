@@ -487,8 +487,8 @@ install(){
   _runAsRoot chown root:root nomad
   _runAsRoot mv nomad /usr/local/bin/
   nomad version
-  nomad -autocomplete-install
-  complete -C /usr/local/bin/nomad nomad
+  nomad -autocomplete-install || true
+  complete -C /usr/local/bin/nomad nomad || true
 
   # 创建nomad用户
   log INFO "useradd --system --home /etc/nomad.d --shell /bin/false nomad"
