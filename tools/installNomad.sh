@@ -563,7 +563,20 @@ EOF
   # 创建nomad配置文件
   cat<<-EOF>/tmp/nomad.hcl
   datacenter = "dc1"
-  data_dir = "/opt/nomad"
+  data_dir = "/opt/nomad/data"
+  plugin_dir = "/opt/nomad/plugins"
+  bind_addr = "0.0.0.0"
+  log_level = "INFO"
+  
+  server {
+    enabled = true
+    bootstrap_expect = 1
+  }
+  
+  client {
+    enabled = true
+    servers = ["127.0.0.1"]
+  }
 EOF
   log INFO "mv /tmp/nomad.hcl /etc/nomad.d/nomad.hcl"
   _runAsRoot mv /tmp/nomad.hcl /etc/nomad.d/nomad.hcl
@@ -576,7 +589,7 @@ EOF
   }
 EOF
   log INFO "mv /tmp/server.hcl /etc/nomad.d/server.hcl"
-  _runAsRoot mv /tmp/server.hcl /etc/nomad.d/server.hcl
+  # _runAsRoot mv /tmp/server.hcl /etc/nomad.d/server.hcl
 
   # 创建client配置文件
   cat<<-EOF>/tmp/client.hcl
@@ -585,7 +598,7 @@ EOF
   }
 EOF
   log INFO "mv /tmp/client.hcl /etc/nomad.d/client.hcl"
-  _runAsRoot mv /tmp/client.hcl /etc/nomad.d/client.hcl
+  # _runAsRoot mv /tmp/client.hcl /etc/nomad.d/client.hcl
 
 }
 
