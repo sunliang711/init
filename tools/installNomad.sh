@@ -501,7 +501,7 @@ install(){
 
   # 创建nomad服务文件
   log INFO "cat<<-EOF>/tmp/nomad.service"
-  cat<<-EOF1>/tmp/nomad.service
+  cat>/tmp/nomad.service<<EOF1
 [Unit]
 Description=Nomad
 Documentation=https://www.nomadproject.io/docs/
@@ -561,7 +561,7 @@ EOF1
   _runAsRoot chmod 755 /etc/nomad.d
 
   # 创建nomad配置文件
-  cat<<-EOF2>/tmp/nomad.hcl
+  cat>/tmp/nomad.hcl<<EOF2
   datacenter = "dc1"
   data_dir = "/opt/nomad/data"
   bind_addr = "0.0.0.0"
@@ -571,7 +571,7 @@ EOF2
   _runAsRoot mv /tmp/nomad.hcl /etc/nomad.d/nomad.hcl
 
   # 创建server配置文件
-  cat<<-EOF3>/tmp/server.hcl
+  cat>/tmp/server.hcl<<EOF3
   server {
     enabled = true
     bootstrap_expect = 1
@@ -585,7 +585,7 @@ EOF3
   _runAsRoot mv /tmp/server.hcl /etc/nomad.d/server.hcl
 
   # 创建client配置文件
-  cat<<-EOF4>/tmp/client.hcl
+  cat>/tmp/client.hcl<<EOF4
   client {
     enabled = true
   }
