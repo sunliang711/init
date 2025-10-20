@@ -478,7 +478,7 @@ COMMANDS=("help" "install")
 install(){
   _require_commands unzip curl
   set -e
-  export NOMAD_VERSION=1.1.0
+  export NOMAD_VERSION=1.10.5
   # 下载nomad
   log INFO "downloading nomad ${NOMAD_VERSION}"
   curl --silent --remote-name https://releases.hashicorp.com/nomad/${NOMAD_VERSION}/nomad_${NOMAD_VERSION}_linux_amd64.zip
