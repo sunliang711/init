@@ -622,6 +622,17 @@ EOF1
   log INFO "mv /tmp/client.hcl /etc/nomad.d/client.hcl"
    _runAsRoot mv /tmp/client.hcl /etc/nomad.d/client.hcl
 
+   cat<<-EOF5
+   create /etc/docker/daemon.json with content:
+{
+  "ipv6": true,
+  "fixed-cidr-v6": "fd00::/80",
+  "ip6tables": true
+}
+ to support ipv6
+
+	EOF5
+
 }
 
 uninstall(){
