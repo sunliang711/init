@@ -601,7 +601,7 @@ EOF1
 	      enabled = true
 	    }
 	    auth {
-	      config = "/etc/docker/config.json"
+	      config = "/etc/docker/daemon.json"
 	    }
 	    gc {
 	      image = true
