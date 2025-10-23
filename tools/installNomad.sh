@@ -463,7 +463,7 @@ get_release_link(){
   done
   link=$(echo $link0 | cut -d '"' -f 4)
   log INFO "link: ${link}"
-  
+
   export link
 }
 
@@ -571,6 +571,13 @@ EOF1
 	data_dir = "/opt/nomad/data"
 	bind_addr = "0.0.0.0"
 	log_level = "INFO"
+	telemetry {
+  collection_interval        = "1s"
+  disable_hostname           = false
+  prometheus_metrics         = true
+  publish_allocation_metrics = true
+  publish_node_metrics       = true
+}
 	EOF2
   log INFO "mv /tmp/nomad.hcl /etc/nomad.d/nomad.hcl"
   _runAsRoot mv /tmp/nomad.hcl /etc/nomad.d/nomad.hcl
@@ -607,7 +614,7 @@ EOF1
 	      image = true
 	      image_delay = "100h"
 	      container = true
-	
+
 	      dangling_containers {
 	        enabled = true
 	        dry_run = false
@@ -646,7 +653,7 @@ uninstall(){
   _runAsRoot rm -rf /opt/nomad
   log INFO "removing nomad user"
   _runAsRoot userdel -r nomad
-  
+
 }
 
 # ------------------------------------------------------------
