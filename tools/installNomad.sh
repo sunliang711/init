@@ -463,7 +463,7 @@ get_release_link(){
   done
   link=$(echo $link0 | cut -d '"' -f 4)
   log INFO "link: ${link}"
-  
+
   export link
 }
 
@@ -585,6 +585,9 @@ EOF1
 	    memory_oversubscription_enabled = true
 	  }
 	}
+	acl {
+	  enabled = true
+	}
 	EOF3
   log INFO "mv /tmp/server.hcl /etc/nomad.d/server.hcl"
   _runAsRoot mv /tmp/server.hcl /etc/nomad.d/server.hcl
@@ -607,7 +610,7 @@ EOF1
 	      image = true
 	      image_delay = "100h"
 	      container = true
-	
+
 	      dangling_containers {
 	        enabled = true
 	        dry_run = false
@@ -633,6 +636,9 @@ EOF1
 
 	EOF5
 
+  if ! _command_exists docker;then
+    log WARNING "docker not found, please install docker manually"
+  fi
 }
 
 uninstall(){
@@ -646,7 +652,7 @@ uninstall(){
   _runAsRoot rm -rf /opt/nomad
   log INFO "removing nomad user"
   _runAsRoot userdel -r nomad
-  
+
 }
 
 # ------------------------------------------------------------
