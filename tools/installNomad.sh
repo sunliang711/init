@@ -592,6 +592,9 @@ EOF1
 	    memory_oversubscription_enabled = true
 	  }
 	}
+	acl {
+	  enabled = true
+	}
 	EOF3
   log INFO "mv /tmp/server.hcl /etc/nomad.d/server.hcl"
   _runAsRoot mv /tmp/server.hcl /etc/nomad.d/server.hcl
@@ -642,6 +645,9 @@ EOF1
 
     _runAsRoot systemctl enable --now nomad
     nomad acl bootstrap>~/nomad.acl
+  if ! _command_exists docker;then
+    log WARNING "docker not found, please install docker manually"
+  fi
 }
 
 uninstall(){
