@@ -644,6 +644,11 @@ EOF1
 	EOF5
 
     _runAsRoot systemctl enable --now nomad
+    # wait nomad start
+    while ! nc -z localhost 4646; do
+	  log INFO "waiting nomad start..."
+	  sleep 2
+	done
     nomad acl bootstrap>~/nomad.acl
   if ! _command_exists docker;then
     log WARNING "docker not found, please install docker manually"
