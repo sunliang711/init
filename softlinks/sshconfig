@@ -74,7 +74,7 @@ Host dmit
 Host aliyun
     HostName aliyun.gitez.cc
     User eagle
-    Port 2000
+    Port 22
 
 Host aliyunChain
     HostName aliyun.gitez.cc
