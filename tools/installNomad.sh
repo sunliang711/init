@@ -640,6 +640,8 @@ EOF1
 
 	EOF5
 
+    _runAsRoot systemctl enable --now nomad
+    nomad acl bootstrap>~/nomad.acl
 }
 
 uninstall(){
