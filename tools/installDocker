@@ -102,7 +102,7 @@ install() {
     sudo sh get-docker.sh
     dockerConfigFile=/etc/docker/daemon.json
     if [ ! -e ${dockerConfigFile} ];then
-      sudo echo "{}">${dockerConfigFile}
+      echo "{}" | sudo tee ${dockerConfigFile}
     fi
 }
 
