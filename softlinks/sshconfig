@@ -72,7 +72,7 @@ Host dmit
     User root
 
 Host aliyun
-    HostName aliyun.gitez.cc
+    HostName aliyun.rustez.cc
     User eagle
     Port 22
 
