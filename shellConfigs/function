@@ -2689,6 +2689,637 @@ for s in "${SHELLRC_ROOT}"/autoSource/*; do
     source "$s"
 done
 
+# Internal extraction function with format detection
+# Usage: _extract <archive_file> <target_directory>
+_extract() {
+    local archive="$1"
+    local target_dir="$2"
+    
+    # Check parameters
+    if [ $# -ne 2 ]; then
+        echo "Usage: _extract <archive_file> <target_directory>"
+        echo "Example: _extract file.tar.gz /path/to/extract"
+        return 1
+    fi
+    
+    # Check if archive file exists
+    if [ ! -f "$archive" ]; then
+        echo "Error: File '$archive' does not exist"
+        return 1
+    fi
+    
+    # Create target directory if it doesn't exist
+    if [ ! -d "$target_dir" ]; then
+        echo "Creating directory: $target_dir"
+        mkdir -p "$target_dir" || {
+            echo "Error: Cannot create directory '$target_dir'"
+            return 1
+        }
+    fi
+    
+    # Get absolute paths
+    archive=$(realpath "$archive")
+    target_dir=$(realpath "$target_dir")
+    
+    echo "Analyzing file format..."
+    
+    # Use file command to detect file type
+    local file_type=$(file -b "$archive")
+    local file_mime=$(file -b --mime-type "$archive")
+    
+    echo "File type: $file_type"
+    echo "MIME type: $file_mime"
+    echo "Extracting '$archive' to '$target_dir'..."
+    
+    # Define extraction functions
+    extract_tar_bz2() {
+        tar -xjf "$archive" -C "$target_dir" --strip-components=0
+    }
+    
+    extract_tar_gz() {
+        tar -xzf "$archive" -C "$target_dir" --strip-components=0
+    }
+    
+    extract_tar_xz() {
+        tar -xJf "$archive" -C "$target_dir" --strip-components=0
+    }
+    
+    extract_tar_lz() {
+        tar --lzip -xf "$archive" -C "$target_dir" --strip-components=0
+    }
+    
+    extract_tar_lzma() {
+        tar --lzma -xf "$archive" -C "$target_dir" --strip-components=0
+    }
+    
+    extract_tar_zst() {
+        tar --zstd -xf "$archive" -C "$target_dir" --strip-components=0
+    }
+    
+    extract_tar() {
+        tar -xf "$archive" -C "$target_dir" --strip-components=0
+    }
+    
+    extract_gzip() {
+        local basename=$(basename "$archive")
+        # Remove possible .gz extension
+        basename=${basename%.gz}
+        # If no extension removed, use original filename
+        [ "$basename" = "$(basename "$archive")" ] && basename="${basename}.extracted"
+        gunzip -c "$archive" > "$target_dir/$basename"
+    }
+    
+    extract_bzip2() {
+        local basename=$(basename "$archive")
+        basename=${basename%.bz2}
+        [ "$basename" = "$(basename "$archive")" ] && basename="${basename}.extracted"
+        bunzip2 -c "$archive" > "$target_dir/$basename"
+    }
+    
+    extract_xz() {
+        local basename=$(basename "$archive")
+        basename=${basename%.xz}
+        [ "$basename" = "$(basename "$archive")" ] && basename="${basename}.extracted"
+        xz -dc "$archive" > "$target_dir/$basename"
+    }
+    
+    extract_lzip() {
+        local basename=$(basename "$archive")
+        basename=${basename%.lz}
+        [ "$basename" = "$(basename "$archive")" ] && basename="${basename}.extracted"
+        lzip -dc "$archive" > "$target_dir/$basename"
+    }
+    
+    extract_lzma() {
+        local basename=$(basename "$archive")
+        basename=${basename%.lzma}
+        [ "$basename" = "$(basename "$archive")" ] && basename="${basename}.extracted"
+        unlzma -c "$archive" > "$target_dir/$basename"
+    }
+    
+    extract_zstd() {
+        local basename=$(basename "$archive")
+        basename=${basename%.zst}
+        [ "$basename" = "$(basename "$archive")" ] && basename="${basename}.extracted"
+        zstd -dc "$archive" > "$target_dir/$basename"
+    }
+    
+    extract_zip() {
+        unzip -q "$archive" -d "$target_dir"
+    }
+    
+    extract_rar() {
+        if command -v unrar >/dev/null 2>&1; then
+            unrar x "$archive" "$target_dir/"
+        elif command -v rar >/dev/null 2>&1; then
+            rar x "$archive" "$target_dir/"
+        else
+            echo "Error: Need to install unrar or rar to extract RAR files"
+            return 1
+        fi
+    }
+    
+    extract_7z() {
+        if command -v 7z >/dev/null 2>&1; then
+            7z x "$archive" -o"$target_dir"
+        elif command -v 7za >/dev/null 2>&1; then
+            7za x "$archive" -o"$target_dir"
+        else
+            echo "Error: Need to install p7zip to extract 7z files"
+            return 1
+        fi
+    }
+    
+    extract_compress() {
+        local basename=$(basename "$archive")
+        basename=${basename%.Z}
+        [ "$basename" = "$(basename "$archive")" ] && basename="${basename}.extracted"
+        uncompress -c "$archive" > "$target_dir/$basename"
+    }
+    
+    extract_lzo() {
+        if command -v lzop >/dev/null 2>&1; then
+            local basename=$(basename "$archive")
+            basename=${basename%.lzo}
+            [ "$basename" = "$(basename "$archive")" ] && basename="${basename}.extracted"
+            lzop -dc "$archive" > "$target_dir/$basename"
+        else
+            echo "Error: Need to install lzop to extract LZO files"
+            return 1
+        fi
+    }
+    
+    extract_cab() {
+        if command -v cabextract >/dev/null 2>&1; then
+            cabextract -d "$target_dir" "$archive"
+        else
+            echo "Error: Need to install cabextract to extract CAB files"
+            return 1
+        fi
+    }
+    
+    extract_deb() {
+        ar p "$archive" data.tar.* | tar -xf - -C "$target_dir"
+    }
+    
+    extract_rpm() {
+        if command -v rpm2cpio >/dev/null 2>&1; then
+            cd "$target_dir" && rpm2cpio "$archive" | cpio -idmv
+            cd - >/dev/null
+        else
+            echo "Error: Need to install rpm2cpio to extract RPM files"
+            return 1
+        fi
+    }
+    
+    # First try to determine format based on file command output
+    local format_detected=false
+    
+    # Check MIME type
+    case "$file_mime" in
+        application/x-tar)
+            echo "Detected: TAR archive"
+            extract_tar && format_detected=true
+            ;;
+        application/gzip|application/x-gzip)
+            # Need to further determine if it's a gzip file or tar.gz
+            if echo "$file_type" | grep -q "gzip compressed data"; then
+                # Check if it's tar.gz
+                if gunzip -t "$archive" 2>/dev/null && gunzip -c "$archive" | file - | grep -q "POSIX tar archive"; then
+                    echo "Detected: TAR.GZ archive"
+                    extract_tar_gz && format_detected=true
+                else
+                    echo "Detected: GZIP compressed file"
+                    extract_gzip && format_detected=true
+                fi
+            fi
+            ;;
+        application/x-bzip2)
+            # Check if it's tar.bz2
+            if bzcat "$archive" | file - | grep -q "POSIX tar archive" 2>/dev/null; then
+                echo "Detected: TAR.BZ2 archive"
+                extract_tar_bz2 && format_detected=true
+            else
+                echo "Detected: BZIP2 compressed file"
+                extract_bzip2 && format_detected=true
+            fi
+            ;;
+        application/x-xz)
+            # Check if it's tar.xz
+            if xzcat "$archive" | file - | grep -q "POSIX tar archive" 2>/dev/null; then
+                echo "Detected: TAR.XZ archive"
+                extract_tar_xz && format_detected=true
+            else
+                echo "Detected: XZ compressed file"
+                extract_xz && format_detected=true
+            fi
+            ;;
+        application/x-lzip)
+            if lzip -dc "$archive" | file - | grep -q "POSIX tar archive" 2>/dev/null; then
+                echo "Detected: TAR.LZ archive"
+                extract_tar_lz && format_detected=true
+            else
+                echo "Detected: LZIP compressed file"
+                extract_lzip && format_detected=true
+            fi
+            ;;
+        application/x-lzma)
+            if unlzma -c "$archive" | file - | grep -q "POSIX tar archive" 2>/dev/null; then
+                echo "Detected: TAR.LZMA archive"
+                extract_tar_lzma && format_detected=true
+            else
+                echo "Detected: LZMA compressed file"
+                extract_lzma && format_detected=true
+            fi
+            ;;
+        application/zstd|application/x-zstd)
+            if zstd -dc "$archive" | file - | grep -q "POSIX tar archive" 2>/dev/null; then
+                echo "Detected: TAR.ZST archive"
+                extract_tar_zst && format_detected=true
+            else
+                echo "Detected: ZSTD compressed file"
+                extract_zstd && format_detected=true
+            fi
+            ;;
+        application/zip)
+            echo "Detected: ZIP archive"
+            extract_zip && format_detected=true
+            ;;
+        application/vnd.rar|application/x-rar-compressed)
+            echo "Detected: RAR archive"
+            extract_rar && format_detected=true
+            ;;
+        application/x-7z-compressed)
+            echo "Detected: 7Z archive"
+            extract_7z && format_detected=true
+            ;;
+        application/x-compress)
+            echo "Detected: COMPRESS file"
+            extract_compress && format_detected=true
+            ;;
+        application/vnd.debian.binary-package)
+            echo "Detected: DEB package"
+            extract_deb && format_detected=true
+            ;;
+        application/x-rpm)
+            echo "Detected: RPM package"
+            extract_rpm && format_detected=true
+            ;;
+        application/vnd.ms-cab-compressed)
+            echo "Detected: CAB archive"
+            extract_cab && format_detected=true
+            ;;
+    esac
+    
+    # If MIME type detection failed, try based on detailed file command output
+    if [ "$format_detected" = false ]; then
+        case "$file_type" in
+            *"POSIX tar archive"*)
+                echo "Detected: TAR archive"
+                extract_tar && format_detected=true
+                ;;
+            *"gzip compressed"*)
+                # Further check content
+                if gunzip -c "$archive" | file - | grep -q "POSIX tar archive" 2>/dev/null; then
+                    echo "Detected: TAR.GZ archive"
+                    extract_tar_gz && format_detected=true
+                else
+                    echo "Detected: GZIP compressed file"
+                    extract_gzip && format_detected=true
+                fi
+                ;;
+            *"bzip2 compressed"*)
+                if bzcat "$archive" | file - | grep -q "POSIX tar archive" 2>/dev/null; then
+                    echo "Detected: TAR.BZ2 archive"
+                    extract_tar_bz2 && format_detected=true
+                else
+                    echo "Detected: BZIP2 compressed file"
+                    extract_bzip2 && format_detected=true
+                fi
+                ;;
+            *"XZ compressed"*)
+                if xzcat "$archive" | file - | grep -q "POSIX tar archive" 2>/dev/null; then
+                    echo "Detected: TAR.XZ archive"
+                    extract_tar_xz && format_detected=true
+                else
+                    echo "Detected: XZ compressed file"
+                    extract_xz && format_detected=true
+                fi
+                ;;
+            *"lzip compressed"*)
+                if lzip -dc "$archive" | file - | grep -q "POSIX tar archive" 2>/dev/null; then
+                    echo "Detected: TAR.LZ archive"
+                    extract_tar_lz && format_detected=true
+                else
+                    echo "Detected: LZIP compressed file"
+                    extract_lzip && format_detected=true
+                fi
+                ;;
+            *"LZMA compressed"*)
+                if unlzma -c "$archive" | file - | grep -q "POSIX tar archive" 2>/dev/null; then
+                    echo "Detected: TAR.LZMA archive"
+                    extract_tar_lzma && format_detected=true
+                else
+                    echo "Detected: LZMA compressed file"
+                    extract_lzma && format_detected=true
+                fi
+                ;;
+            *"Zstandard compressed"*)
+                if zstd -dc "$archive" | file - | grep -q "POSIX tar archive" 2>/dev/null; then
+                    echo "Detected: TAR.ZST archive"
+                    extract_tar_zst && format_detected=true
+                else
+                    echo "Detected: ZSTD compressed file"
+                    extract_zstd && format_detected=true
+                fi
+                ;;
+            *"Zip archive"*)
+                echo "Detected: ZIP archive"
+                extract_zip && format_detected=true
+                ;;
+            *"RAR archive"*)
+                echo "Detected: RAR archive"
+                extract_rar && format_detected=true
+                ;;
+            *"7-zip archive"*)
+                echo "Detected: 7Z archive"
+                extract_7z && format_detected=true
+                ;;
+            *"compress'd data"*)
+                echo "Detected: COMPRESS file"
+                extract_compress && format_detected=true
+                ;;
+            *"lzop compressed"*)
+                echo "Detected: LZO compressed file"
+                extract_lzo && format_detected=true
+                ;;
+            *"Microsoft Cabinet archive"*)
+                echo "Detected: CAB archive"
+                extract_cab && format_detected=true
+                ;;
+            *"Debian binary package"*)
+                echo "Detected: DEB package"
+                extract_deb && format_detected=true
+                ;;
+            *"RPM"*)
+                echo "Detected: RPM package"
+                extract_rpm && format_detected=true
+                ;;
+        esac
+    fi
+    
+    # If format detection failed, fallback to filename extension method
+    if [ "$format_detected" = false ]; then
+        echo "Warning: Cannot detect format by file content, trying filename extension..."
+        
+        case "${archive,,}" in  # ${archive,,} converts to lowercase
+            *.tar.bz2|*.tbz2)
+                echo "Detected by extension: TAR.BZ2"
+                extract_tar_bz2 && format_detected=true
+                ;;
+            *.tar.gz|*.tgz)
+                echo "Detected by extension: TAR.GZ"
+                extract_tar_gz && format_detected=true
+                ;;
+            *.tar.xz|*.txz)
+                echo "Detected by extension: TAR.XZ"
+                extract_tar_xz && format_detected=true
+                ;;
+            *.tar.lz)
+                echo "Detected by extension: TAR.LZ"
+                extract_tar_lz && format_detected=true
+                ;;
+            *.tar.lzma)
+                echo "Detected by extension: TAR.LZMA"
+                extract_tar_lzma && format_detected=true
+                ;;
+            *.tar.zst|*.tzst)
+                echo "Detected by extension: TAR.ZST"
+                extract_tar_zst && format_detected=true
+                ;;
+            *.tar)
+                echo "Detected by extension: TAR"
+                extract_tar && format_detected=true
+                ;;
+            *.bz2)
+                echo "Detected by extension: BZIP2"
+                extract_bzip2 && format_detected=true
+                ;;
+            *.gz)
+                echo "Detected by extension: GZIP"
+                extract_gzip && format_detected=true
+                ;;
+            *.xz)
+                echo "Detected by extension: XZ"
+                extract_xz && format_detected=true
+                ;;
+            *.lz)
+                echo "Detected by extension: LZIP"
+                extract_lzip && format_detected=true
+                ;;
+            *.lzma)
+                echo "Detected by extension: LZMA"
+                extract_lzma && format_detected=true
+                ;;
+            *.zst)
+                echo "Detected by extension: ZSTD"
+                extract_zstd && format_detected=true
+                ;;
+            *.zip)
+                echo "Detected by extension: ZIP"
+                extract_zip && format_detected=true
+                ;;
+            *.rar)
+                echo "Detected by extension: RAR"
+                extract_rar && format_detected=true
+                ;;
+            *.7z)
+                echo "Detected by extension: 7Z"
+                extract_7z && format_detected=true
+                ;;
+            *.z)
+                echo "Detected by extension: COMPRESS"
+                extract_compress && format_detected=true
+                ;;
+            *.lzo)
+                echo "Detected by extension: LZO"
+                extract_lzo && format_detected=true
+                ;;
+            *.cab)
+                echo "Detected by extension: CAB"
+                extract_cab && format_detected=true
+                ;;
+            *.deb)
+                echo "Detected by extension: DEB"
+                extract_deb && format_detected=true
+                ;;
+            *.rpm)
+                echo "Detected by extension: RPM"
+                extract_rpm && format_detected=true
+                ;;
+        esac
+    fi
+    
+    # If still cannot recognize format
+    if [ "$format_detected" = false ]; then
+        echo "Error: Cannot recognize file format"
+        echo "File information:"
+        echo "  File type: $file_type"
+        echo "  MIME type: $file_mime"
+        echo "  Filename: $(basename "$archive")"
+        echo ""
+        echo "Supported formats: tar.gz, tar.bz2, tar.xz, tar.lz, tar.lzma, tar.zst, tar,"
+        echo "                  gz, bz2, xz, lz, lzma, zst, zip, rar, 7z, Z, lzo, cab, deb, rpm"
+        return 1
+    fi
+    
+    local exit_code=$?
+    
+    if [ $exit_code -eq 0 ]; then
+        echo "Extraction completed: '$archive' -> '$target_dir'"
+        
+        # Handle special case: if only one directory after extraction, suggest flattening
+        local extracted_items=($(ls -A "$target_dir" 2>/dev/null))
+        if [ ${#extracted_items[@]} -eq 1 ] && [ -d "$target_dir/${extracted_items[0]}" ]; then
+            echo "Note: Only one directory '${extracted_items[0]}' extracted"
+            echo "To move its contents to target directory, run:"
+            echo "mv '$target_dir/${extracted_items[0]}'/* '$target_dir/' && rmdir '$target_dir/${extracted_items[0]}'"
+        fi
+    else
+        echo "Error: Extraction failed with exit code: $exit_code"
+        return $exit_code
+    fi
+}
+
+# Smart extraction function with automatic directory flattening
+# Usage: extract <archive_file> <target_directory> [flatten]
+extract() {
+    local archive="$1"
+    local target_dir="$2"
+    local flatten="${3:-true}"  # Default to true for auto-flattening
+    
+    # Check parameters
+    if [ $# -lt 2 ] || [ $# -gt 3 ]; then
+        echo "Usage: extract <archive_file> <target_directory> [flatten]"
+        echo "Example: extract file.tar.gz /path/to/extract"
+        echo "         extract file.tar.gz /path/to/extract false  # disable auto-flatten"
+        return 1
+    fi
+    
+    # Call internal extraction function
+    _extract "$archive" "$target_dir" || return $?
+    
+    # If auto-flattening is enabled
+    if [ "$flatten" = "true" ] || [ "$flatten" = "1" ]; then
+        local extracted_items=($(ls -A "$target_dir" 2>/dev/null))
+        if [ ${#extracted_items[@]} -eq 1 ] && [ -d "$target_dir/${extracted_items[0]}" ]; then
+            echo "Auto-flattening directory: ${extracted_items[0]}"
+            local temp_dir=$(mktemp -d)
+            mv "$target_dir/${extracted_items[0]}"/* "$temp_dir/" 2>/dev/null
+            mv "$target_dir/${extracted_items[0]}"/.[!.]* "$temp_dir/" 2>/dev/null
+            rmdir "$target_dir/${extracted_items[0]}"
+            mv "$temp_dir"/* "$target_dir/" 2>/dev/null
+            mv "$temp_dir"/.[!.]* "$target_dir/" 2>/dev/null
+            rmdir "$temp_dir"
+            echo "Directory flattening completed"
+        fi
+    fi
+}
+
+# Batch extraction function - FIXED parameter order
+# Usage: extract_batch <archive1> [archive2] ... <target_directory>
+extract_batch() {
+    if [ $# -lt 2 ]; then
+        echo "Usage: extract_batch <archive1> [archive2] ... <target_directory>"
+        echo "Example: extract_batch file1.tar.gz file2.zip file3.rar /path/to/extract"
+        return 1
+    fi
+    
+    # Last argument is the target directory
+    local target_dir="${!#}"
+    
+    # All arguments except the last one are archive files
+    local archives=("${@:1:$#-1}")
+    
+    echo "Target directory: $target_dir"
+    echo "Archives to extract: ${#archives[@]}"
+    echo ""
+    
+    for archive in "${archives[@]}"; do
+        echo "Processing: $archive"
+        extract "$archive" "$target_dir"
+        echo "---"
+    done
+}
+
+# File format detection function (detect only, no extraction)
+detect_format() {
+    local archive="$1"
+    
+    if [ ! -f "$archive" ]; then
+        echo "Error: File '$archive' does not exist"
+        return 1
+    fi
+    
+    echo "File: $archive"
+    echo "File type: $(file -b "$archive")"
+    echo "MIME type: $(file -b --mime-type "$archive")"
+    echo "File size: $(du -h "$archive" | cut -f1)"
+    
+    # If it's an archive file, try to list contents
+    local file_type=$(file -b "$archive")
+    local file_mime=$(file -b --mime-type "$archive")
+    
+    echo "Content preview:"
+    case "$file_mime" in
+        application/x-tar)
+            tar -tf "$archive" | head -10
+            ;;
+        application/gzip|application/x-gzip)
+            if gunzip -c "$archive" | file - | grep -q "POSIX tar archive" 2>/dev/null; then
+                tar -tzf "$archive" | head -10
+            else
+                echo "  (single compressed file)"
+            fi
+            ;;
+        application/x-bzip2)
+            if bzcat "$archive" | file - | grep -q "POSIX tar archive" 2>/dev/null; then
+                tar -tjf "$archive" | head -10
+            else
+                echo "  (single compressed file)"
+            fi
+            ;;
+        application/x-xz)
+            if xzcat "$archive" | file - | grep -q "POSIX tar archive" 2>/dev/null; then
+                tar -tJf "$archive" | head -10
+            else
+                echo "  (single compressed file)"
+            fi
+            ;;
+        application/zip)
+            unzip -l "$archive" | head -15
+            ;;
+        application/vnd.rar|application/x-rar-compressed)
+            if command -v unrar >/dev/null 2>&1; then
+                unrar l "$archive" | head -15
+            else
+                echo "  (need to install unrar to view contents)"
+            fi
+            ;;
+        application/x-7z-compressed)
+            if command -v 7z >/dev/null 2>&1; then
+                7z l "$archive" | head -15
+            else
+                echo "  (need to install p7zip to view contents)"
+            fi
+            ;;
+        *)
+            echo "  (cannot preview contents)"
+            ;;
+    esac
+}
+
+
 #END function
 
 # vim: set ft=sh:
