@@ -50,6 +50,9 @@ export LESSCHARSET=utf-8
 # export LC_ALL="en_US.utf8"
 # export LC_CTYPE="en_US.utf8"
 
+# macOS 下tar打包时莫名添加._开头的文件
+export COPYFILE_DISABLE=1
+
 export PROXY_FILE="${home}/.PROXY_FILE"
 export LOCAL_APP_ROOT="${home}/.local/apps"
 detectProxyEnv
