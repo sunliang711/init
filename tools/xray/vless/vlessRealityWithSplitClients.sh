@@ -1,4 +1,8 @@
 #!/bin/bash
+basicConfigFile=vless_basic.json
+clientsConfigFile=vless_clients.json
+configDir=/usr/local/etc/xray
+
 function log() {
     # redirect to stderr, because stdout is redirected to file
     echo ">> $@" 1>&2
@@ -80,6 +84,16 @@ function set_firewall() {
 }
 
 function enable_bbr(){
+	# if /etc/sysctl.conf not exist, create it
+    if [ ! -e /etc/sysctl.conf ]; then
+        log "enable bbr"
+        echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+        echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+        sysctl -p
+        return
+    fi
+
+    # if /etc/sysctl.conf exist, check if bbr is enabled
     if grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf && grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf; then
         log "bbr already enabled, skip"
     else
@@ -126,8 +140,8 @@ function config_xray(){
     log "publicKey: $publicKey"
     log "privateKey: $privateKey"
 
-    log "generate config file to /usr/local/etc/xray/basic.json"
-    cat<<EOF>/usr/local/etc/xray/basic.json
+    log "generate config file to ${configDir}/${basicConfigFile}"
+    cat<<EOF>${configDir}/${basicConfigFile}
 {
 "log": {
     "loglevel": "warning"
@@ -216,7 +230,7 @@ function config_xray(){
 }
 EOF
 
-	cat<<EOF10 >/usr/local/etc/xray/clients.json
+	cat<<EOF10 >${configDir}/${clientsConfigFile}
 [
 	{
 	    "id": "$uuid",
@@ -278,9 +292,12 @@ EOF4
 
 cp xray.sh /usr/local/bin/xray.sh && chmod +x /usr/local/bin/xray.sh
 
+instanceName=vless_reality
+
+dropInDir="/etc/systemd/system/xray@${instanceName}.service.d"
 # drop in
-mkdir -p /etc/systemd/system/xray.service.d
-cat<<EOF5 >/etc/systemd/system/xray.service.d/override.conf
+mkdir -p ${dropInDir}
+cat<<EOF5 >${dropInDir}/override.conf
 [Service]
 ExecStartPre=/usr/local/bin/xray.sh mkconfig
 
@@ -289,7 +306,7 @@ EOF5
 
 function restart(){
 	  systemctl daemon-reload
-	  systemctl restart xray
+	  systemctl restart xray@{instanceName}
 }
 
 set -e

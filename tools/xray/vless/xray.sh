@@ -383,18 +383,18 @@ show_help() {
 # 子命令数组
 COMMANDS=("help" "mkconfig" "config_client" "config" "restart" "log" "export_client")
 
-basicConfigFile=basic.json
-clientsConfigFile=clients.json
-ouputConfigFile=config.json
-dest=/usr/local/etc/xray
+basicConfigFile=vless_basic.json
+clientsConfigFile=vless_clients.json
+ouputConfigFile=vless_reality.json
+configDir=/usr/local/etc/xray
 # xray.service 中的 ExecStartPre 命令
 mkconfig() {
 	_require_commands jq
 
-	if [ ! -d "${dest}" ];then
-		LOG FATAL "Destination directory ${dest} does not exist."
+	if [ ! -d "${configDir}" ];then
+		LOG FATAL "Destination directory ${configDir} does not exist."
 	fi
-	cd "${dest}"
+	cd "${configDir}"
 
 	# jq --argjson clients "$(cat clients.json)" '.inbounds[0].settings.clients=$clients|.' config.json
 	jq --argjson clients "$(cat ${clientsConfigFile})" '.inbounds[0].settings.clients=$clients|.' "${basicConfigFile}" > "${ouputConfigFile}"
@@ -403,7 +403,7 @@ mkconfig() {
 
 config_client() {
 	_require_commands vim md5sum
-	cd "${dest}"
+	cd "${configDir}"
 	# md5sum before
 	before=$(md5sum "${clientsConfigFile}" | awk '{print $1}')
 	vim "${clientsConfigFile}"
@@ -418,7 +418,7 @@ config_client() {
 
 config(){
 	_require_commands vim md5sum
-	cd "${dest}"
+	cd "${configDir}"
 	# md5sum before
 	before=$(md5sum "${basicConfigFile}" | awk '{print $1}')
 	vim "${basicConfigFile}"
@@ -440,9 +440,9 @@ log(){
 }
 
 export_client(){
-	cd "${dest}"
+	cd "${configDir}"
 	if [ ! -f "${clientsConfigFile}" ]; then
-		log ERROR "clients.json does not exist in ${dest}."
+		log ERROR "clients.json does not exist in ${configDir}."
 		exit 1
 	fi
 	cat "${clientsConfigFile}"
