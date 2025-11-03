@@ -650,6 +650,10 @@ EOF1
 	  sleep 2
 	done
     nomad acl bootstrap>~/nomad.acl
+    # get secret id
+    secretID="$(grep -i 'secret id' ~/nomad.acl | awk -F'=' '{print $2}' | xargs)"
+    sed -i -e 's/^/#/' ~/nomad.acl
+    echo "export NOMAD_TOKEN=${secretID}" >>~/nomad.acl
   if ! _command_exists docker;then
     log WARNING "docker not found, please install docker manually"
   fi
