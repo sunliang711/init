@@ -235,6 +235,7 @@ function config_xray(){
         "settings": {
             "clients": [
                 {
+                    "email": "default@example.com",
                     "id": "$uuid",
                     "alterId": 0
                 }
