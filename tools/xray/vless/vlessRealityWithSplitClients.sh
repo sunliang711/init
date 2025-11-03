@@ -219,12 +219,29 @@ function config_xray(){
         "tag": "block"
     }
 ],
+"api": {
+    "tag": "api",
+    "listen": "127.0.0.1:18080",
+    "services": [
+        "StatsService"
+    ]
+},
+"stats":{},
 "policy": {
     "levels": {
         "0": {
             "handshake": 3,
-            "connIdle": 180
+            "connIdle": 180,
+            "statsUserUplink": true,
+            "statsUserDownlink": true,
+            "statsUserOnline": true
         }
+    },
+    "system": {
+        "statsInboundUplink": true,
+        "statsInboundDownlink": true,
+        "statsOutboundUplink": true,
+        "statsOutboundDownlink": true
     }
 }
 }
