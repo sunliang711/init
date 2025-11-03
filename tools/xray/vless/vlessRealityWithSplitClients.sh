@@ -323,7 +323,7 @@ EOF5
 
 function restart(){
 	  systemctl daemon-reload
-	  systemctl restart xray@{instanceName}
+	  systemctl restart xray@${instanceName}
 }
 
 set -e
