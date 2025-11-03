@@ -293,21 +293,21 @@ EOF
 =========clash config segment begin=========
 proxies:
     - name: "vmess-ws-tls"
-        type: vmess                # 协议类型为 VMess
-        server: $domain            # 服务器地址（域名或 IP）
-        port: 443                  # 服务器端口，通常为 443 以使用 HTTPS 端口
-        uuid: $uuid                # 你的 VMess 用户 UUID
-        alterId: 0                 # Alter ID，推荐设为 0（新版 VMess 默认）
-        cipher: auto               # 加密方式，推荐 auto，支持 auto/aes-128-gcm/chacha20-poly1305/none
-        udp: true                  # 启用 UDP 支持（根据需要）
-        tls: true                  # 启用 TLS
-        skip-cert-verify: false    # 是否跳过证书验证，建议为 false 以确保安全
-        servername: $domain        # TLS 的 SNI，需与服务器证书域名一致
-        network: ws                # 传输协议为 WebSocket
-        ws-opts:                   # WebSocket 配置(在clash中(mihomo),这行不需要，而且下面的配置不在这个节点的下一级，奇怪了)
-	    path: "$wsPath"            # WebSocket 路径，需与服务器端一致
-	    headers:
-	      Host: $domain          # WebSocket Host
+      type: vmess                # 协议类型为 VMess
+      server: $domain            # 服务器地址（域名或 IP）
+      port: 443                  # 服务器端口，通常为 443 以使用 HTTPS 端口
+      uuid: $uuid                # 你的 VMess 用户 UUID
+      alterId: 0                 # Alter ID，推荐设为 0（新版 VMess 默认）
+      cipher: auto               # 加密方式，推荐 auto，支持 auto/aes-128-gcm/chacha20-poly1305/none
+      udp: true                  # 启用 UDP 支持（根据需要）
+      tls: true                  # 启用 TLS
+      skip-cert-verify: false    # 是否跳过证书验证，建议为 false 以确保安全
+      servername: $domain        # TLS 的 SNI，需与服务器证书域名一致
+      network: ws                # 传输协议为 WebSocket
+      ws-opts:                   # WebSocket 配置(在clash中(mihomo),这行不需要，而且下面的配置不在这个节点的下一级，奇怪了)
+      path: "$wsPath"            # WebSocket 路径，需与服务器端一致
+      headers:
+        Host: $domain          # WebSocket Host
 =========clash config segment end=========
 EOF2
 
