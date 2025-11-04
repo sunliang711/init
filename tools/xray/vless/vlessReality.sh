@@ -84,6 +84,16 @@ function set_firewall() {
 }
 
 function enable_bbr(){
+	# if /etc/sysctl.conf not exist, create it
+    if [ ! -e /etc/sysctl.conf ]; then
+        log "enable bbr"
+        echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
+        echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
+        sysctl -p
+        return
+    fi
+
+    # if /etc/sysctl.conf exist, check if bbr is enabled
     if grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf && grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf; then
         log "bbr already enabled, skip"
     else
@@ -125,8 +135,8 @@ function config_xray(){
 
 
     keyPair=$(xray x25519)
-    publicKey=$(echo "$keyPair" | grep -oE 'Public key: [^ ]+' | cut -d' ' -f3)
-    privateKey=$(echo "$keyPair" | grep -oE 'Private key: [^ ]+' | cut -d' ' -f3)
+    privateKey=$(echo "$keyPair" | grep -i privatekey | awk -F':' '{print $2}'|xargs)
+    publicKey=$(echo "$keyPair" | grep -i password | awk -F':' '${print $2}'|xargs)
     log "publicKey: $publicKey"
     log "privateKey: $privateKey"
 
