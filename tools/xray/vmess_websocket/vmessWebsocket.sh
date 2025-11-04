@@ -393,12 +393,12 @@ function install(){
     export_path
     redirect_stdout_to_file
     check_os
-    check_domain_resolve "$domain"
     update_apt
-    install_jq
     install_nslookup
+    install_jq
     install_lsof
     install_ufw
+    check_domain_resolve "$domain"
     set_firewall
     enable_bbr
     install_acme "$email"
