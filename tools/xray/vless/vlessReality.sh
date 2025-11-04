@@ -188,7 +188,7 @@ function config_xray(){
                 {
                     "id": "$uuid",
                     "flow": "xtls-rprx-vision",
-                    "email": ""
+                    "email": "default"
                 }
             ],
             "decryption": "none"
