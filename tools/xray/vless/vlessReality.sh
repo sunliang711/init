@@ -318,6 +318,12 @@ function restart(){
 	  systemctl enable xray@${serviceName}
 }
 
+function install_traffic_sh(){
+    log "install traffic.sh"
+    cp ../traffic.sh /usr/local/bin/traffic.sh
+    chmod +x /usr/local/bin/traffic.sh
+}
+
 function install(){
     set -e
     
@@ -334,6 +340,7 @@ function install(){
     install_xray
     config_xray
     restart
+    install_traffic_sh
 }
 
 function uninstall(){
@@ -341,6 +348,7 @@ function uninstall(){
     require_root
     systemctl disable --now xray@${serviceName}
     rm -rf $vlessRealityConfigFile
+    rm -rf /usr/local/bin/traffic.sh
 }
 
 case $1 in
