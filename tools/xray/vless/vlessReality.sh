@@ -1,12 +1,13 @@
 #!/bin/bash
+# 本脚本基于xray@.service配置，所有在/usr/local/etc/xray/%i.json文件都可以作为实例运行
+xrayConfigDir="/usr/local/etc/xray"
+serviceName="vless-reality"
+vlessRealityConfigFile="$xrayConfigDir/${serviceName}.json"
+
 function log() {
     # redirect to stderr, because stdout is redirected to file
     echo ">> $@" 1>&2
 }
-
-xrayConfigDir="/usr/local/etc/xray"
-serviceName="vless-reality"
-vlessRealityConfigFile="$xrayConfigDir/${serviceName}.json"
 
 function check_os() {
     if lsb_release -a | grep -q "Ubuntu"; then
@@ -43,9 +44,11 @@ function update_apt() {
 }
 
 function install_package() {
-    if ! command -v $1 > /dev/null; then
-        log "$1 command not found, install $1.."
-        apt-get install $1 -y >/dev/null
+    cmd=${1:?'missing cmd'}
+    package=${2:-${cmd}}
+    if ! command -v $cmd > /dev/null; then
+        log "$cmd command not found, install $package.."
+        apt-get install $package -y >/dev/null
     fi
 }
 
@@ -120,6 +123,11 @@ function install_xray(){
 
 function config_xray(){
     set -e
+    if [ -e $vlessRealityConfigFile ]; then
+        log "xray config file already exists, skip"
+        return 0
+    fi
+
     log "config xray"
 
     log "get public ip"
@@ -310,18 +318,39 @@ function restart(){
 	  systemctl enable xray@${serviceName}
 }
 
-set -e
+function install(){
+    set -e
+    
+    require_root
+    export_path
+    redirect_stdout_to_file
+    update_apt
+    check_os
+    install_jq
+    install_ufw
+    install_lsof
+    set_firewall
+    enable_bbr
+    install_xray
+    config_xray
+    restart
+}
 
-require_root
-export_path
-redirect_stdout_to_file
-update_apt
-check_os
-install_jq
-install_ufw
-install_lsof
-set_firewall
-enable_bbr
-install_xray
-config_xray
-restart
+function uninstall(){
+    set -e
+    require_root
+    systemctl disable --now xray@${serviceName}
+    rm -rf $vlessRealityConfigFile
+}
+
+case $1 in
+    install)
+        install
+        ;;
+    uninstall)
+        uninstall
+        ;;
+    *)
+        echo "Usage: $0 {install|uninstall}"
+        ;;
+esac
