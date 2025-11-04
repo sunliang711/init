@@ -119,6 +119,7 @@ function install_xray(){
 }
 
 function config_xray(){
+    set -e
     log "config xray"
 
     log "get public ip"
@@ -135,10 +136,14 @@ function config_xray(){
 
 
     keyPair=$(xray x25519)
-    privateKey=$(echo "$keyPair" | grep -i privatekey | awk -F':' '{print $2}'|xargs)
-    publicKey=$(echo "$keyPair" | grep -i password | awk -F':' '${print $2}'|xargs)
+    privateKey=$(echo "$keyPair" | grep -i privatekey | awk -F':' '{print $2}'| xargs)
+    publicKey=$(echo "$keyPair" | grep -i password    | awk -F':' '{print $2}'| xargs)
     log "publicKey: $publicKey"
     log "privateKey: $privateKey"
+    if [ -z "$privateKey" ] || [ -z "$publicKey" ]; then
+        log "privateKey or publicKey is empty, exit"
+        exit 1
+    fi
 
     log "generate config file to $vlessRealityConfigFile"
     cat<<EOF>$vlessRealityConfigFile
