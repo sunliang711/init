@@ -158,6 +158,11 @@ function install_acme(){
 
 function issue_cert(){
     domain=${1:?"domain is required"}
+    if [ -e /root/.acme.sh/${domain}_ecc/${domain}.cer ]; then
+        log "cert already exists, skip"
+        return 0
+    fi
+
     log "issue cert for $domain"
     # ufw allow 80/tcp
     /root/.acme.sh/acme.sh --issue -d "$domain" --standalone
