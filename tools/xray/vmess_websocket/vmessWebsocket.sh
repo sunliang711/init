@@ -1,14 +1,16 @@
 #!/bin/bash
-function log() {
-    # redirect to stderr, because stdout is redirected to file
-    echo ">> $@" 1>&2
-}
-
+# 本脚本基于xray@.service配置，所有在/usr/local/etc/xray/%i.json文件都可以作为实例运行
 xrayConfigDir="/usr/local/etc/xray"
 serviceName="vmess-websocket"
 vmessWebsocketConfigFile="$xrayConfigDir/${serviceName}.json"
 certDir="/root/certs"
 wsPath="/vmess-websocket"
+
+function log() {
+    # redirect to stderr, because stdout is redirected to file
+    echo ">> $@" 1>&2
+}
+
 
 function check_os() {
     if lsb_release -a | grep -q "Ubuntu"; then
@@ -199,6 +201,11 @@ function config_xray(){
     domain=${1:?"domain is required"}
     log "config xray"
 
+    if [ -e $vmessWebsocketConfigFile ]; then
+        log "xray config file: $vmessWebsocketConfigFile already exists, skip"
+        return 0
+    fi
+
     uuid=$(xray uuid)
     log "uuid: $uuid"
 
@@ -310,7 +317,7 @@ EOF
     cat<<EOF2 1>&2
 =========clash config segment begin=========
 proxies:
-    - name: "vmess-ws-tls"
+    - name: "vmess_ws"
       type: vmess                # 协议类型为 VMess
       server: $domain            # 服务器地址（域名或 IP）
       port: 443                  # 服务器端口，通常为 443 以使用 HTTPS 端口
@@ -365,25 +372,48 @@ function restart(){
       log "restart xray success"
 }
 
-set -e
+function install(){
+    set -e
+    
+    email="${1:?email is required}"
+    domain="${2:?domain is required}"
+    
+    require_root
+    export_path
+    redirect_stdout_to_file
+    check_os
+    check_domain_resolve "$domain"
+    update_apt
+    install_jq
+    install_nslookup
+    install_lsof
+    install_ufw
+    set_firewall
+    enable_bbr
+    install_acme "$email"
+    issue_cert  "$domain"
+    install_xray
+    config_xray "$domain"
+    restart
+}
 
-email="${1:?email is required}"
-domain="${2:?domain is required}"
+function uninstall(){
+    set -e
+    require_root
+    systemctl disable --now xray@${serviceName}
+    rm -rf $vmessWebsocketConfigFile
+}
 
-require_root
-export_path
-redirect_stdout_to_file
-check_os
-check_domain_resolve "$domain"
-update_apt
-install_jq
-install_nslookup
-install_lsof
-install_ufw
-set_firewall
-enable_bbr
-install_acme "$email"
-issue_cert  "$domain"
-install_xray
-config_xray "$domain"
-restart
+
+
+case $1 in
+    install)
+        install "${@:2}"
+        ;;
+    uninstall)
+        uninstall "${@:2}"
+        ;;
+    *)
+        echo "Usage: $0 {install|uninstall}"
+        ;;
+esac
