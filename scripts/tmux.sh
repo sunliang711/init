@@ -428,6 +428,9 @@ set -g @tmux-gruvbox 'light' # or 'dark'
 # set -g @plugin 'git@github.com:user/plugin'
 # set -g @plugin 'git@bitbucket.com:user/plugin'
 
+# popup lazygit
+bind-key g popup -E -w 95% -h 95% -d '#{pane_current_path}' lazygit
+
 # Initialize TMUX plugin manager (keep this line at the very bottom of tmux.conf)
 run '~/.tmux/plugins/tpm/tpm'
 EOF
