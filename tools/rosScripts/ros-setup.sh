@@ -17,6 +17,7 @@ function readInput(){
     while true; do
         if [ "$sensitive" = "yes" ]; then
             read -s -p "$prompt" input
+            echo
         else
             read -p "$prompt" input
         fi
@@ -30,6 +31,19 @@ function readInput(){
 # 使用ipcalc计算出HostMin和HostMax
 function calculateHostMinAndHostMax(){
     set -e
+
+    # 检查ipcalc是否安装
+    if ! command -v ipcalc &> /dev/null; then
+        echo "ipcalc could not be found, please install it"
+        exit 1
+    fi
+
+    # 验证子网格式
+    if ! [[ "$subnet" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]]; then
+        echo "Invalid subnet format: $subnet, please use format: a.b.c.d/e"
+        exit 1
+    fi
+
     local subnet="$1"
     hostMin=$(ipcalc -n $subnet | grep -i HostMin | awk '{print $2}')
     hostMax=$(ipcalc -n $subnet | grep -i HostMax | awk '{print $2}')
@@ -38,6 +52,12 @@ function calculateHostMinAndHostMax(){
     dhcpRange="$hostMin-$hostMax"
     adminIP="$hostMin/$netmask"
     gateway="$hostMin"
+
+    # 验证结果
+    if [ -z "$hostMin" ] || [ -z "$hostMax" ]; then
+        echo "Failed to calculate network parameters"
+        exit 1
+    fi
 
     export hostMin="$hostMin"
     export hostMax="$hostMax"
@@ -51,15 +71,17 @@ function setupInterface(){
   # 设置wan口名称
   echo "/interface ethernet set $wanInterface name=$wanName"
   # 设置lan口名称
-  i=1
-  for lan in ${lanInterfaces[@]}; do
-      lanName="${lan}.lan"
+  local i=1
+  for lan in "${lanInterfaces[@]}"; do
+      local lanName="${lan}.lan"
       echo "/interface ethernet set $lan name=$lanName"
       lanNames+=("$lanName")
-      i=$((i+1))
+      ((i++))
   done
+
   # 创建网桥
   echo "/interface bridge add name=$brName"
+
   # 将lan口加入网桥
   for lan in ${lanNames[@]}; do
       echo "/interface bridge port add bridge=$brName interface=$lan"
@@ -193,7 +215,6 @@ function setup(){
   fi
   
   
-  echo
   echo ":global setup do={"
   setupInterface
   setupDHCP
