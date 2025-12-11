@@ -151,8 +151,11 @@ function setup(){
   
   adminUser="${adminUser:-userxx1}"
   adminUserPassword="${adminUserPassword}"
-  
-  
+  if [ -z "$adminUserPassword" ]; then
+      readInput "adminUserPassword: " "yes" "yes"
+      adminUserPassword="$input"
+  fi
+
   subnet="${subnet:-10.1.0.0/24}"
   calculateHostMinAndHostMax "$subnet"
   echo "hostMin: $hostMin"
@@ -190,10 +193,10 @@ function setup(){
   setupInterface
   setupDHCP
   setupPPPoE
-  setupUser
   setupService
   setupEmail
   setupFirewall
+  setupUser
   echo "}"
 
 }
