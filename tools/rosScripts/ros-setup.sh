@@ -87,22 +87,31 @@ function setupPPPoE(){
 }
 
 function setupFirewall(){
+  lanAddressList="lan"
   # 设置routerOS内置的ddns
   echo "/ip cloud set ddns-enabled=yes ddns-update-interval=2m update-time=yes"
   # 设置防火墙 address-list
-  echo "/ip firewall address-list add address=${hostMin}-${hostMax} list=local"
+  echo "/ip firewall address-list add address=${hostMin}-${hostMax} list=${lanAddressList}"
+  # 设置established related
+  echo "/ip firewall filter add action=accept chain=input comment=\"established related\" connection-state=established,related"
   # 设置防火墙
-  echo "/ip firewall filter add action=drop chain=input src-address-list=blacklist"
+  echo "/ip firewall filter add action=drop chain=input comment=\"drop blacklist\" src-address-list=blacklist"
+  # upnp非白名单的ip拒绝
   echo "/ip firewall filter add action=reject chain=input comment=\"reject upnp\" dst-port=2828 protocol=tcp reject-with=icmp-network-unreachable src-address-list=!upnplist"
   echo "/ip firewall filter add action=reject chain=input comment=\"reject upnp\" dst-port=1900 protocol=udp src-address-list=!upnplist"
-  echo "/ip firewall filter add action=accept chain=input comment=\"established related\" connection-state=established,related"
-  echo "/ip firewall filter add action=accept chain=input comment=\"lan traffic\" src-address-list=local"
-  echo "/ip firewall filter add action=accept chain=input comment=\"icmp\" protocol=icmp"
-#   echo "/ip firewall filter add action=accept chain=input comment=\"aliyun vm ssh\" dst-port=${sshPort} protocol=tcp src-address=47.92.194.5"
-  echo "/ip firewall filter add action=accept chain=input comment=\"ssh port\" dst-port=${sshPort} protocol=tcp src-address-list=local"
-  echo "/ip firewall filter add action=accept chain=input comment=\"www port\" dst-port=${wwwPort} protocol=tcp"
-  echo "/ip firewall filter add action=accept chain=input comment=\"winbox port\" dst-port=${winboxPort} protocol=tcp"
-  echo "/ip firewall filter add action=drop chain=input"
+
+  # 允许lan口流量
+  echo "/ip firewall filter add action=accept chain=input comment=\"allow lan traffic\" src-address-list=${lanAddressList}"
+  # 允许icmp
+  echo "/ip firewall filter add action=accept chain=input comment=\"allow icmp\" protocol=icmp"
+  # 允许ssh端口(并且是内网地址)
+  echo "/ip firewall filter add action=accept chain=input comment=\"allow ssh port from lan\" dst-port=${sshPort} protocol=tcp src-address-list=${lanAddressList}"
+  # 允许www端口
+  echo "/ip firewall filter add action=accept chain=input comment=\"allow www port\" dst-port=${wwwPort} protocol=tcp"
+  # 允许winbox端口
+  echo "/ip firewall filter add action=accept chain=input comment=\"allow winbox port\" dst-port=${winboxPort} protocol=tcp"
+  # 拒绝其他流量
+  echo "/ip firewall filter add action=drop chain=input comment=\"drop other traffic\""
 }
 
 function setupUser(){
@@ -166,10 +175,6 @@ function setup(){
   echo "dhcpNetwork: $dhcpNetwork"
   echo "dhcpRange: $dhcpRange"
   
-  # adminIP="$prefix.1/24"
-  # gateway="$prefix.1"
-  # dhcpNetwork="$prefix.0/24"
-  # dhcpRange="$prefix.100-$prefix.199"
   dnsServer="${dnsServer:-223.5.5.5,114.114.114.114}"
   
   brName="br-lan"
@@ -198,6 +203,7 @@ function setup(){
   setupFirewall
   setupUser
   echo "}"
+  echo "run \$setup in routerOS to apply" 
 
 }
 
