@@ -68,16 +68,29 @@ function calculateHostMinAndHostMax(){
 }
 
 function setupInterface(){
-  # 设置wan口名称
-  echo "/interface ethernet set $wanInterface name=$wanName"
-  # 设置lan口名称
-  local i=1
-  for lan in "${lanInterfaces[@]}"; do
-      local lanName="${lan}.lan"
-      echo "/interface ethernet set $lan name=$lanName"
-      lanNames+=("$lanName")
-      ((i++))
-  done
+cat<<EOF
+  :global renameEthernetPort do={
+
+    # 设置wan口使用几号口
+    :local wanPort 1
+    :local portNum 0
+    
+    :foreach i in=[/interface ethernet find] do={
+      :local oldName [/interface ethernet get \$i name]
+      :set portNum (\$portNum + 1)
+      
+      # 提取端口号（假设格式为 etherX）
+      :if (\$portNum = \$wanPort) do={
+        /interface ethernet set \$i name="\$oldName.wan"
+        :log info "Set \$oldName to WAN"
+      } else={
+        /interface ethernet set \$i name="\$oldName.lan"
+        :log info "Set \$oldName to LAN"
+      }
+    }
+  }
+  \$renameEthernetPort
+EOF
 
   # 创建网桥
   echo "/interface bridge add name=$brName"
@@ -215,6 +228,7 @@ function setup(){
   fi
   
   
+  echo "run '/system/reset-configuration no-defaults=yes skip-backup=yes' to reset routerOS"
   echo ":global setup do={"
   setupInterface
   setupDHCP
