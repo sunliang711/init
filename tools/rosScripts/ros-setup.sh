@@ -107,7 +107,7 @@ function setupDHCP(){
   # 增加ip地址池
   echo "/ip pool add name=$poolName ranges=$dhcpRange"
   # 设置dhcp server
-  echo "/ip dhcp-server add address-pool=$poolName disabled=no interface=$brName lease-time=1d"
+  echo "/ip dhcp-server add address-pool=$poolName disabled=no interface=$brName lease-time=7d"
   # 设置dhcp server的dns 和网关，用于给内网的dhcp客户端分配ip时使用
   echo "/ip dhcp-server network add address=$dhcpNetwork dns-server=$dnsServer gateway=$gateway"
 }
