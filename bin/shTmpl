@@ -134,7 +134,7 @@ function _wait() {
     # secs=$((5 * 60))
     secs=${1:?'missing seconds'}
 
-    while [ $secs -gt 0 ]; do
+    while [[ $secs -gt 0 ]]; do
         echo -ne "$secs\033[0K\r"
         sleep 1
         : $((secs--))
@@ -149,7 +149,7 @@ function _parseOptions() {
     fi
 
     options=$(getopt -o dv --long debug --long name: -- "$@")
-    [ $? -eq 0 ] || {
+    [[ $? -eq 0 ]] || {
         echo "Incorrect option provided"
         exit 1
     }
