@@ -1,10 +1,10 @@
 #!/bin/bash
 
-if [ -z "${BASH_SOURCE}" ]; then
+if [[ -z "${BASH_SOURCE}" ]]; then
     this=${PWD}
 else
     rpath="$(readlink ${BASH_SOURCE})"
-    if [ -z "$rpath" ]; then
+    if [[ -z "$rpath" ]]; then
         rpath=${BASH_SOURCE}
     elif echo "$rpath" | grep -q '^/'; then
         # absolute path
@@ -24,7 +24,7 @@ home="$(eval echo ~$user)"
 if which tput >/dev/null 2>&1; then
     ncolors=$(tput colors 2>/dev/null)
 fi
-if [ -t 1 ] && [ -n "$ncolors" ] && [ "$ncolors" -ge 8 ]; then
+if [[ -t 1 ]] && [[ -n "$ncolors" ]] && [[ "$ncolors" -ge 8 ]]; then
     RED="$(tput setaf 1)"
     GREEN="$(tput setaf 2)"
     YELLOW="$(tput setaf 3)"
@@ -93,7 +93,7 @@ _require_commands() {
 function _ensureDir() {
     local dirs=$@
     for dir in ${dirs}; do
-        if [ ! -d ${dir} ]; then
+        if [[ ! -d ${dir} ]]; then
             mkdir -p ${dir} || {
                 echo "create $dir failed!"
                 exit $err_create_dir
@@ -105,7 +105,7 @@ function _ensureDir() {
 rootID=0
 
 function _root() {
-    if [ ${EUID} -ne ${rootID} ]; then
+    if [[ ${EUID} -ne ${rootID} ]]; then
         echo "need root privilege." 1>&2
         return $err_require_root
     fi
@@ -118,7 +118,7 @@ function _require_root() {
 }
 
 function _linux() {
-    if [ "$(uname)" != "Linux" ]; then
+    if [[ "$(uname)" != "Linux" ]]; then
         echo "need Linux" 1>&2
         return $err_require_linux
     fi
@@ -143,7 +143,7 @@ function _wait() {
 }
 
 function _parseOptions() {
-    if [ $(uname) != "Linux" ]; then
+    if [[ $(uname) != "Linux" ]]; then
         echo "getopt only on Linux"
         exit 1
     fi
@@ -187,13 +187,13 @@ if _command_exists nvim; then
     ed=nvim
 fi
 # use ENV: editor to override
-if [ -n "${editor}" ]; then
+if [[ -n "${editor}" ]]; then
     ed=${editor}
 fi
 
 rootID=0
 _checkRoot() {
-    if [ "$(id -u)" -ne 0 ]; then
+    if [[ "$(id -u)" -ne 0 ]]; then
         # 检查是否有 sudo 命令
         if ! command -v sudo >/dev/null 2>&1; then
             echo "Error: 'sudo' command is required." >&2
@@ -225,7 +225,7 @@ _runAsRoot() {
     local run_as_root
 
     # 判断当前是否是 root
-    if [ "$(id -u)" -eq 0 ]; then
+    if [[ "$(id -u)" -eq 0 ]]; then
         run_as_root="bash -s"
     elif command -v sudo >/dev/null 2>&1; then
         run_as_root="sudo -E bash -s"
@@ -236,14 +236,14 @@ _runAsRoot() {
         return 1
     fi
 
-    if [ -t 0 ]; then
+    if [[ -t 0 ]]; then
         # 交互式 shell：使用命令参数方式
-        if [ $# -eq 0 ]; then
+        if [[ $# -eq 0 ]]; then
             echo "Usage: _runAsRootUniversal <command> [args...]" >&2
             return 1
         fi
         echo "[Running as root]: $*"
-        if [ "$(id -u)" -eq 0 ]; then
+        if [[ "$(id -u)" -eq 0 ]]; then
             "$@"
         else
             sudo "$@"
@@ -270,9 +270,9 @@ _runAsRoot() {
 # ...
 # EOF
 _run(){
-  if [ -t 0 ]; then
+  if [[ -t 0 ]]; then
     # interactive mode
-    if [ $# -eq 0 ]; then
+    if [[ $# -eq 0 ]]; then
       echo "Usage: _run <command> [args...]" >&2
       return 1
     fi
@@ -316,34 +316,34 @@ log() {
   local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
   case "$level" in
     "FATAL")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
+      if [[ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]]; then
         echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
         exit 1
       fi
       ;;
 
     "ERROR")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
+      if [[ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]]; then
         echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "WARNING")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]; then
+      if [[ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]]; then
         echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "INFO")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]; then
+      if [[ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]]; then
         echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "SUCCESS")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]; then
+      if [[ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]]; then
         echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "DEBUG")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]; then
+      if [[ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]]; then
         echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
@@ -429,7 +429,7 @@ get_release_link(){
   local repo=$1
   local version=$2
   # 如果version为latest，则获取latest
-  if [ "$version" == "latest" ]; then
+  if [[ "$version" == "latest" ]]; then
     resultLink="https://api.github.com/repos/${repo}/releases/latest"
   else
     # check version with regex(1.2 1.2.3)
