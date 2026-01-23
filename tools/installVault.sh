@@ -481,7 +481,7 @@ vaultDir=/opt/vault
 vaultBinDir=${vaultDir}/bin
 vault=${vaultBinDir}/vault
 defaultDownloadDir=/tmp/vaultDownload
-initDir=/opt/vault/init
+initDir=${vaultDir}/init
 
 download(){
   downloadDir=${1:-${defaultDownloadDir}}
@@ -689,10 +689,12 @@ init(){
   done
   grep "Initial Root Token:" init.output | awk -F ": " '{print $2}' > root_token.output
 
-  echo "run unseal subcommand to unseal"
-  echo "run enableKv subcommand to enable kv"
-  echo "run enableAuth subcommand to enable auth"
+  echo "run unseal subcommand to unseal or by webui"
+  echo "run enableKv subcommand to enable kv or by webui"
+  echo "run enableAuth subcommand to enable auth or by webui"
 }
+#TODO
+# 日志输出放到一个normal用户可以读的地方
 
 # init后执行unseal,根据shamir算法的配置，需要多次unseal才能完全解密
 # 或者https://<IP>:8200/ui/vault/unseal中操作，多次unseal
