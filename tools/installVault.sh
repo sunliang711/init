@@ -1,10 +1,10 @@
 #!/bin/bash
 
-if [[ -z "${BASH_SOURCE}" ]]; then
+if [ -z "${BASH_SOURCE}" ]; then
     this=${PWD}
 else
     rpath="$(readlink ${BASH_SOURCE})"
-    if [[ -z "$rpath" ]]; then
+    if [ -z "$rpath" ]; then
         rpath=${BASH_SOURCE}
     elif echo "$rpath" | grep -q '^/'; then
         # absolute path
@@ -24,7 +24,7 @@ home="$(eval echo ~$user)"
 if which tput >/dev/null 2>&1; then
     ncolors=$(tput colors 2>/dev/null)
 fi
-if [[ -t 1 ]] && [[ -n "$ncolors" ]] && [[ "$ncolors" -ge 8 ]]; then
+if [ -t 1 ] && [ -n "$ncolors" ] && [ "$ncolors" -ge 8 ]; then
     RED="$(tput setaf 1)"
     GREEN="$(tput setaf 2)"
     YELLOW="$(tput setaf 3)"
@@ -93,7 +93,7 @@ _require_commands() {
 function _ensureDir() {
     local dirs=$@
     for dir in ${dirs}; do
-        if [[ ! -d ${dir} ]]; then
+        if [ ! -d ${dir} ]; then
             mkdir -p ${dir} || {
                 echo "create $dir failed!"
                 exit $err_create_dir
@@ -105,7 +105,7 @@ function _ensureDir() {
 rootID=0
 
 function _root() {
-    if [[ ${EUID} -ne ${rootID} ]]; then
+    if [ ${EUID} -ne ${rootID} ]; then
         echo "need root privilege." 1>&2
         return $err_require_root
     fi
@@ -118,7 +118,7 @@ function _require_root() {
 }
 
 function _linux() {
-    if [[ "$(uname)" != "Linux" ]]; then
+    if [ "$(uname)" != "Linux" ]; then
         echo "need Linux" 1>&2
         return $err_require_linux
     fi
@@ -134,7 +134,7 @@ function _wait() {
     # secs=$((5 * 60))
     secs=${1:?'missing seconds'}
 
-    while [[ $secs -gt 0 ]]; do
+    while [ $secs -gt 0 ]; do
         echo -ne "$secs\033[0K\r"
         sleep 1
         : $((secs--))
@@ -143,13 +143,13 @@ function _wait() {
 }
 
 function _parseOptions() {
-    if [[ $(uname) != "Linux" ]]; then
+    if [ $(uname) != "Linux" ]; then
         echo "getopt only on Linux"
         exit 1
     fi
 
     options=$(getopt -o dv --long debug --long name: -- "$@")
-    [[ $? -eq 0 ]] || {
+    [ $? -eq 0 ] || {
         echo "Incorrect option provided"
         exit 1
     }
@@ -187,13 +187,13 @@ if _command_exists nvim; then
     ed=nvim
 fi
 # use ENV: editor to override
-if [[ -n "${editor}" ]]; then
+if [ -n "${editor}" ]; then
     ed=${editor}
 fi
 
 rootID=0
 _checkRoot() {
-    if [[ "$(id -u)" -ne 0 ]]; then
+    if [ "$(id -u)" -ne 0 ]; then
         # 检查是否有 sudo 命令
         if ! command -v sudo >/dev/null 2>&1; then
             echo "Error: 'sudo' command is required." >&2
@@ -225,7 +225,7 @@ _runAsRoot() {
     local run_as_root
 
     # 判断当前是否是 root
-    if [[ "$(id -u)" -eq 0 ]]; then
+    if [ "$(id -u)" -eq 0 ]; then
         run_as_root="bash -s"
     elif command -v sudo >/dev/null 2>&1; then
         run_as_root="sudo -E bash -s"
@@ -236,14 +236,14 @@ _runAsRoot() {
         return 1
     fi
 
-    if [[ -t 0 ]]; then
+    if [ -t 0 ]; then
         # 交互式 shell：使用命令参数方式
-        if [[ $# -eq 0 ]]; then
+        if [ $# -eq 0 ]; then
             echo "Usage: _runAsRootUniversal <command> [args...]" >&2
             return 1
         fi
         echo "[Running as root]: $*"
-        if [[ "$(id -u)" -eq 0 ]]; then
+        if [ "$(id -u)" -eq 0 ]; then
             "$@"
         else
             sudo "$@"
@@ -270,9 +270,9 @@ _runAsRoot() {
 # ...
 # EOF
 _run(){
-  if [[ -t 0 ]]; then
+  if [ -t 0 ]; then
     # interactive mode
-    if [[ $# -eq 0 ]]; then
+    if [ $# -eq 0 ]; then
       echo "Usage: _run <command> [args...]" >&2
       return 1
     fi
@@ -316,34 +316,34 @@ log() {
   local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
   case "$level" in
     "FATAL")
-      if [[ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]]; then
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
         echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
         exit 1
       fi
       ;;
 
     "ERROR")
-      if [[ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]]; then
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
         echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "WARNING")
-      if [[ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]]; then
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]; then
         echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "INFO")
-      if [[ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]]; then
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]; then
         echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "SUCCESS")
-      if [[ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]]; then
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]; then
         echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
     "DEBUG")
-      if [[ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]]; then
+      if [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]; then
         echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
       fi
       ;;
@@ -429,7 +429,7 @@ get_release_link(){
   local repo=$1
   local version=$2
   # 如果version为latest，则获取latest
-  if [[ "$version" == "latest" ]]; then
+  if [ "$version" == "latest" ]; then
     resultLink="https://api.github.com/repos/${repo}/releases/latest"
   else
     # check version with regex(1.2 1.2.3)
@@ -463,7 +463,7 @@ get_release_link(){
   done
   link=$(echo $link0 | cut -d '"' -f 4)
   log INFO "link: ${link}"
-  
+
   export link
 }
 
@@ -473,17 +473,259 @@ em(){
 
 # ------------------------------------------------------------
 # 子命令数组
-COMMANDS=("help" "example")
+COMMANDS=("help" "install")
+version=1.21.0
+vaultLink=https://releases.hashicorp.com/vault/${version}/vault_${version}_linux_amd64.zip
+zipFile=${vaultLink##*/}
+vaultDir=/opt/vault
+vaultBinDir=${vaultDir}/bin
+vault=${vaultBinDir}/vault
+defaultDownloadDir=/tmp/vaultDownload
+initDir=${vaultDir}/init
 
-# 示例子命令函数
-example() {
-  log "INFO" "This is an example command."
-  log "DEBUG" "This is some debug information."
-  _wait 3
-  log "SUCCESS" "This is a success message."
-  log "WARNING" "This is a warning message."
-  log "error" "This is an error message."
+download(){
+  downloadDir=${1:-${defaultDownloadDir}}
+
+  # if already downloaded, skip
+  if [ -f ${downloadDir}/${zipFile} ]; then
+    log INFO "already downloaded, skip"
+    return
+  fi
+
+  set -e
+  _require_commands curl
+  _ensureDir ${downloadDir}
+
+  cd ${downloadDir}
+  log INFO "downloading vault to ${downloadDir}"
+  curl -L -O ${vaultLink}
 }
+
+install() {
+  # _require_linux
+  set -e
+  _require_root
+  _require_commands unzip
+  _ensureDir ${vaultBinDir}
+  download
+
+  # vaultDir owner: root mod: 700
+  chmod -R 700 ${vaultDir}
+
+  # install vault to ${binDir}
+  log INFO "installing vault to ${vaultBinDir}"
+  cd ${defaultDownloadDir}
+   _runAsRoot unzip -d ${vaultBinDir} ${zipFile}
+
+   # create conf data logs ssl init dir inside ${vaultDir}
+   _ensureDir ${vaultDir}/conf
+   _ensureDir ${vaultDir}/data
+   _ensureDir ${vaultDir}/logs
+   _ensureDir ${vaultDir}/ssl
+   _ensureDir ${vaultDir}/init
+
+   # config.hcl to ${vaultDir}/conf/config.hcl
+   cat<<EOF1 > ${vaultDir}/conf/config.hcl
+   storage "file" {
+     path = "${vaultDir}/data/"
+   }
+   listener "tcp" {
+     address = "0.0.0.0:8200"
+     tls_disable = "false"
+     tls_cert_file = "${vaultDir}/ssl/server.crt"
+     tls_key_file = "${vaultDir}/ssl/server.key"
+   }
+   ui = true
+   api_addr = "http://127.0.0.1:8200"
+   cluster_addr = "http://127.0.0.1:8201"
+   # log_level = "info"
+   # log_format = "json"
+EOF1
+
+log INFO "install systemd service"
+# install systemd service
+cat<<EOF2 > /etc/systemd/system/vault.service
+[Unit]
+Description=Vault
+After=network.target
+
+[Service]
+ExecStart=${vaultBinDir}/vault server -config=${vaultDir}/conf/config.hcl
+
+[Install]
+WantedBy=multi-user.target
+EOF2
+
+  generate_ssl_cert
+
+
+  systemctl daemon-reload
+  log INFO "enable and start vault service"
+  systemctl enable --now vault
+}
+
+generate_ssl_cert(){
+	set -e
+  #generate ssl cert
+  cd ${vaultDir}/ssl
+
+  # 1. 生成CA私钥
+  openssl genrsa -out ca.key 4096
+
+  # 2. 生成CA自签名证书
+  cat >ca.conf<<EOF
+[req]
+distinguished_name = dn
+x509_extensions = v3_ca
+prompt = no
+
+[dn]
+C = CN
+ST = HongKong
+L = HongKong
+O =Vault
+OU = Vault CA
+CN = vault-root-ca
+
+[v3_ca]
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer
+basicConstraints = critical, CA:true
+keyUsage = critical, keyCertSign, cRLSign
+EOF
+  openssl req -x509 -new -nodes -key ca.key \
+    -days 3650 \
+    -out ca.crt \
+    -config ca.conf \
+    -extensions v3_ca
+
+# 3. 生成服务器私钥和证书签名请求(CSR)
+
+  cat<<EOF2 > server.conf
+[req]
+distinguished_name = dn
+req_extensions = v3_req
+prompt = no
+
+[dn]
+C = CN
+ST = HongKong
+L = HongKong
+O = Vault
+OU = Vault
+CN = vault-server
+
+[v3_req]
+basicConstraints = CA:false
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth, clientAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = localhost
+DNS.2 = vault.local
+DNS.3 = vault-server
+IP.1 = 127.0.0.1
+IP.2 = 0.0.0.0
+EOF2
+  openssl genrsa -out server.key 4096
+  openssl req -new -key server.key -out server.csr -config server.conf
+
+  cat >server_ext.conf<<EOF3
+authorityKeyIdentifier = keyid,issuer
+basicConstraints = CA:false
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth, clientAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = localhost
+DNS.2 = vault.local
+DNS.3 = vault-server
+IP.1 = 127.0.0.1
+EOF3
+
+  log INFO "generating ssl cert to ${vaultDir}/ssl"
+  openssl x509 -req \
+    -in server.csr \
+    -CA ca.crt -CAkey ca.key -CAcreateserial \
+	-out server.crt \
+	-days 3650 \
+	-extfile server_ext.conf
+
+  chmod 600 server.key ca.key
+  chmod 644 server.crt ca.crt
+
+  echo "run init subcommand to initialize vault"
+}
+
+exportVars(){
+  export VAULT_ADDR=https://127.0.0.1:8200
+  export VAULT_CACERT=${vaultDir}/ssl/ca.crt
+}
+exportVaultToken(){
+  export VAULT_TOKEN=$(cat ${initDir}/root_token.output)
+}
+
+init(){
+  set -e
+  _ensureDir ${initDir}
+  _require_root
+  keyShares=${1:-5}
+  keyThreshold=${2:-3}
+
+  exportVars
+
+  cd ${initDir}
+  log INFO "initializing vault, key-shares=${keyShares}, key-threshold=${keyThreshold} dest=${initDir}"
+  ${vault} operator init -key-shares=${keyShares} -key-threshold=${keyThreshold} > init.output
+
+  # 把init.output中的unseal keys和root token拆分到多个文件中
+  # 每个文件包含一个unseal key和一个root token
+  # 文件名格式为unseal_key_${i}.txt和root_token_${i}.txt
+  # 其中i从1到keyShares
+  for i in $(seq 1 ${keyShares}); do
+    grep "Unseal Key ${i}:" init.output | awk -F ": " '{print $2}' > unseal_key_${i}.output
+  done
+  grep "Initial Root Token:" init.output | awk -F ": " '{print $2}' > root_token.output
+
+  echo "run unseal subcommand to unseal or by webui"
+  echo "run enableKv subcommand to enable kv or by webui"
+  echo "run enableAuth subcommand to enable auth or by webui"
+}
+#TODO
+# 日志输出放到一个normal用户可以读的地方
+
+# init后执行unseal,根据shamir算法的配置，需要多次unseal才能完全解密
+# 或者https://<IP>:8200/ui/vault/unseal中操作，多次unseal
+unseal(){
+  echo "may be unseal multiple times"
+  exportVars
+  ${vault} operator unseal
+}
+
+enableKv(){
+  exportVars
+  exportVaultToken
+  ${vault} secrets enable -version=2 kv
+}
+
+enableAuth(){
+  exportVars
+  exportVaultToken
+  ${vault} auth enable userpass
+}
+
+uninstall(){
+	_require_root
+	set -e
+	# stop service
+	systemctl disable --now vault
+	# rm vault files
+	rm -rf ${vaultDir}
+	rm -rf /etc/systemd/system/vault.service
+}
+
 
 # ------------------------------------------------------------
 
