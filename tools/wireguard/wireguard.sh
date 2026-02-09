@@ -782,7 +782,7 @@ exportClient(){
         exit 1
     fi
 
-    if [ -z ${allowedIPs}];then
+    if [ -z ${allowedIPs} ];then
 		allowedIPs="0.0.0.0/0, ::0/0"
 	fi
 
