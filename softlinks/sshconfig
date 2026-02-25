@@ -4,7 +4,10 @@
 Include ~/.orbstack/ssh/config
 
 # Include 指令必须放在Host指令之前!!
-Include ~/.ssh/local
+#Include ~/.ssh/local
+
+Match exec "uname | grep -q Darwin"
+    IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 
 
 ##################################################
@@ -19,20 +22,13 @@ Host shroslan
     User userxx1
     Port 20000
 
-Host gateway
-    HostName 10.1.1.15
+
+Host socks33
+    HostName 10.1.1.33
     User eagle
 
-Host socks16
-    HostName 10.1.1.16
-    User eagle
-
-Host socks32
-    HostName 10.1.1.32
-    User eagle
-
-Host service135
-    HostName 10.1.1.135
+Host service99
+    HostName 10.1.1.99
     User eagle
 ##################################################
 
@@ -49,6 +45,18 @@ Host dev82
 Host server83
     HostName 10.2.1.83
     User root
+
+Host wallet71
+    HostName 10.2.7.1
+    User finex
+
+Host socks107
+    HostName 10.2.1.107
+    User root
+
+Host hsm
+    HostName 10.2.11.11
+    User admin
 
 ##################################################
 
@@ -73,15 +81,6 @@ Host aliyun
     User eagle
     Port 22
 
-Host aliyunChain
-    HostName aliyun.gitez.cc
-    User eagle
-    Port 2000
-    ProxyJump socks16
-
-Host a8aliyun
-    HostName atom8.gitez.cc
-    User root
 
 Host yunqing
     HostName 124.156.226.147
