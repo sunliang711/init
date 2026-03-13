@@ -476,7 +476,7 @@ em(){
 COMMANDS=("help" "install")
 
 install(){
-  _require_commands unzip curl
+  _require_commands unzip curl docker
   set -e
   export NOMAD_VERSION=1.10.5
   # 下载nomad
@@ -654,9 +654,6 @@ EOF1
     secretID="$(grep -i 'secret id' ~/nomad.acl | awk -F'=' '{print $2}' | xargs)"
     sed -i -e 's/^/#/' ~/nomad.acl
     echo "export NOMAD_TOKEN=${secretID}" >>~/nomad.acl
-  if ! _command_exists docker;then
-    log WARNING "docker not found, please install docker manually"
-  fi
 }
 
 uninstall(){
