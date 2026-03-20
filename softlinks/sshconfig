@@ -9,7 +9,6 @@ Include ~/.orbstack/ssh/config
 Match exec "uname | grep -q Darwin"
     IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
 
-
 ##################################################
 # home hosts
 Host shros
