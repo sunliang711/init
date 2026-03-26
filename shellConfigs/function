@@ -1,5 +1,5 @@
-export LOCAL_APP_ROOT="${home}/.local/apps"
-export PROXY_FILE="${home}/.PROXY_FILE"
+export LOCAL_APP_ROOT="${HOME}/.local/apps"
+export PROXY_FILE="${HOME}/.PROXY_FILE"
 
 function Source() {
     file="${1}"
