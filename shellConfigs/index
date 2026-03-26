@@ -4,6 +4,7 @@ source "${SHELLRC_ROOT}/basic"
 #load function
 source "${SHELLRC_ROOT}/function"
 
+# Source defined in ${SHELLRC_ROOT}/function, let's begin use Source instead of source
 #load env
 Source "${SHELLRC_ROOT}/env"
 

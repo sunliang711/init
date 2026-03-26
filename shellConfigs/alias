@@ -1,20 +1,5 @@
-#BEGIN alias
-# alias dell='ssh -p 2001 eagle@sh.eagle711.win'
-# alias ikev2='ssh -p 2002 eagle@sh.eagle711.win'
-# alias google='ssh -p 2000 root@g.eagle711.win'
-# alias google2='ssh -p 2000 root@g2.eagle711.win'
-# alias dsm='ssh -p 2001 root@sh.eagle711.win'
-# alias c7='ssh -p 2004 eagle@sh.eagle711.win'
-# alias 101='ssh -p 7010 eagle@aliyun.eagle711.win'
-# alias 102='ssh -p 7020 eagle@aliyun.eagle711.win'
-
 alias cl='clear'
 alias prettyjson='python -m json.tool'
-#TODO hard coded
-# alias sm="source $SHELLRC_ROOT/shellrc"
-# if command -v vim >/dev/null 2>&1;then
-#     alias vi='vim'
-# fi
 
 # alias pushall='git remote | xargs -L1 -t -IR git push R'
 # alias fetchall='git remote | xargs -L1 -t -IR git fetch R'
@@ -68,14 +53,6 @@ if command -v emacs >/dev/null 2>&1; then
     alias emacs='emacs -nw'
 fi
 
-# if command -v vim >/dev/null 2>&1;then
-#     alias vi='vim'
-# fi
-
-# if command -v nvim >/dev/null 2>&1;then
-#     alias vim='nvim'
-# fi
-
 if command -v free >/dev/null 2>&1; then
     if command -v pacman >/dev/null 2>&1; then
         alias free='free -hw'
@@ -84,24 +61,12 @@ if command -v free >/dev/null 2>&1; then
     fi
 fi
 
-if command -v proxychains >/dev/null 2>&1; then
-    alias pc='proxychains'
-elif command -v proxychains4 >/dev/null 2>&1; then
-    alias pc='proxychains4'
-fi
-
 alias tree='tree -I node_modules'
 alias tree2='tree -L 2 -I node_modules'
 alias tree3='tree -L 3 -I node_modules'
-
-# alias npm='npm --registry=https://registry.npm.taobao.org'
-
-# alias yarn='yarn --registry=https://registry.npm.taobao.org'
 
 #用法:在echo中使用$(RED)some-text-to-be-color-red$(CLEAR)
 # alias RED='tput setaf 1'
 # alias CLEAR='tput sgr0'
 
-alias aliyun='ssh -p 2000 eagle@aliyun.eagle711.win'
-#END alias
 # vim: set ft=sh:

@@ -170,6 +170,56 @@ function insert_path() {
     fi
     echo -e ${PATH//:/"\n"} | grep -c "^$1$" >/dev/null 2>&1 || export PATH=$1:$PATH
 }
+
+append_paths() {
+    [ $# -eq 0 ] && return
+
+    # 先把当前 PATH 展平成 :前后包裹的形式，便于匹配
+    old=":$PATH:"
+    new_paths=""
+
+    for p in "$@"; do
+        [ -z "$p" ] && continue
+        case "$old" in
+            *:"$p":*)
+                # 已存在，跳过
+                ;;
+            *)
+                # 不存在，记录下来，稍后统一追加
+                new_paths="${new_paths:+$new_paths:}$p"
+                # 更新 old，避免后面的参数重复添加同一个 p
+                old="$old$p:"
+                ;;
+        esac
+    done
+
+    [ -n "$new_paths" ] && PATH="${PATH:+$PATH:}$new_paths"
+}
+
+insert_paths() {
+    [ $# -eq 0 ] && return
+
+    old=":$PATH:"
+    prefix_paths=""
+
+    for p in "$@"; do
+        [ -z "$p" ] && continue
+        case "$old" in
+            *:"$p":*)
+                ;;
+            *)
+                # 注意：头插时，新的在前面
+                prefix_paths="${prefix_paths:+$prefix_paths:}$p"
+                old=":$p${old#?}"  # 逻辑上更新下，避免重复
+                ;;
+        esac
+    done
+
+    [ -n "$prefix_paths" ] && PATH="$prefix_paths${PATH:+:$PATH}"
+}
+
+
+
 #BEGIN function
 if command -v git >/dev/null 2>&1; then
     function ghclone() {
@@ -206,20 +256,6 @@ if command -v git >/dev/null 2>&1; then
         fi
     }
 
-    function geclone() {
-        p=${1:?"Usage: geclone giteeAccount/xx.git [newDir]"}
-        local user_proj="$(echo $p | perl -lne 'print $2 if /^\s*(https:\/\/gitee.com\/)?([^\/]+\/[^\/]+)/')"
-        if [ -z "${user_proj}" ]; then
-            echo "Usage: geclone [https://gitee.com/]USER/PROJ [newDIR]" >&2
-            return 1
-        fi
-        if (($# > 1)); then
-            newname=${2}
-            git clone "https://gitee.com/$user_proj" "$newname"
-        else
-            git clone "https://gitee.com/$user_proj"
-        fi
-    }
     #gpon(){
     #    #add default parameter
     #    local proxy=${1:-http://localhost:6119}
