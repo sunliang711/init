@@ -2278,6 +2278,9 @@ function newgitignore() {
 .DS_Store
 *.swp
 .idea/
+.cursor/
+.codex/
+AGENTS.md
 EOF
 }
 
