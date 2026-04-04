@@ -88,14 +88,23 @@ function find_sshd_port() {
 function check_domain_resolve(){
     domain=${1:?"domain is required"}
     log "check domain $domain resolve"
-    publicIp=$(curl -4 ifconfig.me)
+    publicIp=$(curl -4 -s ifconfig.me)
     log "public ip: $publicIp"
 
-    resolveIp=$(nslookup $domain | grep -oE 'Address: [^ ]+' | grep -oE '[0-9.]+')
-    log "resolve ip: $resolveIp"
+    # 仅用应答中的 A 记录；nslookup 多行 Address 会拼成带换行的变量导致误判
+    resolved=$(dig +short A "$domain" 2>/dev/null | grep -E '^[0-9.]+$' || true)
+    if [ -z "$resolved" ]; then
+        resolved=$(nslookup "$domain" 2>/dev/null | awk '/^Name:/{f=1;next} f && /^Address:/{print $2}' | grep -E '^[0-9.]+$' || true)
+    fi
+    if [ -z "$resolved" ]; then
+        log "domain $domain has no A record, exit"
+        exit 1
+    fi
 
-    if [ "$publicIp" != "$resolveIp" ]; then
-        log "domain $domain resolve failed, exit"
+    log "resolve ip(s): $(echo "$resolved" | paste -sd' ' -)"
+
+    if ! echo "$resolved" | grep -qxF "$publicIp"; then
+        log "domain $domain does not resolve to this server's public ip ($publicIp), exit"
         exit 1
     fi
 
@@ -605,22 +614,22 @@ function print_client_config(){
     cat<<EOF2 1>&2
 =========clash config segment begin=========
 proxies:
-    - name: "vmess_ws"
-      type: vmess                # 协议类型为 VMess
-      server: $domain            # 服务器地址（域名或 IP）
-      port: $port                # 服务器端口，通常为 443 以使用 HTTPS 端口
-      uuid: $uuid                # 你的 VMess 用户 UUID
-      alterId: 0                 # Alter ID，推荐设为 0（新版 VMess 默认）
-      cipher: auto               # 加密方式，推荐 auto，支持 auto/aes-128-gcm/chacha20-poly1305/none
-      udp: true                  # 启用 UDP 支持（根据需要）
-      tls: true                  # 启用 TLS
-      skip-cert-verify: false    # 是否跳过证书验证，建议为 false 以确保安全
-      servername: $domain        # TLS 的 SNI，需与服务器证书域名一致
-      network: ws                # 传输协议为 WebSocket
-      ws-opts:                   # WebSocket 配置(在clash中(mihomo),这行不需要，而且下面的配置不在这个节点的下一级，奇怪了)
-        path: "$wsPath"            # WebSocket 路径，需与服务器端一致
-        headers:
-          Host: $domain          # WebSocket Host
+  - name: "$domain"
+    type: vmess                # 协议类型为 VMess
+    server: $domain            # 服务器地址（域名或 IP）
+    port: $port                # 服务器端口，通常为 443 以使用 HTTPS 端口
+    uuid: $uuid                # 你的 VMess 用户 UUID
+    alterId: 0                 # Alter ID，推荐设为 0（新版 VMess 默认）
+    cipher: auto               # 加密方式，推荐 auto，支持 auto/aes-128-gcm/chacha20-poly1305/none
+    udp: true                  # 启用 UDP 支持（根据需要）
+    tls: true                  # 启用 TLS
+    skip-cert-verify: false    # 是否跳过证书验证，建议为 false 以确保安全
+    servername: $domain        # TLS 的 SNI，需与服务器证书域名一致
+    network: ws                # 传输协议为 WebSocket
+    ws-opts:                   # WebSocket 配置(在clash中(mihomo),这行不需要，而且下面的配置不在这个节点的下一级，奇怪了)
+      path: "$wsPath"            # WebSocket 路径，需与服务器端一致
+      headers:
+        Host: $domain          # WebSocket Host
 =========clash config segment end=========
 EOF2
 

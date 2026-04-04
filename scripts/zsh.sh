@@ -1,317 +1,10 @@
 #!/bin/bash
 
-if [ -z "${BASH_SOURCE}" ]; then
-    this=${PWD}
-else
-    rpath="$(readlink ${BASH_SOURCE})"
-    if [ -z "$rpath" ]; then
-        rpath=${BASH_SOURCE}
-    elif echo "$rpath" | grep -q '^/'; then
-        # absolute path
-        echo
-    else
-        # relative path
-        rpath="$(dirname ${BASH_SOURCE})/$rpath"
-    fi
-    this="$(cd $(dirname $rpath) && pwd)"
-fi
-
-user="${SUDO_USER:-$(whoami)}"
-home="$(eval echo ~$user)"
-
-# 定义颜色
-# Use colors, but only if connected to a terminal(-t 1), and that terminal supports them(ncolors >=8.
-if which tput >/dev/null 2>&1; then
-    ncolors=$(tput colors 2>/dev/null)
-fi
-if [ -t 1 ] && [ -n "$ncolors" ] && [ "$ncolors" -ge 8 ]; then
-    RED="$(tput setaf 1)"
-    GREEN="$(tput setaf 2)"
-    YELLOW="$(tput setaf 3)"
-    BLUE="$(tput setaf 4)"
-    # 品红色
-    MAGENTA=$(tput setaf 5)
-    # 青色
-    CYAN="$(tput setaf 6)"
-    # 粗体
-    BOLD="$(tput bold)"
-    NORMAL="$(tput sgr0)"
-else
-    RED=""
-    GREEN=""
-    YELLOW=""
-    CYAN=""
-    BLUE=""
-    BOLD=""
-    NORMAL=""
-fi
-
-# 日志级别常量
-LOG_LEVEL_FATAL=1
-LOG_LEVEL_ERROR=2
-LOG_LEVEL_WARNING=3
-LOG_LEVEL_SUCCESS=4
-LOG_LEVEL_INFO=5
-LOG_LEVEL_DEBUG=6
-
-# 默认日志级别
-LOG_LEVEL=$LOG_LEVEL_INFO
-
-# 导出 PATH 环境变量
-export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-err_require_command=100
-err_require_root=200
-err_require_linux=300
-err_create_dir=400
-
-_command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
-
-_require_command() {
-    if ! _command_exists "$1"; then
-        echo "Require command $1" 1>&2
-        exit ${err_require_command}
-    fi
-}
-
-_require_commands() {
-    errorNo=0
-    for i in "$@";do
-        if ! _command_exists "$i"; then
-            echo "need command $i" 1>&2
-            errorNo=$((errorNo+1))
-        fi
-    done
-
-    if ((errorNo > 0 ));then
-        exit ${err_require_command}
-    fi
-}
-
-function _ensureDir() {
-    local dirs=$@
-    for dir in ${dirs}; do
-        if [ ! -d ${dir} ]; then
-            mkdir -p ${dir} || {
-                echo "create $dir failed!"
-                exit $err_create_dir
-            }
-        fi
-    done
-}
-
-rootID=0
-
-function _root() {
-    if [ ${EUID} -ne ${rootID} ]; then
-        echo "need root privilege." 1>&2
-        return $err_require_root
-    fi
-}
-
-function _require_root() {
-    if ! _root; then
-        exit $err_require_root
-    fi
-}
-
-function _linux() {
-    if [ "$(uname)" != "Linux" ]; then
-        echo "need Linux" 1>&2
-        return $err_require_linux
-    fi
-}
-
-function _require_linux() {
-    if ! _linux; then
-        exit $err_require_linux
-    fi
-}
-
-function _wait() {
-    # secs=$((5 * 60))
-    secs=${1:?'missing seconds'}
-
-    while [ $secs -gt 0 ]; do
-        echo -ne "$secs\033[0K\r"
-        sleep 1
-        : $((secs--))
-    done
-    echo -ne "\033[0K\r"
-}
-
-function _parseOptions() {
-    if [ $(uname) != "Linux" ]; then
-        echo "getopt only on Linux"
-        exit 1
-    fi
-
-    options=$(getopt -o dv --long debug --long name: -- "$@")
-    [ $? -eq 0 ] || {
-        echo "Incorrect option provided"
-        exit 1
-    }
-    eval set -- "$options"
-    while true; do
-        case "$1" in
-        -v)
-            VERBOSE=1
-            ;;
-        -d)
-            DEBUG=1
-            ;;
-        --debug)
-            DEBUG=1
-            ;;
-        --name)
-            shift # The arg is next in position args
-            NAME=$1
-            ;;
-        --)
-            shift
-            break
-            ;;
-        esac
-        shift
-    done
-}
-
-# 设置ed
-ed=vi
-if _command_exists vim; then
-    ed=vim
-fi
-if _command_exists nvim; then
-    ed=nvim
-fi
-# use ENV: editor to override
-if [ -n "${editor}" ]; then
-    ed=${editor}
-fi
-
-checkRoot() {
-    if [ "$(id -u)" -ne 0 ]; then
-        # 检查是否有 sudo 命令
-        if ! command -v sudo >/dev/null 2>&1; then
-            echo "Error: 'sudo' command is required." >&2
-            return 1
-        fi
-
-        # 检查用户是否在 sudoers 中
-        echo "Checking if you have sudo privileges..."
-        if ! sudo -v 2>/dev/null; then
-            echo "You do NOT have sudo privileges or failed to enter password." >&2
-            return 1
-        fi
-    fi
-}
-
-runAsRoot() {
-    if [ "$(id -u)" -eq 0 ]; then
-        echo "Running as root: $*"
-        "$@"
-    else
-        if ! command -v sudo >/dev/null 2>&1; then
-            echo "Error: 'sudo' is required but not found." >&2
-            return 1
-        fi
-        echo "Using sudo: $*"
-        sudo "$@"
-    fi
-}
-
-# 日志级别名称数组及最大长度计算
-LOG_LEVELS=("FATAL" "ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
-MAX_LEVEL_LENGTH=0
-
-for level in "${LOG_LEVELS[@]}"; do
-  len=${#level}
-  if (( len > MAX_LEVEL_LENGTH )); then
-    MAX_LEVEL_LENGTH=$len
-  fi
-done
-MAX_LEVEL_LENGTH=$((MAX_LEVEL_LENGTH+2))
-
-# 日志级别名称填充
-pad_level() {
-  printf "%-${MAX_LEVEL_LENGTH}s" "[$1]"
-}
-
-# 打印带颜色的日志函数
-log() {
-  local level="$(echo "$1" | awk '{print toupper($0)}')" # 转换为大写以支持大小写敏感
-  shift
-  local message="$@"
-  local padded_level=$(pad_level "$level")
-  local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
-  case "$level" in
-    "FATAL")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
-        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-        exit 1
-      fi
-      ;;
-
-    "ERROR")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
-        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-      fi
-      ;;
-    "WARNING")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]; then
-        echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-      fi
-      ;;
-    "INFO")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]; then
-        echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-      fi
-      ;;
-    "SUCCESS")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]; then
-        echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-      fi
-      ;;
-    "DEBUG")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]; then
-        echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-      fi
-      ;;
-    *)
-      echo -e "${NC}[$timestamp] [$level] $message${NORMAL}"
-      ;;
-  esac
-}
-
-# 设置日志级别的函数
-set_log_level() {
-  local level="$(echo "$1" | awk '{print toupper($0)}')"
-  case "$level" in
-    "FATAL")
-      LOG_LEVEL=$LOG_LEVEL_FATAL
-      ;;
-    "ERROR")
-      LOG_LEVEL=$LOG_LEVEL_ERROR
-      ;;
-    "WARNING")
-      LOG_LEVEL=$LOG_LEVEL_WARNING
-      ;;
-    "INFO")
-      LOG_LEVEL=$LOG_LEVEL_INFO
-      ;;
-    "SUCCESS")
-      LOG_LEVEL=$LOG_LEVEL_SUCCESS
-      ;;
-    "DEBUG")
-      LOG_LEVEL=$LOG_LEVEL_DEBUG
-      ;;
-    *)
-      echo "无效的日志级别: $1"
-      ;;
-  esac
-}
+COMMON_LIB="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/../lib/init-common.sh"
+INIT_CALLER_SOURCE="${BASH_SOURCE[0]}"
+# shellcheck source=../lib/init-common.sh
+source "${COMMON_LIB}"
+unset COMMON_LIB INIT_CALLER_SOURCE
 
 # 显示帮助信息
 show_help() {
@@ -330,69 +23,257 @@ show_help() {
 # 子命令数组
 COMMANDS=("help" "check" "install" "uninstall" "linksshpems")
 
-ZSH=${ZSH:-${HOME}/.oh-my-zsh}
+ZSH=${ZSH:-${INIT_TARGET_HOME}/.oh-my-zsh}
 ZSH_CUSTOM=${ZSH_CUSTOM:-${ZSH}/custom}
+STATE_DIR="${INIT_TARGET_HOME}/.local/state/init"
+STATE_FILE="${STATE_DIR}/zsh.state"
+ZSHRC_LINK_TARGET="${INIT_REPO_ROOT}/softlinks/zshrc"
+SSH_CONFIG="${INIT_TARGET_HOME}/.ssh/config"
+SSH_CONFIG_MARKER="# managed-by: init/sshconfig"
+SSH_CONFIG_LEGACY_LINK_TARGET="${INIT_REPO_ROOT}/softlinks/sshconfig"
+SSH_CONFIG_LOCAL_INCLUDE="${INIT_REPO_ROOT}/softlinks/sshconfig.local"
+SSH_CONFIG_SHARED_INCLUDE="${INIT_REPO_ROOT}/softlinks/sshconfig.shared"
+AUTOSUGGESTIONS_DIR="${ZSH_CUSTOM}/plugins/zsh-autosuggestions"
+AUTOSUGGESTIONS_REPO="https://github.com/zsh-users/zsh-autosuggestions"
+SYNTAX_HIGHLIGHTING_DIR="${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting"
+SYNTAX_HIGHLIGHTING_REPO="https://github.com/zsh-users/zsh-syntax-highlighting.git"
+EDITRC_MARKER_BEGIN="# BEGIN managed by init:zsh"
+EDITRC_MARKER_END="# END managed by init:zsh"
+INPUTRC_MARKER_BEGIN="# BEGIN managed by init:zsh"
+INPUTRC_MARKER_END="# END managed by init:zsh"
+
+_ensure_state_dir() {
+    mkdir -p "${STATE_DIR}"
+}
+
+_write_state() {
+    _ensure_state_dir
+    cat >"${STATE_FILE}" <<EOF
+MANAGED_AUTOSUGGESTIONS_DIR=${1:-0}
+MANAGED_SYNTAX_HIGHLIGHTING_DIR=${2:-0}
+EOF
+}
+
+_state_get() {
+    local key="${1:?missing state key}"
+    [ -f "${STATE_FILE}" ] || return 1
+    awk -F= -v key="${key}" '$1 == key { print $2 }' "${STATE_FILE}"
+}
+
+_cleanup_state_file() {
+    [ -f "${STATE_FILE}" ] && /bin/rm -f "${STATE_FILE}"
+}
+
+_ensure_managed_block() {
+    local file="${1:?missing file}"
+    local begin="${2:?missing begin marker}"
+    local end="${3:?missing end marker}"
+    local body="${4:?missing body}"
+
+    [ -f "${file}" ] || touch "${file}"
+
+    if grep -Fq "${begin}" "${file}" || grep -Fxq "${body}" "${file}"; then
+        return 0
+    fi
+
+    cat >>"${file}" <<EOF
+${begin}
+${body}
+${end}
+EOF
+}
+
+_remove_managed_block() {
+    local file="${1:?missing file}"
+    local begin="${2:?missing begin marker}"
+    local end="${3:?missing end marker}"
+    local tmp_file
+
+    [ -f "${file}" ] || return 0
+    grep -Fq "${begin}" "${file}" || return 0
+
+    tmp_file="$(mktemp "${TMPDIR:-/tmp}/init-zsh.XXXXXX")" || return 1
+    awk -v begin="${begin}" -v end="${end}" '
+        $0 == begin { skip = 1; next }
+        $0 == end { skip = 0; next }
+        skip != 1 { print }
+    ' "${file}" >"${tmp_file}" && mv "${tmp_file}" "${file}"
+
+    if [ ! -s "${file}" ]; then
+        /bin/rm -f "${file}"
+    fi
+}
+
+_remove_symlink_if_matches() {
+    local path="${1:?missing path}"
+    local expected_target="${2:?missing expected target}"
+
+    if _path_matches_target "${path}" "${expected_target}"; then
+        /bin/rm -f "${path}"
+    fi
+}
+
+_write_ssh_config() {
+    local tmp_file
+
+    tmp_file="$(mktemp "${TMPDIR:-/tmp}/init-sshconfig.XXXXXX")" || return 1
+    cat >"${tmp_file}" <<EOF
+${SSH_CONFIG_MARKER}
+# Generated by init. Re-run scripts/zsh.sh install if this repo moves.
+Include ${SSH_CONFIG_LOCAL_INCLUDE}
+Include ~/.ssh/config.local
+Include ${SSH_CONFIG_SHARED_INCLUDE}
+EOF
+
+    if { [ -e "${SSH_CONFIG}" ] || [ -L "${SSH_CONFIG}" ]; } && ! grep -Fqx "${SSH_CONFIG_MARKER}" "${SSH_CONFIG}" 2>/dev/null && ! _files_match "${SSH_CONFIG}" "${tmp_file}"; then
+        _backup_existing_path "${SSH_CONFIG}"
+    fi
+
+    if [ ! -f "${SSH_CONFIG}" ] || ! _files_match "${SSH_CONFIG}" "${tmp_file}"; then
+        _ensure_parent_dir "${SSH_CONFIG}"
+        mv "${tmp_file}" "${SSH_CONFIG}"
+    else
+        /bin/rm -f "${tmp_file}"
+    fi
+}
+
+_remove_managed_file_if_marked() {
+    local path="${1:?missing path}"
+    local marker="${2:?missing marker}"
+
+    [ -f "${path}" ] || return 0
+    grep -Fqx "${marker}" "${path}" || return 0
+    /bin/rm -f "${path}"
+}
+
+_git_remote_matches() {
+    local repo_dir="${1:?missing repo dir}"
+    local expected_remote="${2:?missing expected remote}"
+    local current_remote
+
+    [ -d "${repo_dir}/.git" ] || return 1
+    current_remote="$(git -C "${repo_dir}" config --get remote.origin.url 2>/dev/null)"
+    [ "${current_remote}" = "${expected_remote}" ]
+}
+
+_remove_plugin_dir_if_managed() {
+    local repo_dir="${1:?missing repo dir}"
+    local expected_remote="${2:?missing expected remote}"
+    local state_key="${3:?missing state key}"
+
+    [ "$(_state_get "${state_key}")" = "1" ] || return 0
+    [ -d "${repo_dir}" ] || return 0
+
+    if _git_remote_matches "${repo_dir}" "${expected_remote}"; then
+        /bin/rm -rf "${repo_dir}"
+    fi
+}
+
+_remove_repo_theme_symlinks() {
+    local theme_source
+    local theme_name
+    local theme_target
+
+    for theme_source in "${this}"/../softlinks/*.zsh-theme; do
+        [ -e "${theme_source}" ] || continue
+        theme_name="$(basename "${theme_source}")"
+        theme_target="${ZSH_CUSTOM}/themes/${theme_name}"
+        _remove_symlink_if_matches "${theme_target}" "${theme_source}"
+    done
+}
+
+_link_repo_theme_symlinks() {
+    local theme_source
+    local theme_name
+    local theme_target
+
+    for theme_source in "${this}"/../softlinks/*.zsh-theme; do
+        [ -e "${theme_source}" ] || continue
+        theme_name="$(basename "${theme_source}")"
+        theme_target="${ZSH_CUSTOM}/themes/${theme_name}"
+        _ensure_symlink "${theme_source}" "${theme_target}"
+    done
+}
 
 check() {
     _require_commands git curl zsh
 }
 
 install() {
-    export SHELLRC_ROOT=${HOME}/.local/apps/init/shellConfigs
+    export SHELLRC_ROOT="${INIT_REPO_ROOT}/shellConfigs"
     check
-
-    if [ ! -e "$HOME/.editrc" ] || ! grep -q 'bind -v' "$HOME/.editrc"; then
-        echo 'bind -v' >>"$HOME/.editrc"
-    fi
-    if [ ! -e "$HOME"/.inputrc ] || ! grep -q 'set editing-mode vi' "$HOME/.inputrc"; then
-        echo 'set editing-mode vi' >>"$HOME/.inputrc"
-    fi
     set -e
+    local managed_autosuggestions_dir=0
+    local managed_syntax_highlighting_dir=0
+
+    [ "$(_state_get MANAGED_AUTOSUGGESTIONS_DIR)" = "1" ] && managed_autosuggestions_dir=1
+    [ "$(_state_get MANAGED_SYNTAX_HIGHLIGHTING_DIR)" = "1" ] && managed_syntax_highlighting_dir=1
+
+    _ensure_managed_block "${INIT_TARGET_HOME}/.editrc" "${EDITRC_MARKER_BEGIN}" "${EDITRC_MARKER_END}" "bind -v"
+    _ensure_managed_block "${INIT_TARGET_HOME}/.inputrc" "${INPUTRC_MARKER_BEGIN}" "${INPUTRC_MARKER_END}" "set editing-mode vi"
 
     # install omz
-    (
-        cd /tmp
-        local installer="omzInstaller-$(date +%s).sh"
-        curl -fsSL -o ${installer} https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh
-        RUNZSH=no bash ${installer}
-    )
+    if [ -f "${ZSH}/oh-my-zsh.sh" ]; then
+        log INFO "oh-my-zsh already exists at ${ZSH}, skip installer"
+    else
+        (
+            cd /tmp
+            local installer="omzInstaller-$(date +%s).sh"
+            curl -fsSL -o "${installer}" https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh
+            RUNZSH=no bash "${installer}"
+        )
+    fi
 
-    ln -sf "${this}"/../softlinks/zshrc ~/.zshrc || {
+    _ensure_symlink "${ZSHRC_LINK_TARGET}" "${INIT_TARGET_HOME}/.zshrc" || {
         echo "Please fork the repo first"
         exit 1
     }
 
+    _ensureDir "${ZSH_CUSTOM}/themes" "${ZSH_CUSTOM}/plugins" "${INIT_TARGET_HOME}/.ssh"
+
     # omz plugins
     # zsh-autosuggestions
-    git clone https://github.com/zsh-users/zsh-autosuggestions "${ZSH_CUSTOM}"/plugins/zsh-autosuggestions
+    if [ ! -d "${AUTOSUGGESTIONS_DIR}" ]; then
+        git clone "${AUTOSUGGESTIONS_REPO}" "${AUTOSUGGESTIONS_DIR}"
+        managed_autosuggestions_dir=1
+    elif _git_remote_matches "${AUTOSUGGESTIONS_DIR}" "${AUTOSUGGESTIONS_REPO}"; then
+        log INFO "${AUTOSUGGESTIONS_DIR} already exists, skip clone"
+    else
+        log WARNING "${AUTOSUGGESTIONS_DIR} exists and is not the expected repo, skip clone"
+    fi
     # zsh-syntax-highlighting
-    git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "${ZSH_CUSTOM}"/plugins/zsh-syntax-highlighting
+    if [ ! -d "${SYNTAX_HIGHLIGHTING_DIR}" ]; then
+        git clone "${SYNTAX_HIGHLIGHTING_REPO}" "${SYNTAX_HIGHLIGHTING_DIR}"
+        managed_syntax_highlighting_dir=1
+    elif _git_remote_matches "${SYNTAX_HIGHLIGHTING_DIR}" "${SYNTAX_HIGHLIGHTING_REPO}"; then
+        log INFO "${SYNTAX_HIGHLIGHTING_DIR} already exists, skip clone"
+    else
+        log WARNING "${SYNTAX_HIGHLIGHTING_DIR} exists and is not the expected repo, skip clone"
+    fi
 
     # custom theme
-    ln -svf "${this}"/../softlinks/*.zsh-theme "${ZSH_CUSTOM}/themes"
+    _link_repo_theme_symlinks
 
-    # soft link sshconfig
-    [ ! -d ~/.ssh ] && mkdir ~/.ssh
-    ln -svf "${this}"/../softlinks/sshconfig "$HOME"/.ssh/config
+    _write_ssh_config
+
+    _write_state "${managed_autosuggestions_dir}" "${managed_syntax_highlighting_dir}"
 }
 
 linksshpems() {
-    ln -svf "${this}"/../softlinks/sshpems "$HOME"/.ssh/sshpems
-    chmod 0600 "$HOME"/.ssh/sshpems/*
+    _ensure_symlink "${INIT_REPO_ROOT}/softlinks/sshpems" "${INIT_TARGET_HOME}/.ssh/sshpems"
+    chmod 0600 "${INIT_TARGET_HOME}"/.ssh/sshpems/*
 }
 
 uninstall() {
-    cp ~/.zshrc{,.old}
-    _rm ~/.zshrc
-    _rm ${ZSH}
-    _rm ${ZSH_CUSTOM}
-    _rm ~/.zsh-syntax-highlighting
-    _rm ~/.fzf
-    _rm ~/.fzf.zsh
-    _rm ~/.fzf.bash
-    _rm ~/.ssh/config
-    _rm ~/.editrc
-    _rm ~/.inputrc
+    _remove_symlink_if_matches "${INIT_TARGET_HOME}/.zshrc" "${ZSHRC_LINK_TARGET}"
+    _remove_managed_file_if_marked "${SSH_CONFIG}" "${SSH_CONFIG_MARKER}"
+    _remove_symlink_if_matches "${SSH_CONFIG}" "${SSH_CONFIG_LEGACY_LINK_TARGET}"
+    _remove_repo_theme_symlinks
+    _remove_plugin_dir_if_managed "${AUTOSUGGESTIONS_DIR}" "${AUTOSUGGESTIONS_REPO}" "MANAGED_AUTOSUGGESTIONS_DIR"
+    _remove_plugin_dir_if_managed "${SYNTAX_HIGHLIGHTING_DIR}" "${SYNTAX_HIGHLIGHTING_REPO}" "MANAGED_SYNTAX_HIGHLIGHTING_DIR"
+    _remove_managed_block "${INIT_TARGET_HOME}/.editrc" "${EDITRC_MARKER_BEGIN}" "${EDITRC_MARKER_END}"
+    _remove_managed_block "${INIT_TARGET_HOME}/.inputrc" "${INPUTRC_MARKER_BEGIN}" "${INPUTRC_MARKER_END}"
+    _cleanup_state_file
 }
 
 _rm() {

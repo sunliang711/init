@@ -3,6 +3,7 @@
 .idea/
 
 /shellConfigs/local
+/softlinks/sshconfig.local
 
 /tools/docker/useful-docker-compose/qbittorrent/docker-compose.yaml
 /tools/docker/useful-docker-compose/qbittorrent/downloads
@@ -14,4 +15,3 @@
 /tools/docker/useful-docker-compose/filebrowser/data
 
 /tools/dns/env
-

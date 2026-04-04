@@ -6,6 +6,96 @@ function Source() {
     [ -e "$file" ] && source "$file"
 }
 
+if [ -n "${ZSH_VERSION:-}" ]; then
+    typeset -gA __lazy_loaded
+    typeset -gA __lazy_main_scripts
+    typeset -gA __lazy_extra_scripts
+    typeset -gA __lazy_command_groups
+
+    _lazy_source_once() {
+        local name="$1"
+        local main_script="$2"
+        shift 2
+
+        [[ -n "${__lazy_loaded[$name]:-}" ]] && return 0
+        [[ -s "$main_script" ]] || return 1
+
+        __lazy_loaded[$name]=1
+        builtin source "$main_script"
+
+        local extra_script
+        for extra_script in "$@"; do
+            [[ -s "$extra_script" ]] && builtin source "$extra_script"
+        done
+    }
+
+    _lazy_load_registered() {
+        local name="$1"
+        local main_script="${__lazy_main_scripts[$name]:-}"
+        local -a extra_scripts
+
+        [[ -n "$main_script" ]] || {
+            print -u2 -- "lazy group not registered: $name"
+            return 1
+        }
+
+        extra_scripts=("${(@f)__lazy_extra_scripts[$name]}")
+        _lazy_source_once "$name" "$main_script" "${extra_scripts[@]}"
+    }
+
+    _lazy_call_registered() {
+        local name="$1"
+        local cmd="$2"
+        shift 2
+
+        local -a wrapped_cmds
+        wrapped_cmds=("${(@f)__lazy_command_groups[$name]}")
+
+        (( ${#wrapped_cmds[@]} )) && unset -f "${wrapped_cmds[@]}" 2>/dev/null
+        _lazy_load_registered "$name" >/dev/null 2>&1 || true
+
+        if command -v "$cmd" >/dev/null 2>&1; then
+            "$cmd" "$@"
+        else
+            print -u2 -- "command not found: $cmd"
+            return 127
+        fi
+    }
+
+    # Register one sourced init script with one or more commands that should
+    # trigger the load on first use.
+    _lazy_register_source() {
+        local name="$1"
+        local main_script="$2"
+        shift 2
+
+        local -a extra_scripts commands
+        while (( $# )); do
+            if [[ "$1" == "--" ]]; then
+                shift
+                break
+            fi
+            extra_scripts+=("$1")
+            shift
+        done
+        commands=("$@")
+
+        if [[ -z "$name" || -z "$main_script" || ${#commands[@]} -eq 0 ]]; then
+            print -u2 -- "usage: _lazy_register_source <name> <main_script> [extra_scripts...] -- <commands...>"
+            return 1
+        fi
+
+        __lazy_main_scripts[$name]="$main_script"
+        __lazy_extra_scripts[$name]="${(j:\n:)extra_scripts}"
+        __lazy_command_groups[$name]="${(j:\n:)commands}"
+
+        local cmd
+        for cmd in "${commands[@]}"; do
+            functions[$cmd]="_lazy_call_registered ${(q)name} ${(q)cmd} \"\$@\""
+        done
+    }
+fi
+
 function halt() {
     runAsRoot shutdown -h now
 }
@@ -2276,11 +2366,46 @@ function newgitignore() {
     ignorefile="${dest}/.gitignore"
     cat <<EOF >>"$ignorefile"
 .DS_Store
+tmp/
+temp/
+*.tmp
+*.bak
+
+.env
+.env.*
+*.local
+
 *.swp
+*.swo
 .idea/
+.vscode/
+
+dist/
+node_modules/
+target/
+build/
+debug/
+out/
+release/
+vendor/
+.next/
+.nuxt/
+.gradle/
+*.class
+
+
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
 .cursor/
 .codex/
 AGENTS.md
+
 EOF
 }
 

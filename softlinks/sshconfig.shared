@@ -1,0 +1,81 @@
+# Shared SSH config for hosts that are expected to be reachable across machines.
+
+Host *
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+
+Match exec "uname | grep -q Darwin"
+    IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+
+##################################################
+# home hosts
+Host shroslan
+    HostName 10.1.1.1
+    User userxx1
+    Port 20000
+
+Host socks33
+    HostName 10.1.1.33
+    User eagle
+
+Host service99
+    HostName 10.1.1.99
+    User eagle
+
+##################################################
+# chief hosts
+Host frp200
+    HostName 10.2.1.200
+    User root
+
+Host dev82
+    HostName 10.2.1.82
+    User eagle
+
+Host server83
+    HostName 10.2.1.83
+    User root
+
+Host wallet71
+    HostName 10.2.7.1
+    User finex
+
+Host socks107
+    HostName 10.2.1.107
+    User root
+
+Host hsm
+    HostName 10.2.11.11
+    User admin
+
+Host shros
+    HostName sh.rustez.cc
+    User userxx1
+    Port 20000
+
+Host zhiying
+    HostName 8.148.67.125
+    User root
+    Port 22
+
+Host bwg
+    HostName 45.78.51.79
+    User root
+    Port 29837
+
+Host yang
+    HostName 104.194.66.229
+    User root
+
+Host dmit
+    HostName 154.17.4.62
+    User root
+
+Host aliyun
+    HostName aliyun.rustez.cc
+    User eagle
+    Port 22
+
+Host yunqing
+    HostName 124.156.226.147
+    User ubuntu

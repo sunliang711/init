@@ -1,349 +1,10 @@
 #!/bin/bash
 
-if [ -z "${BASH_SOURCE}" ]; then
-    this=${PWD}
-else
-    rpath="$(readlink ${BASH_SOURCE})"
-    if [ -z "$rpath" ]; then
-        rpath=${BASH_SOURCE}
-    elif echo "$rpath" | grep -q '^/'; then
-        # absolute path
-        echo
-    else
-        # relative path
-        rpath="$(dirname ${BASH_SOURCE})/$rpath"
-    fi
-    this="$(cd $(dirname $rpath) && pwd)"
-fi
-
-user="${SUDO_USER:-$(whoami)}"
-home="$(eval echo ~$user)"
-
-# 定义颜色
-# Use colors, but only if connected to a terminal(-t 1), and that terminal supports them(ncolors >=8.
-if which tput >/dev/null 2>&1; then
-    ncolors=$(tput colors 2>/dev/null)
-fi
-if [ -t 1 ] && [ -n "$ncolors" ] && [ "$ncolors" -ge 8 ]; then
-    RED="$(tput setaf 1)"
-    GREEN="$(tput setaf 2)"
-    YELLOW="$(tput setaf 3)"
-    BLUE="$(tput setaf 4)"
-    # 品红色
-    MAGENTA=$(tput setaf 5)
-    # 青色
-    CYAN="$(tput setaf 6)"
-    # 粗体
-    BOLD="$(tput bold)"
-    NORMAL="$(tput sgr0)"
-else
-    RED=""
-    GREEN=""
-    YELLOW=""
-    CYAN=""
-    BLUE=""
-    BOLD=""
-    NORMAL=""
-fi
-
-# 日志级别常量
-LOG_LEVEL_FATAL=1
-LOG_LEVEL_ERROR=2
-LOG_LEVEL_WARNING=3
-LOG_LEVEL_SUCCESS=4
-LOG_LEVEL_INFO=5
-LOG_LEVEL_DEBUG=6
-
-# 默认日志级别
-LOG_LEVEL=$LOG_LEVEL_INFO
-
-# 导出 PATH 环境变量
-export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-err_require_command=100
-err_require_root=200
-err_require_linux=300
-err_create_dir=400
-
-_command_exists() {
-    command -v "$1" >/dev/null 2>&1
-}
-
-_require_command() {
-    if ! _command_exists "$1"; then
-        echo "Require command $1" 1>&2
-        exit ${err_require_command}
-    fi
-}
-
-_require_commands() {
-    errorNo=0
-    for i in "$@";do
-        if ! _command_exists "$i"; then
-            echo "need command $i" 1>&2
-            errorNo=$((errorNo+1))
-        fi
-    done
-
-    if ((errorNo > 0 ));then
-        exit ${err_require_command}
-    fi
-}
-
-function _ensureDir() {
-    local dirs=$@
-    for dir in ${dirs}; do
-        if [ ! -d ${dir} ]; then
-            mkdir -p ${dir} || {
-                echo "create $dir failed!"
-                exit $err_create_dir
-            }
-        fi
-    done
-}
-
-rootID=0
-
-function _root() {
-    if [ ${EUID} -ne ${rootID} ]; then
-        echo "need root privilege." 1>&2
-        return $err_require_root
-    fi
-}
-
-function _require_root() {
-    if ! _root; then
-        exit $err_require_root
-    fi
-}
-
-function _linux() {
-    if [ "$(uname)" != "Linux" ]; then
-        echo "need Linux" 1>&2
-        return $err_require_linux
-    fi
-}
-
-function _require_linux() {
-    if ! _linux; then
-        exit $err_require_linux
-    fi
-}
-
-function _wait() {
-    # secs=$((5 * 60))
-    secs=${1:?'missing seconds'}
-
-    while [ $secs -gt 0 ]; do
-        echo -ne "$secs\033[0K\r"
-        sleep 1
-        : $((secs--))
-    done
-    echo -ne "\033[0K\r"
-}
-
-function _parseOptions() {
-    if [ $(uname) != "Linux" ]; then
-        echo "getopt only on Linux"
-        exit 1
-    fi
-
-    options=$(getopt -o dv --long debug --long name: -- "$@")
-    [ $? -eq 0 ] || {
-        echo "Incorrect option provided"
-        exit 1
-    }
-    eval set -- "$options"
-    while true; do
-        case "$1" in
-        -v)
-            VERBOSE=1
-            ;;
-        -d)
-            DEBUG=1
-            ;;
-        --debug)
-            DEBUG=1
-            ;;
-        --name)
-            shift # The arg is next in position args
-            NAME=$1
-            ;;
-        --)
-            shift
-            break
-            ;;
-        esac
-        shift
-    done
-}
-
-# 设置ed
-ed=vi
-if _command_exists vim; then
-    ed=vim
-fi
-if _command_exists nvim; then
-    ed=nvim
-fi
-# use ENV: editor to override
-if [ -n "${editor}" ]; then
-    ed=${editor}
-fi
-
-_checkRoot() {
-    if [ "$(id -u)" -ne 0 ]; then
-        # 检查是否有 sudo 命令
-        if ! command -v sudo >/dev/null 2>&1; then
-            echo "Error: 'sudo' command is required." >&2
-            return 1
-        fi
-
-        # 检查用户是否在 sudoers 中
-        echo "Checking if you have sudo privileges..."
-        if ! sudo -v 2>/dev/null; then
-            echo "You do NOT have sudo privileges or failed to enter password." >&2
-            return 1
-        fi
-    fi
-}
-
-# _runAsRoot Usage:
-# 1. 单条命令
-# _runAsRoot ls -l /root
-# 2. 多行命令
-# script=$(cat<<'EOF'
-# ...
-# EOF)
-# _runAsRoot <<< "${script}"
-# 3. 多行命令
-# _runAsRoot<<'EOF'
-# ...
-# EOF
-_runAsRoot() {
-    local run_as_root
-
-    # 判断当前是否是 root
-    if [ "$(id -u)" -eq 0 ]; then
-        run_as_root="bash -s"
-    elif command -v sudo >/dev/null 2>&1; then
-        run_as_root="sudo -E bash -s"
-    elif command -v su >/dev/null 2>&1; then
-        run_as_root="su -c 'bash -s'"
-    else
-        echo "Error: need sudo or su to run as root." >&2
-        return 1
-    fi
-
-    if [ -t 0 ]; then
-        # 交互式 shell：使用命令参数方式
-        if [ $# -eq 0 ]; then
-            echo "Usage: _runAsRootUniversal <command> [args...]" >&2
-            return 1
-        fi
-        echo "[Running as root]: $*"
-        if [ "$(id -u)" -eq 0 ]; then
-            "$@"
-        else
-            sudo "$@"
-        fi
-    else
-        # 标准输入传入：执行多行脚本
-        echo "[Running script as root via stdin]"
-        $run_as_root
-    fi
-}
-
-# 日志级别名称数组及最大长度计算
-LOG_LEVELS=("FATAL" "ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
-MAX_LEVEL_LENGTH=0
-
-for level in "${LOG_LEVELS[@]}"; do
-  len=${#level}
-  if (( len > MAX_LEVEL_LENGTH )); then
-    MAX_LEVEL_LENGTH=$len
-  fi
-done
-MAX_LEVEL_LENGTH=$((MAX_LEVEL_LENGTH+2))
-
-# 日志级别名称填充
-pad_level() {
-  printf "%-${MAX_LEVEL_LENGTH}s" "[$1]"
-}
-
-# 打印带颜色的日志函数
-log() {
-  local level="$(echo "$1" | awk '{print toupper($0)}')" # 转换为大写以支持大小写敏感
-  shift
-  local message="$@"
-  local padded_level=$(pad_level "$level")
-  local timestamp=$(date "+%Y-%m-%d %H:%M:%S")
-  case "$level" in
-    "FATAL")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_FATAL ]; then
-        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-        exit 1
-      fi
-      ;;
-
-    "ERROR")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_ERROR ]; then
-        echo -e "${RED}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-      fi
-      ;;
-    "WARNING")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_WARNING ]; then
-        echo -e "${YELLOW}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-      fi
-      ;;
-    "INFO")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_INFO ]; then
-        echo -e "${BLUE}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-      fi
-      ;;
-    "SUCCESS")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_SUCCESS ]; then
-        echo -e "${GREEN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-      fi
-      ;;
-    "DEBUG")
-      if [ $LOG_LEVEL -ge $LOG_LEVEL_DEBUG ]; then
-        echo -e "${CYAN}${BOLD}[$timestamp] $padded_level${NC} $message${NORMAL}"
-      fi
-      ;;
-    *)
-      echo -e "${NC}[$timestamp] [$level] $message${NORMAL}"
-      ;;
-  esac
-}
-
-# 设置日志级别的函数
-set_log_level() {
-  local level="$(echo "$1" | awk '{print toupper($0)}')"
-  case "$level" in
-    "FATAL")
-      LOG_LEVEL=$LOG_LEVEL_FATAL
-      ;;
-    "ERROR")
-      LOG_LEVEL=$LOG_LEVEL_ERROR
-      ;;
-    "WARNING")
-      LOG_LEVEL=$LOG_LEVEL_WARNING
-      ;;
-    "INFO")
-      LOG_LEVEL=$LOG_LEVEL_INFO
-      ;;
-    "SUCCESS")
-      LOG_LEVEL=$LOG_LEVEL_SUCCESS
-      ;;
-    "DEBUG")
-      LOG_LEVEL=$LOG_LEVEL_DEBUG
-      ;;
-    *)
-      echo "无效的日志级别: $1"
-      ;;
-  esac
-}
+COMMON_LIB="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/../lib/init-common.sh"
+INIT_CALLER_SOURCE="${BASH_SOURCE[0]}"
+# shellcheck source=../lib/init-common.sh
+source "${COMMON_LIB}"
+unset COMMON_LIB INIT_CALLER_SOURCE
 
 # 显示帮助信息
 show_help() {
@@ -363,28 +24,39 @@ show_help() {
 COMMANDS=("help" "install" "uninstall" "check" "update")
 
 thisScript="${this}/updateInit.sh"
+cronLine="0 0 * * * ${thisScript} update >/dev/null 2>&1"
 # install to crontab
 install() {
+    local existing_crontab
+    existing_crontab="$(crontab -l 2>/dev/null || true)"
+
+    if printf '%s\n' "${existing_crontab}" | grep -Fqx "${cronLine}"; then
+        echo "update crontab already exists"
+        return 0
+    fi
+
     (
-        crontab -l
-        echo "0 0 * * * ${thisScript} update >/dev/null 2>&1"
-    ) | crontab -
+        printf '%s\n' "${existing_crontab}"
+        echo "${cronLine}"
+    ) | sed '/^$/d' | crontab -
 }
 
 uninstall() {
-    (crontab -l | grep -v updateInit.sh) | crontab -
+    local existing_crontab
+    existing_crontab="$(crontab -l 2>/dev/null || true)"
+    [ -n "${existing_crontab}" ] || return 0
+
+    printf '%s\n' "${existing_crontab}" | grep -Fvx "${cronLine}" | crontab -
 }
 
 check() {
-    _require_commands crontab
+    _require_commands crontab git
 }
 
 update() {
-    repo=${home}/.local/apps/init
-    cd ${repo}
-    if git diff-index --quiet HEAD --; then
-        echo "the repo is clean. git pull.."
-        git pull
+    if git -C "${INIT_REPO_ROOT}" diff-index --quiet HEAD --; then
+        echo "the repo is clean. git pull --ff-only.."
+        git -C "${INIT_REPO_ROOT}" pull --ff-only
     else
         echo "the repo has changes."
     fi

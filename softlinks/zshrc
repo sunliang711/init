@@ -75,7 +75,7 @@ ZSH_THEME="zeta"
 # Custom plugins may be added to $ZSH_CUSTOM/plugins/
 # Example format: plugins=(rails git textmate ruby lighthouse)
 # Add wisely, as too many plugins slow down shell startup.
-plugins=(git cp themes timer dirhistory golang rust npm yarn zsh-autosuggestions zsh-syntax-highlighting)
+plugins=(git dirhistory zsh-autosuggestions zsh-syntax-highlighting)
 
 source $ZSH/oh-my-zsh.sh
 
@@ -107,8 +107,22 @@ source $ZSH/oh-my-zsh.sh
 # source ~/.zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
 
 ##CUSTOM BEGIN v3
-export SHELLRC_ROOT=${HOME}/.local/apps/init/shellConfigs
-source ${SHELLRC_ROOT}/index
+_init_zshrc_source="${(%):-%N}"
+[[ -n "${_init_zshrc_source}" ]] || _init_zshrc_source="${HOME}/.zshrc"
+_init_zshrc_source="${_init_zshrc_source:A}"
+while [[ -L "${_init_zshrc_source}" ]]; do
+  _init_zshrc_link_target="$(readlink "${_init_zshrc_source}")"
+  if [[ "${_init_zshrc_link_target}" == /* ]]; then
+    _init_zshrc_source="${_init_zshrc_link_target}"
+  else
+    _init_zshrc_source="${_init_zshrc_source:h}/${_init_zshrc_link_target}"
+  fi
+  _init_zshrc_source="${_init_zshrc_source:A}"
+done
+export INIT_REPO_ROOT="${_init_zshrc_source:A:h:h}"
+export SHELLRC_ROOT="${INIT_REPO_ROOT}/shellConfigs"
+source "${SHELLRC_ROOT}/index"
+unset _init_zshrc_source _init_zshrc_link_target
 ##CUSTOM END v3
 
 #
@@ -119,16 +133,10 @@ bindkey ',,' autosuggest-accept
 
 export UPDATE_ZSH_DAYS=30
 
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
-[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
-
 # Amazon Q post block. Keep at the bottom of this file.
 [[ -f "${HOME}/Library/Application Support/amazon-q/shell/zshrc.post.zsh" ]] && builtin source "${HOME}/Library/Application Support/amazon-q/shell/zshrc.post.zsh"
 
-#THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!
-export SDKMAN_DIR="$HOME/.sdkman"
-[[ -s "$HOME/.sdkman/bin/sdkman-init.sh" ]] && source "$HOME/.sdkman/bin/sdkman-init.sh"
-
-autoload -U +X bashcompinit && bashcompinit
-complete -o nospace -C /usr/local/bin/nomad nomad
+if [ -n "${ENABLE_NOMAD_COMPLETION:-}" ] && command -v nomad >/dev/null 2>&1; then
+  autoload -U +X bashcompinit && bashcompinit
+  complete -o nospace -C "$(command -v nomad)" nomad
+fi

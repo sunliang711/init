@@ -270,22 +270,19 @@ _runAsRoot() {
 # ...
 # EOF
 _run(){
-  if [[ -t 0 ]]; then
-    # interactive mode
-    if [[ $# -eq 0 ]]; then
-      echo "Usage: _run <command> [args...]" >&2
-      return 1
-    fi
+  if [[ $# -gt 0 ]]; then
     (
       set -x
       "$@"
     )
-  else
-    # script mode
+  elif [[ ! -t 0 ]]; then
     (
       set -x
       bash -s
     )
+  else
+    echo "Usage: _run <command> [args...]  or  <script | _run" >&2
+    return 1
   fi
 }
 
