@@ -164,7 +164,7 @@ set() {
             echo "Missing git user.email. Pass --email, set INIT_GIT_USER_EMAIL, or run interactively." >&2
             return 1
         fi
-        email="$(_prompt_for_value "email" "enter email address" "${email}")" || {
+        email="$(_prompt_for_value "email" "enter email address: " "${email}")" || {
             echo "canceled"
             return 1
         }
@@ -175,7 +175,7 @@ set() {
             echo "Missing git user.name. Pass --name, set INIT_GIT_USER_NAME, or run interactively." >&2
             return 1
         fi
-        name="$(_prompt_for_value "name" "enter name" "${name}")" || {
+        name="$(_prompt_for_value "name" "enter name: " "${name}")" || {
             echo "canceled"
             return 1
         }
