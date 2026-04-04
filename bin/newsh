@@ -347,14 +347,14 @@ fi
 new() {
     local name=${1:?'missing script name'}
     cp "${this}/shTmpl" "${name}"
-    $ed "${name}"
+    "${ed}" "${name}"
     chmod +x "${name}"
 }
 # write your code above
 ###############################################################################
 
 em() {
-    $ed $0
+    "${ed}" "$0"
 }
 
 function _help() {
