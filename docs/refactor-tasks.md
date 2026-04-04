@@ -57,6 +57,9 @@ Done when:
 
 ### Task 3: Extract shared shell library
 
+Status:
+Completed.
+
 Goal:
 Remove duplicated bootstrap code across scripts.
 
@@ -69,8 +72,17 @@ Scope:
 Done when:
 
 - Common helpers are defined once and reused across install scripts.
+- Core install entrypoints now source `lib/init-common.sh`.
+
+Notes:
+
+- This task intentionally covered the active install chain plus `tools/updateInit.sh`.
+- `scripts/zed.sh` and `scripts/nvim.sh` still have older bootstrap code and can be handled later if they become part of the refactor scope.
 
 ### Task 4: Make install scripts idempotent
+
+Status:
+Completed.
 
 Goal:
 Allow repeated runs without failure or duplicate setup.
