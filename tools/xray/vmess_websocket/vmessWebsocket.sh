@@ -614,7 +614,7 @@ function print_client_config(){
     cat<<EOF2 1>&2
 =========clash config segment begin=========
 proxies:
-    - name: "vmess_ws"
+    - name: "$domain"
       type: vmess                # 协议类型为 VMess
       server: $domain            # 服务器地址（域名或 IP）
       port: $port                # 服务器端口，通常为 443 以使用 HTTPS 端口
