@@ -103,6 +103,35 @@ _validate_email() {
     esac
 }
 
+_resolve_email() {
+    local output_var="${1:?missing output variable}"
+    local candidate_email="$(_trim "${2:-}")"
+    local non_interactive="${3:-0}"
+
+    while :; do
+        if [ -z "${candidate_email}" ]; then
+            if [ "${non_interactive}" -eq 1 ] || ! _is_interactive_terminal; then
+                echo "Missing git user.email. Pass --email, set INIT_GIT_USER_EMAIL, or run interactively." >&2
+                return 1
+            fi
+        elif _validate_email "${candidate_email}"; then
+            printf -v "${output_var}" '%s' "${candidate_email}"
+            return 0
+        elif [ "${non_interactive}" -eq 1 ] || ! _is_interactive_terminal; then
+            echo "Invalid email address: ${candidate_email}" >&2
+            return 1
+        else
+            echo "Invalid email address: ${candidate_email}" >&2
+        fi
+
+        candidate_email="$(_prompt_for_value "email" "enter email address: " "${candidate_email}")" || {
+            echo "canceled"
+            return 1
+        }
+        candidate_email="$(_trim "${candidate_email}")"
+    done
+}
+
 _set_global_git_config() {
     local key="${1:?missing key}"
     shift
@@ -159,16 +188,7 @@ set() {
     [ -n "${name}" ] || name="$(_trim "$(_current_git_config user.name)")"
     [ -n "${email}" ] || email="$(_trim "$(_current_git_config user.email)")"
 
-    if [ -z "${email}" ]; then
-        if [ "${non_interactive}" -eq 1 ] || ! _is_interactive_terminal; then
-            echo "Missing git user.email. Pass --email, set INIT_GIT_USER_EMAIL, or run interactively." >&2
-            return 1
-        fi
-        email="$(_prompt_for_value "email" "enter email address: " "${email}")" || {
-            echo "canceled"
-            return 1
-        }
-    fi
+    _resolve_email email "${email}" "${non_interactive}" || return 1
 
     if [ -z "${name}" ]; then
         if [ "${non_interactive}" -eq 1 ] || ! _is_interactive_terminal; then
@@ -186,11 +206,6 @@ set() {
 
     if [ -z "${name}" ] || [ -z "${email}" ]; then
         echo "git user.name and user.email must not be empty." >&2
-        return 1
-    fi
-
-    if ! _validate_email "${email}"; then
-        echo "Invalid email address: ${email}" >&2
         return 1
     fi
 
