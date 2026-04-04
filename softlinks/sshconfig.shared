@@ -4,6 +4,50 @@ Host *
     ServerAliveInterval 60
     ServerAliveCountMax 3
 
+Match exec "uname | grep -q Darwin"
+    IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
+
+##################################################
+# home hosts
+Host shroslan
+    HostName 10.1.1.1
+    User userxx1
+    Port 20000
+
+Host socks33
+    HostName 10.1.1.33
+    User eagle
+
+Host service99
+    HostName 10.1.1.99
+    User eagle
+
+##################################################
+# chief hosts
+Host frp200
+    HostName 10.2.1.200
+    User root
+
+Host dev82
+    HostName 10.2.1.82
+    User eagle
+
+Host server83
+    HostName 10.2.1.83
+    User root
+
+Host wallet71
+    HostName 10.2.7.1
+    User finex
+
+Host socks107
+    HostName 10.2.1.107
+    User root
+
+Host hsm
+    HostName 10.2.11.11
+    User admin
+
 Host shros
     HostName sh.rustez.cc
     User userxx1
