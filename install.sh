@@ -220,6 +220,7 @@ Commands:
 Component selection:
   Pass components as positional args: install zsh fzf
   Or use a comma-separated list:      install --components zsh,fzf
+  Or use the explicit full-selection flag: install --all
   Use "all" to select all supported components for that action.
 
 Defaults:
@@ -230,11 +231,13 @@ Defaults:
 Options:
   -l LOG_LEVEL       Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)
   --components LIST  Comma-separated component list
+  --all              Select all components supported by the action
   --dry-run          Show the action summary without applying install or uninstall changes
   --proxy URL        Install only. Also updates global git proxy settings for this machine
 
 Examples:
   $0 install
+  $0 install --all
   $0 install --components zsh,fzf
   $0 install git zsh --proxy http://127.0.0.1:7890
   $0 uninstall --components tmux
@@ -331,6 +334,9 @@ parse_action_args() {
             shift
             [ $# -gt 0 ] || log FATAL "Missing value for --components"
             append_component_tokens "$1"
+            ;;
+        --all)
+            append_component_tokens "all"
             ;;
         --proxy)
             [ "$action" = "install" ] || log FATAL "--proxy is only supported for install"

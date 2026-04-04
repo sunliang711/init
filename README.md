@@ -15,6 +15,7 @@ Useful examples:
 
 ```bash
 bash install.sh install --components zsh,fzf
+bash install.sh install --all --dry-run
 bash install.sh install git zsh --proxy http://127.0.0.1:7890
 bash install.sh uninstall --components zsh,fzf,tmux
 bash install.sh check all
@@ -70,6 +71,7 @@ Extra smoke checks:
 
 ```bash
 bash tools/verify-init.sh smoke
+bash install.sh install --all --dry-run
 bash install.sh install --dry-run git,zsh --proxy http://127.0.0.1:7890
 ```
 

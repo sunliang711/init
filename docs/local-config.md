@@ -9,6 +9,7 @@ This repository is shared across multiple machines, so tracked config should sta
   - Sourced automatically by `shellConfigs/index`.
   - Use it for machine-local environment variables, private registry settings, secrets, proxy opt-ins, and other host-specific shell behavior.
   - Startup flags such as `ENABLE_SDKMAN`, `ENABLE_NOMAD_COMPLETION`, `AUTO_DETECT_PROXY_ENV`, and `AUTO_SCREENFETCH` belong here.
+  - Git identity defaults such as `INIT_GIT_USER_NAME` and `INIT_GIT_USER_EMAIL` also belong here when they differ by machine or account.
   - Start from `shellConfigs/local.example`.
 
 - `softlinks/sshconfig.local`

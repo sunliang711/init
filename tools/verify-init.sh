@@ -26,6 +26,7 @@ syntax_checks() {
 smoke_checks() {
     run bash "${ROOT_DIR}/install.sh" help
     run bash "${ROOT_DIR}/install.sh" components
+    run bash "${ROOT_DIR}/install.sh" install --all --dry-run
     run bash "${ROOT_DIR}/scripts/zsh.sh" help
     run bash "${ROOT_DIR}/scripts/installFzf.sh" help
     run bash "${ROOT_DIR}/scripts/tmux.sh" help

@@ -3,7 +3,7 @@
 ## Status
 
 Current phase:
-Task 7 completed. Refactor plan complete for the current scope.
+Task 7 completed. Refactor plan complete for the current scope, with post-plan hardening finished for `scripts/setGit.sh`.
 
 ## Completed
 
@@ -42,6 +42,10 @@ Task 7 completed. Refactor plan complete for the current scope.
 - Added `README.md` with install usage, rollback notes, and shared/local config guidance.
 - Added `tools/verify-init.sh` to run syntax and smoke checks for the current install chain.
 - Further split SSH config into a tracked `softlinks/sshconfig.shared` layer for cross-machine public hosts plus ignored local override files for LAN and machine-specific entries.
+- Hardened `scripts/setGit.sh set` so it now prefers CLI flags, then `INIT_GIT_USER_NAME` / `INIT_GIT_USER_EMAIL`, then existing global git config, and only falls back to interactive prompts when needed.
+- Kept `whiptail` as an optional interactive UI layer instead of making it the primary input path.
+- Removed the old hardcoded git identity defaults and added explicit validation/error handling for git config writes.
+- Added `install.sh --all` as an explicit shorthand for selecting all components supported by the current action.
 
 ## Verification
 
@@ -80,6 +84,13 @@ Task 7 completed. Refactor plan complete for the current scope.
 - In the same simulation with `ENABLE_SDKMAN=1`, hot startup was about `0.10s` to `0.11s`, confirming the opt-in saves a small but measurable amount when SDKMAN is present but unnecessary.
 - `bash tools/verify-init.sh` passed, covering syntax checks plus help/smoke checks for the main install scripts.
 - `ssh -F softlinks/sshconfig -G bwg` resolved successfully after introducing `softlinks/sshconfig.shared`.
+- `bash scripts/setGit.sh help` passed after the input-flow hardening.
+- Simulated `scripts/setGit.sh set --name ... --email ... --non-interactive` wrote the expected git identity and aliases in a temp home.
+- Simulated `scripts/setGit.sh set --non-interactive` with `INIT_GIT_USER_NAME` / `INIT_GIT_USER_EMAIL` fallback wrote the expected git identity in a temp home.
+- Simulated `scripts/setGit.sh set --non-interactive` with existing global `user.name` / `user.email` fallback reused the expected values in a temp home.
+- Simulated `scripts/setGit.sh set --non-interactive` without a usable email failed with a clear error.
+- Simulated `scripts/setGit.sh set --email invalid-email --non-interactive` failed validation as expected.
+- `bash install.sh install --all --dry-run` passed, confirming the new full-selection flag maps cleanly onto the existing component expansion flow.
 
 ## Pending Confirmation
 

@@ -10,6 +10,8 @@
 # Private registries or company-specific hosts.
 # export GOPRIVATE='gitlab.example.com'
 # export GIT_TERMINAL_PROMPT=1
+# export INIT_GIT_USER_NAME='Your Name'
+# export INIT_GIT_USER_EMAIL='you@example.com'
 
 # Machine-local secrets or service endpoints.
 # export DOCKER_USERNAME='your-username'
