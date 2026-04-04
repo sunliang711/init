@@ -75,7 +75,7 @@ ZSH_THEME="zeta"
 # Custom plugins may be added to $ZSH_CUSTOM/plugins/
 # Example format: plugins=(rails git textmate ruby lighthouse)
 # Add wisely, as too many plugins slow down shell startup.
-plugins=(git cp themes timer dirhistory golang rust npm yarn zsh-autosuggestions zsh-syntax-highlighting)
+plugins=(git dirhistory zsh-autosuggestions zsh-syntax-highlighting)
 
 source $ZSH/oh-my-zsh.sh
 
@@ -120,15 +120,47 @@ bindkey ',,' autosuggest-accept
 export UPDATE_ZSH_DAYS=30
 
 export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
-[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+# Lazy load nvm and related node tooling on first use.
+_load_nvm() {
+  [ -n "${__NVM_LOADED:-}" ] && return 0
+  [ -s "$NVM_DIR/nvm.sh" ] || return 1
+
+  export __NVM_LOADED=1
+  \. "$NVM_DIR/nvm.sh"
+  [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+}
+
+_with_nvm() {
+  local cmd="${1}"
+  shift
+
+  unset -f nvm node npm npx pnpm yarn corepack 2>/dev/null
+  _load_nvm >/dev/null 2>&1 || true
+
+  if command -v "$cmd" >/dev/null 2>&1; then
+    "$cmd" "$@"
+  else
+    echo "command not found: $cmd" >&2
+    return 127
+  fi
+}
+
+nvm() { _with_nvm nvm "$@"; }
+node() { _with_nvm node "$@"; }
+npm() { _with_nvm npm "$@"; }
+npx() { _with_nvm npx "$@"; }
+pnpm() { _with_nvm pnpm "$@"; }
+yarn() { _with_nvm yarn "$@"; }
+corepack() { _with_nvm corepack "$@"; }
 
 # Amazon Q post block. Keep at the bottom of this file.
 [[ -f "${HOME}/Library/Application Support/amazon-q/shell/zshrc.post.zsh" ]] && builtin source "${HOME}/Library/Application Support/amazon-q/shell/zshrc.post.zsh"
 
 #THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!
 export SDKMAN_DIR="$HOME/.sdkman"
-[[ -s "$HOME/.sdkman/bin/sdkman-init.sh" ]] && source "$HOME/.sdkman/bin/sdkman-init.sh"
+if ! command -v sdk >/dev/null 2>&1 && [[ -s "$SDKMAN_DIR/bin/sdkman-init.sh" ]]; then
+  source "$SDKMAN_DIR/bin/sdkman-init.sh"
+fi
 
 autoload -U +X bashcompinit && bashcompinit
 complete -o nospace -C /usr/local/bin/nomad nomad
