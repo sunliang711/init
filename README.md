@@ -112,10 +112,17 @@ Run the lightweight verification script:
 bash tools/verify-init.sh
 ```
 
+It now covers:
+
+- shell syntax checks for the active install chain
+- `shellcheck` when available locally
+- temp-home integration tests for the main component scripts
+
 Extra smoke checks:
 
 ```bash
 bash tools/verify-init.sh smoke
+bash tools/verify-init.sh integration
 bash install.sh install --all --dry-run
 bash install.sh install --dry-run git,zsh --proxy http://127.0.0.1:7890
 ```

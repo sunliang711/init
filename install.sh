@@ -1,20 +1,18 @@
 #!/bin/bash
 
-COMMON_LIB="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/init-common.sh"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+COMMON_LIB="${SCRIPT_DIR}/lib/init-common.sh"
+# shellcheck disable=SC2034
 INIT_CALLER_SOURCE="${BASH_SOURCE[0]}"
 # shellcheck source=lib/init-common.sh
 source "${COMMON_LIB}"
 unset COMMON_LIB INIT_CALLER_SOURCE
 
 # ------------------------------------------------------------
-# 子命令数组
-COMMANDS=("help" "install" "uninstall" "check" "components")
 ALL_COMPONENTS=("git" "zsh" "fzf" "tmux" "vim" "update")
 DEFAULT_INSTALL_COMPONENTS=("zsh" "fzf" "tmux" "vim")
 DEFAULT_UNINSTALL_COMPONENTS=("zsh" "fzf" "tmux")
 DEFAULT_CHECK_COMPONENTS=("${ALL_COMPONENTS[@]}")
-
-repo="https://github.com/sunliang711/init"
 
 ACTION_PROXY=""
 DRY_RUN=0
@@ -395,52 +393,52 @@ run_component_action() {
 
     case "${action}:${component}" in
     check:git)
-        (cd "${this}/scripts" && bash setGit.sh check)
+        (cd "${SCRIPT_DIR}/scripts" && bash setGit.sh check)
         ;;
     install:git)
-        (cd "${this}/scripts" && bash setGit.sh set)
+        (cd "${SCRIPT_DIR}/scripts" && bash setGit.sh set)
         ;;
     check:zsh)
-        (cd "${this}/scripts" && bash zsh.sh check)
+        (cd "${SCRIPT_DIR}/scripts" && bash zsh.sh check)
         ;;
     install:zsh)
-        (cd "${this}/scripts" && bash zsh.sh install)
+        (cd "${SCRIPT_DIR}/scripts" && bash zsh.sh install)
         ;;
     uninstall:zsh)
-        (cd "${this}/scripts" && bash zsh.sh uninstall)
+        (cd "${SCRIPT_DIR}/scripts" && bash zsh.sh uninstall)
         ;;
     check:fzf)
-        (cd "${this}/scripts" && bash installFzf.sh check)
+        (cd "${SCRIPT_DIR}/scripts" && bash installFzf.sh check)
         ;;
     install:fzf)
-        (cd "${this}/scripts" && bash installFzf.sh install)
+        (cd "${SCRIPT_DIR}/scripts" && bash installFzf.sh install)
         ;;
     uninstall:fzf)
-        (cd "${this}/scripts" && bash installFzf.sh uninstall)
+        (cd "${SCRIPT_DIR}/scripts" && bash installFzf.sh uninstall)
         ;;
     check:tmux)
-        (cd "${this}/scripts" && bash tmux.sh check)
+        (cd "${SCRIPT_DIR}/scripts" && bash tmux.sh check)
         ;;
     install:tmux)
-        (cd "${this}/scripts" && bash tmux.sh install)
+        (cd "${SCRIPT_DIR}/scripts" && bash tmux.sh install)
         ;;
     uninstall:tmux)
-        (cd "${this}/scripts" && bash tmux.sh uninstall)
+        (cd "${SCRIPT_DIR}/scripts" && bash tmux.sh uninstall)
         ;;
     check:vim)
-        (cd "${this}/scripts" && bash vim.sh check)
+        (cd "${SCRIPT_DIR}/scripts" && bash vim.sh check)
         ;;
     install:vim)
-        (cd "${this}/scripts" && bash vim.sh user)
+        (cd "${SCRIPT_DIR}/scripts" && bash vim.sh user)
         ;;
     check:update)
-        (cd "${this}/tools" && bash updateInit.sh check)
+        (cd "${SCRIPT_DIR}/tools" && bash updateInit.sh check)
         ;;
     install:update)
-        (cd "${this}/tools" && bash updateInit.sh install)
+        (cd "${SCRIPT_DIR}/tools" && bash updateInit.sh install)
         ;;
     uninstall:update)
-        (cd "${this}/tools" && bash updateInit.sh uninstall)
+        (cd "${SCRIPT_DIR}/tools" && bash updateInit.sh uninstall)
         ;;
     *)
         log FATAL "Unsupported action '${action}' for component '${component}'"
@@ -508,42 +506,4 @@ components() {
     print_component_list
 }
 
-# ------------------------------------------------------------
-
-# 解析命令行参数
-while getopts ":l:" opt; do
-  case ${opt} in
-    l )
-      set_log_level "$OPTARG"
-      ;;
-    \? )
-      show_help
-      exit 1
-      ;;
-    : )
-      echo "Invalid option: $OPTARG requires an argument" 1>&2
-      show_help
-      exit 1
-      ;;
-  esac
-done
-# NOTE: 这里全局使用了OPTIND，如果在某个函数中也使用了getopts，那么在函数的开头需要重置OPTIND (OPTIND=1)
-shift $((OPTIND -1))
-
-# 解析子命令
-command=$1
-shift
-
-if [[ -z "$command" ]]; then
-  show_help
-  exit 0
-fi
-
-case "$command" in
-  help)
-    show_help
-    ;;
-  *)
-    ${command} "$@"
-    ;;
-esac
+_dispatch_cli show_help _resolve_cli_handler "$@"

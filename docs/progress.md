@@ -41,6 +41,10 @@ Task 7 completed. Refactor plan complete for the current scope, with post-plan h
 - Completed Task 7 by adding top-level repo documentation and a reusable verification entrypoint.
 - Added `README.md` with install usage, rollback notes, and shared/local config guidance.
 - Added `tools/verify-init.sh` to run syntax and smoke checks for the current install chain.
+- Extended `tools/verify-init.sh` with optional `shellcheck` coverage plus temp-home integration tests for `setGit`, `zsh`, `fzf`, `tmux`, `vim`, and `updateInit`.
+- Reduced helper drift in the active install chain by moving shared git-remote and key/value state helpers into `lib/init-common.sh`.
+- Reduced CLI boilerplate in the active install chain by moving the shared `-l LOG_LEVEL`, help fallback, and command dispatch flow into `lib/init-common.sh`.
+- Hardened the active install scripts for static analysis, including safer command naming in `scripts/setGit.sh` and path-safe copies in `scripts/vim.sh`.
 - Further split SSH config into a tracked `softlinks/sshconfig.shared` layer for cross-machine public hosts plus ignored local override files for LAN and machine-specific entries.
 - Hardened `scripts/setGit.sh set` so it now prefers CLI flags, then `INIT_GIT_USER_NAME` / `INIT_GIT_USER_EMAIL`, then existing global git config, and only falls back to interactive prompts when needed.
 - Kept `whiptail` as an optional interactive UI layer instead of making it the primary input path.
@@ -95,6 +99,8 @@ Task 7 completed. Refactor plan complete for the current scope, with post-plan h
 - Simulated `scripts/setGit.sh set --email invalid-email --non-interactive` failed validation as expected.
 - `bash install.sh install --all --dry-run` passed, confirming the new full-selection flag maps cleanly onto the existing component expansion flow.
 - `bash tools/verify-init.sh` passed after removing hardcoded runtime repo-path assumptions from the active install chain.
+- `bash tools/verify-init.sh syntax` passed with `shellcheck -x -e SC1091` on the active install chain.
+- `bash tools/verify-init.sh integration` passed, covering temp-home install/uninstall flows for the main component scripts without touching the real home directory.
 - Simulated `scripts/zsh.sh install` in a temp home wrote `~/.ssh/config` with absolute includes pointing at the current repo path, and simulated uninstall removed the generated wrapper cleanly.
 
 ## Pending Confirmation

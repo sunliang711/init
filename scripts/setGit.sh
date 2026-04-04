@@ -1,32 +1,34 @@
 #!/bin/bash
 
-COMMON_LIB="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/../lib/init-common.sh"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+COMMON_LIB="${SCRIPT_DIR}/../lib/init-common.sh"
+# shellcheck disable=SC2034
 INIT_CALLER_SOURCE="${BASH_SOURCE[0]}"
 # shellcheck source=../lib/init-common.sh
 source "${COMMON_LIB}"
-unset COMMON_LIB INIT_CALLER_SOURCE
-
-# 显示帮助信息
-show_help() {
-  echo "Usage: $0 [-l LOG_LEVEL] <command> [options]"
-  echo ""
-  echo "Commands:"
-  for cmd in "${COMMANDS[@]}"; do
-    echo "  $cmd"
-  done
-  echo ""
-  echo "Options:"
-  echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
-  echo ""
-  echo "Set command options:"
-  echo "  --name NAME          Set git user.name"
-  echo "  --email EMAIL        Set git user.email"
-  echo "  --non-interactive    Fail instead of prompting when values are missing"
-}
+unset COMMON_LIB INIT_CALLER_SOURCE SCRIPT_DIR
 
 # ------------------------------------------------------------
 # 子命令数组
+# shellcheck disable=SC2034
 COMMANDS=("help" "check" "set" "unset")
+# shellcheck disable=SC2034
+HELP_OPTIONS=("-l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)")
+# shellcheck disable=SC2034
+SET_COMMAND_OPTIONS=(
+    "--name NAME          Set git user.name"
+    "--email EMAIL        Set git user.email"
+    "--non-interactive    Fail instead of prompting when values are missing"
+)
+
+show_help() {
+    _show_standard_help \
+        "$0 [-l LOG_LEVEL] <command> [options]" \
+        COMMANDS \
+        HELP_OPTIONS \
+        "Set command options" \
+        SET_COMMAND_OPTIONS
+}
 
 check() {
     _require_commands git
@@ -105,8 +107,10 @@ _validate_email() {
 
 _resolve_email() {
     local output_var="${1:?missing output variable}"
-    local candidate_email="$(_trim "${2:-}")"
+    local candidate_email
     local non_interactive="${3:-0}"
+
+    candidate_email="$(_trim "${2:-}")"
 
     while :; do
         if [ -z "${candidate_email}" ]; then
@@ -142,7 +146,7 @@ _set_global_git_config() {
     }
 }
 
-set() {
+apply_git_config() {
     check
 
     local name="${INIT_GIT_USER_NAME:-}"
@@ -236,7 +240,7 @@ set() {
     fi
 }
 
-unset() {
+clear_git_config() {
     local keys=(
         user.email
         user.name
@@ -256,45 +260,19 @@ unset() {
         git config --global --unset-all "${key}" >/dev/null 2>&1 || true
     done
 }
-# write your code above
 
+_resolve_set_git_handler() {
+    case "${1:?missing command}" in
+    set)
+        printf '%s\n' "apply_git_config"
+        ;;
+    unset)
+        printf '%s\n' "clear_git_config"
+        ;;
+    *)
+        printf '%s\n' "$1"
+        ;;
+    esac
+}
 
-# ------------------------------------------------------------
-
-# 解析命令行参数
-while getopts ":l:" opt; do
-  case ${opt} in
-    l )
-      set_log_level "$OPTARG"
-      ;;
-    \? )
-      show_help
-      exit 1
-      ;;
-    : )
-      echo "Invalid option: $OPTARG requires an argument" 1>&2
-      show_help
-      exit 1
-      ;;
-  esac
-done
-# NOTE: 这里全局使用了OPTIND，如果在某个函数中也使用了getopts，那么在函数的开头需要重置OPTIND (OPTIND=1)
-shift $((OPTIND -1))
-
-# 解析子命令
-command=$1
-shift
-
-if [[ -z "$command" ]]; then
-  show_help
-  exit 0
-fi
-
-case "$command" in
-  help)
-    show_help
-    ;;
-  *)
-    ${command} "$@"
-    ;;
-esac
+_dispatch_cli show_help _resolve_set_git_handler "$@"

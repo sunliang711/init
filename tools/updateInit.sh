@@ -1,29 +1,25 @@
 #!/bin/bash
 
-COMMON_LIB="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/../lib/init-common.sh"
+SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+COMMON_LIB="${SCRIPT_DIR}/../lib/init-common.sh"
+# shellcheck disable=SC2034
 INIT_CALLER_SOURCE="${BASH_SOURCE[0]}"
 # shellcheck source=../lib/init-common.sh
 source "${COMMON_LIB}"
-unset COMMON_LIB INIT_CALLER_SOURCE
-
-# 显示帮助信息
-show_help() {
-  echo "Usage: $0 [-l LOG_LEVEL] <command>"
-  echo ""
-  echo "Commands:"
-  for cmd in "${COMMANDS[@]}"; do
-    echo "  $cmd"
-  done
-  echo ""
-  echo "Options:"
-  echo "  -l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)"
-}
+unset COMMON_LIB INIT_CALLER_SOURCE SCRIPT_DIR
 
 # ------------------------------------------------------------
 # 子命令数组
+# shellcheck disable=SC2034
 COMMANDS=("help" "install" "uninstall" "check" "update")
+# shellcheck disable=SC2034
+HELP_OPTIONS=("-l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)")
 
-thisScript="${this}/updateInit.sh"
+show_help() {
+    _show_standard_help "$0 [-l LOG_LEVEL] <command>" COMMANDS HELP_OPTIONS
+}
+
+thisScript="${SCRIPT_DIR}/updateInit.sh"
 cronLine="0 0 * * * ${thisScript} update >/dev/null 2>&1"
 # install to crontab
 install() {
@@ -63,42 +59,4 @@ update() {
 }
 
 
-# ------------------------------------------------------------
-
-# 解析命令行参数
-while getopts ":l:" opt; do
-  case ${opt} in
-    l )
-      set_log_level "$OPTARG"
-      ;;
-    \? )
-      show_help
-      exit 1
-      ;;
-    : )
-      echo "Invalid option: $OPTARG requires an argument" 1>&2
-      show_help
-      exit 1
-      ;;
-  esac
-done
-# NOTE: 这里全局使用了OPTIND，如果在某个函数中也使用了getopts，那么在函数的开头需要重置OPTIND (OPTIND=1)
-shift $((OPTIND -1))
-
-# 解析子命令
-command=$1
-shift
-
-if [[ -z "$command" ]]; then
-  show_help
-  exit 0
-fi
-
-case "$command" in
-  help)
-    show_help
-    ;;
-  *)
-    ${command} "$@"
-    ;;
-esac
+_dispatch_cli show_help _resolve_cli_handler "$@"

@@ -21,9 +21,10 @@ _init_resolve_script_dir() {
     )
 }
 
+# shellcheck disable=SC2034
 this="$(_init_resolve_script_dir "${INIT_CALLER_SOURCE:-${BASH_SOURCE[1]:-${BASH_SOURCE[0]}}}")"
 INIT_LIB_DIR="$(_init_resolve_script_dir "${BASH_SOURCE[0]}")"
-INIT_REPO_ROOT="$(CDPATH= cd -- "${INIT_LIB_DIR}/.." && pwd)"
+INIT_REPO_ROOT="$(CDPATH='' cd -- "${INIT_LIB_DIR}/.." && pwd)"
 export INIT_LIB_DIR INIT_REPO_ROOT
 
 INIT_TARGET_USER="${SUDO_USER:-$(id -un)}"
@@ -44,7 +45,7 @@ else
     export PATH
 fi
 
-if which tput >/dev/null 2>&1; then
+if command -v tput >/dev/null 2>&1; then
     ncolors=$(tput colors 2>/dev/null)
 fi
 if [ -t 1 ] && [ -n "${ncolors:-}" ] && [ "${ncolors}" -ge 8 ]; then
@@ -67,13 +68,21 @@ else
     NORMAL=""
 fi
 NC="${NORMAL}"
+# shellcheck disable=SC2034
 red="${RED}"
+# shellcheck disable=SC2034
 green="${GREEN}"
+# shellcheck disable=SC2034
 yellow="${YELLOW}"
+# shellcheck disable=SC2034
 blue="${BLUE}"
+# shellcheck disable=SC2034
 magenta="${MAGENTA}"
+# shellcheck disable=SC2034
 cyan="${CYAN}"
+# shellcheck disable=SC2034
 bold="${BOLD}"
+# shellcheck disable=SC2034
 reset="${NORMAL}"
 
 LOG_LEVEL_FATAL=1
@@ -157,13 +166,49 @@ _files_match() {
     cmp -s "${left}" "${right}"
 }
 
+_git_remote_matches() {
+    local repo_dir="${1:?missing repo dir}"
+    local expected_remote="${2:?missing expected remote}"
+    local current_remote
+
+    [ -d "${repo_dir}/.git" ] || return 1
+    current_remote="$(git -C "${repo_dir}" config --get remote.origin.url 2>/dev/null)"
+    [ "${current_remote}" = "${expected_remote}" ]
+}
+
+_kv_file_get() {
+    local file="${1:?missing file}"
+    local key="${2:?missing key}"
+
+    [ -f "${file}" ] || return 1
+    awk -F= -v key="${key}" '$1 == key { print $2 }' "${file}"
+}
+
+_write_kv_file() {
+    local file="${1:?missing file}"
+    shift
+
+    if [ $(( $# % 2 )) -ne 0 ]; then
+        echo "need key/value pairs for ${file}" >&2
+        return 1
+    fi
+
+    _ensure_parent_dir "${file}"
+    : >"${file}"
+
+    while [ $# -gt 0 ]; do
+        printf '%s=%s\n' "$1" "$2" >>"${file}"
+        shift 2
+    done
+}
+
 _canonicalize_path() {
     local path="${1:?missing path}"
     local dir
     local base
 
     if [ -L "${path}" ]; then
-        dir="$(CDPATH= cd -- "$(dirname -- "${path}")" && pwd -P)" || return 1
+        dir="$(CDPATH='' cd -- "$(dirname -- "${path}")" && pwd -P)" || return 1
         path="$(readlink "${path}")"
         case "${path}" in
         /*)
@@ -176,7 +221,7 @@ _canonicalize_path() {
 
     [ -e "${path}" ] || [ -L "${path}" ] || return 1
 
-    dir="$(CDPATH= cd -- "$(dirname -- "${path}")" && pwd -P)" || return 1
+    dir="$(CDPATH='' cd -- "$(dirname -- "${path}")" && pwd -P)" || return 1
     base="$(basename -- "${path}")"
     printf '%s/%s\n' "${dir}" "${base}"
 }
@@ -257,27 +302,32 @@ _wait() {
 }
 
 _parseOptions() {
+    # shellcheck disable=SC2034
+    local options
+
     if [ "$(uname)" != "Linux" ]; then
         echo "getopt only on Linux"
         exit 1
     fi
 
-    options=$(getopt -o dv --long debug --long name: -- "$@")
-    [ $? -eq 0 ] || {
+    if ! options=$(getopt -o dv --long debug --long name: -- "$@"); then
         echo "Incorrect option provided"
         exit 1
-    }
+    fi
     eval set -- "${options}"
     while true; do
         case "$1" in
         -v)
+            # shellcheck disable=SC2034
             VERBOSE=1
             ;;
         -d | --debug)
+            # shellcheck disable=SC2034
             DEBUG=1
             ;;
         --name)
             shift
+            # shellcheck disable=SC2034
             NAME="$1"
             ;;
         --)
@@ -289,16 +339,18 @@ _parseOptions() {
     done
 }
 
-ed=vi
+# shellcheck disable=SC2034
+ed="vi"
 if _command_exists vim; then
-    ed=vim
+    ed="vim"
 fi
 if _command_exists nvim; then
-    ed=nvim
+    ed="nvim"
 fi
 if [ -n "${editor:-}" ]; then
     ed="${editor}"
 fi
+export ed
 
 checkRoot() {
     if [ "$(id -u)" -ne 0 ]; then
@@ -334,19 +386,6 @@ runAsRoot() {
 }
 
 _runAsRoot() {
-    local run_as_root
-
-    if [ "$(id -u)" -eq 0 ]; then
-        run_as_root="bash -s"
-    elif command -v sudo >/dev/null 2>&1; then
-        run_as_root="sudo -E bash -s"
-    elif command -v su >/dev/null 2>&1; then
-        run_as_root="su -c 'bash -s'"
-    else
-        echo "Error: need sudo or su to run as root." >&2
-        return 1
-    fi
-
     if [ -t 0 ]; then
         if [ $# -eq 0 ]; then
             echo "Usage: _runAsRoot <command> [args...]" >&2
@@ -360,7 +399,16 @@ _runAsRoot() {
         fi
     else
         echo "[Running script as root via stdin]"
-        ${run_as_root}
+        if [ "$(id -u)" -eq 0 ]; then
+            bash -s
+        elif command -v sudo >/dev/null 2>&1; then
+            sudo -E bash -s
+        elif command -v su >/dev/null 2>&1; then
+            su -c "bash -s"
+        else
+            echo "Error: need sudo or su to run as root." >&2
+            return 1
+        fi
     fi
 }
 
@@ -368,9 +416,9 @@ LOG_LEVELS=("FATAL" "ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
 MAX_LEVEL_LENGTH=0
 
 for level in "${LOG_LEVELS[@]}"; do
-    len=${#level}
-    if ((len > MAX_LEVEL_LENGTH)); then
-        MAX_LEVEL_LENGTH=${len}
+    local_len=${#level}
+    if ((local_len > MAX_LEVEL_LENGTH)); then
+        MAX_LEVEL_LENGTH=${local_len}
     fi
 done
 MAX_LEVEL_LENGTH=$((MAX_LEVEL_LENGTH + 2))
@@ -453,4 +501,91 @@ set_log_level() {
         echo "无效的日志级别: $1"
         ;;
     esac
+}
+
+_print_help_section() {
+    local title="${1:?missing title}"
+    local array_name="${2:?missing array name}"
+    # shellcheck disable=SC2034
+    local line
+
+    printf '%s:\n' "${title}"
+    eval "for line in \"\${${array_name}[@]}\"; do printf '  %s\n' \"\${line}\"; done"
+}
+
+_show_standard_help() {
+    local usage="${1:?missing usage}"
+    local commands_array="${2:?missing commands array}"
+    local options_array="${3:-}"
+    local title
+    local array_name
+
+    printf 'Usage: %s\n\n' "${usage}"
+    _print_help_section "Commands" "${commands_array}"
+
+    if [ -n "${options_array}" ]; then
+        printf '\n'
+        _print_help_section "Options" "${options_array}"
+    fi
+
+    shift 3
+    while [ $# -gt 0 ]; do
+        title="${1:?missing section title}"
+        array_name="${2:?missing section array}"
+        printf '\n'
+        _print_help_section "${title}" "${array_name}"
+        shift 2
+    done
+}
+
+_resolve_cli_handler() {
+    printf '%s\n' "${1:?missing command}"
+}
+
+_dispatch_cli() {
+    local help_fn="${1:?missing help function}"
+    local resolver_fn="${2:-_resolve_cli_handler}"
+    local opt
+    local command
+    local handler
+
+    shift 2
+
+    OPTIND=1
+    while getopts ":l:" opt; do
+        case "${opt}" in
+        l)
+            set_log_level "${OPTARG}"
+            ;;
+        \?)
+            "${help_fn}"
+            return 1
+            ;;
+        :)
+            echo "Invalid option: ${OPTARG} requires an argument" >&2
+            "${help_fn}"
+            return 1
+            ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+
+    command="${1:-help}"
+    if [ $# -gt 0 ]; then
+        shift
+    fi
+
+    if [ "${command}" = "help" ]; then
+        "${help_fn}"
+        return 0
+    fi
+
+    handler="$("${resolver_fn}" "${command}")" || return 1
+    if [ -z "${handler}" ] || ! declare -F "${handler}" >/dev/null 2>&1; then
+        echo "Unknown command: ${command}" >&2
+        "${help_fn}"
+        return 1
+    fi
+
+    "${handler}" "$@"
 }
