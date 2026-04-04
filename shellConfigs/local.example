@@ -1,0 +1,23 @@
+# Machine-local shell overrides.
+# Copy this file to shellConfigs/local on each machine as needed.
+
+# Startup behaviors that should stay opt-in per machine.
+# export AUTO_DETECT_PROXY_ENV=1
+# export AUTO_SCREENFETCH=1
+# export ENABLE_SDKMAN=1
+# export ENABLE_NOMAD_COMPLETION=1
+
+# Private registries or company-specific hosts.
+# export GOPRIVATE='gitlab.example.com'
+# export GIT_TERMINAL_PROMPT=1
+
+# Machine-local secrets or service endpoints.
+# export DOCKER_USERNAME='your-username'
+# export DOCKER_PASSWORD='your-password'
+# export CROSSSHARE_SERVER='https://example.internal'
+
+# Add extra machine-local PATH entries here if needed.
+# append_paths "$HOME/.local/custom/bin"
+
+# SDKMAN now loads only when ENABLE_SDKMAN is set.
+# Avoid hardcoded absolute paths here unless this machine really needs them.

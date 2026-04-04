@@ -1,93 +1,10 @@
-# Added by OrbStack: 'orb' SSH host for Linux machines
-# This only works if it's at the top of ssh_config (before any Host blocks).
-# This won't be added again if you remove it.
-Include ~/.orbstack/ssh/config
-
-# Include 指令必须放在Host指令之前!!
-#Include ~/.ssh/local
-
-Match exec "uname | grep -q Darwin"
-    IdentityAgent "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock"
-
-##################################################
-# home hosts
-Host shros
-    HostName sh.rustez.cc
-    User userxx1
-    Port 20000
-
-Host shroslan
-    HostName 10.1.1.1
-    User userxx1
-    Port 20000
-
-
-Host socks33
-    HostName 10.1.1.33
-    User eagle
-
-Host service99
-    HostName 10.1.1.99
-    User eagle
-##################################################
+# Shared SSH config for all machines.
+# Keep machine-specific hosts, agents, and network-specific settings in one of:
+#   - ~/.local/apps/init/softlinks/sshconfig.local
+#   - ~/.ssh/config.local
 #
-Host zhiying
-    HostName 8.148.67.125
-    User root
-    Port 22
-
-##################################################
-# chief hosts
-Host frp200
-    HostName 10.2.1.200
-    User root
-
-Host dev82
-    HostName 10.2.1.82
-    User eagle
-
-Host server83
-    HostName 10.2.1.83
-    User root
-
-Host wallet71
-    HostName 10.2.7.1
-    User finex
-
-Host socks107
-    HostName 10.2.1.107
-    User root
-
-Host hsm
-    HostName 10.2.11.11
-    User admin
-
-##################################################
-
-##################################################
-# vps hosts
-Host bwg
-    HostName 45.78.51.79
-    User root
-    Port 29837
-
-Host yang
-    # HostName 154.17.4.62
-    HostName 104.194.66.229
-    User root
-
-Host dmit
-    HostName 154.17.4.62
-    User root
-
-Host aliyun
-    HostName aliyun.rustez.cc
-    User eagle
-    Port 22
-
-
-Host yunqing
-    HostName 124.156.226.147
-    User ubuntu
-##################################################
-
+# Include directives must appear before any Host blocks.
+# Local includes come first so they can override shared aliases when needed.
+Include ~/.local/apps/init/softlinks/sshconfig.local
+Include ~/.ssh/config.local
+Include ~/.local/apps/init/softlinks/sshconfig.shared

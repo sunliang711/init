@@ -3,7 +3,7 @@
 ## Status
 
 Current phase:
-Task 4 completed. Ready for Task 5.
+Task 7 completed. Refactor plan complete for the current scope.
 
 ## Completed
 
@@ -28,6 +28,20 @@ Task 4 completed. Ready for Task 5.
 - Updated `scripts/tmux.sh` to back up unmanaged `~/.tmux.conf` once before writing the managed config and to skip redundant TPM clones.
 - Updated `scripts/vim.sh` to back up unmanaged `~/.vimrc`, skip redundant nerdtree clones, and run helptags in silent batch mode.
 - Updated `scripts/installFzf.sh` to repair missing shell integration files on rerun when the existing repo matches the expected fzf clone.
+- Completed Task 5 by separating shared config from machine-local config more explicitly.
+- Replaced the tracked SSH host inventory in `softlinks/sshconfig` with a shared wrapper that includes ignored local SSH files instead.
+- Added tracked templates for machine-local shell overrides and SSH config in `shellConfigs/local.example` and `softlinks/sshconfig.local.example`.
+- Added `docs/local-config.md` to document the shared/local boundary and the intended local extension points.
+- Removed machine-local Zed SSH connections and project paths from the tracked `softlinks/zed/settings.json`.
+- Moved Nomad shell completion in `softlinks/zshrc` behind the local opt-in flag `ENABLE_NOMAD_COMPLETION`.
+- Completed Task 6 by profiling the remaining shell startup hotspots and tightening the remaining shared startup defaults.
+- Confirmed the remaining dominant startup cost is `oh-my-zsh` completion setup (`compinit` and `compdump`), while the repo-managed additions are now comparatively small.
+- Moved shared SDKMAN initialization in `softlinks/zshrc` behind the local opt-in flag `ENABLE_SDKMAN`.
+- Aligned the current machine's ignored `shellConfigs/local` to the new `ENABLE_SDKMAN=1` flag instead of a hardcoded absolute SDKMAN source path.
+- Completed Task 7 by adding top-level repo documentation and a reusable verification entrypoint.
+- Added `README.md` with install usage, rollback notes, and shared/local config guidance.
+- Added `tools/verify-init.sh` to run syntax and smoke checks for the current install chain.
+- Further split SSH config into a tracked `softlinks/sshconfig.shared` layer for cross-machine public hosts plus ignored local override files for LAN and machine-specific entries.
 
 ## Verification
 
@@ -57,12 +71,19 @@ Task 4 completed. Ready for Task 5.
 - Simulated `scripts/installFzf.sh install` repaired missing `~/.fzf.zsh` and `~/.fzf.bash` files from an existing matching repo and stayed stable on rerun.
 - Simulated `scripts/tmux.sh install` backed up an unmanaged `~/.tmux.conf` once and stayed stable on rerun.
 - Simulated `scripts/vim.sh user` backed up an unmanaged `~/.vimrc` once, reused an existing nerdtree clone, and stayed stable on rerun.
+- `zsh -n softlinks/zshrc` passed after moving Nomad completion behind a local opt-in flag.
+- `ssh -F softlinks/sshconfig -G localhost` passed with no local override files present, confirming the shared SSH wrapper stays parseable by default.
+- Re-audited the shared SSH config and tracked Zed settings to confirm machine-specific host aliases and local project paths were removed from the tracked layer.
+- Profiled zsh startup with `zprof`; the largest remaining costs were `compinit`, `compdef`, and `compdump` from `oh-my-zsh`, while repo-managed additions were much smaller.
+- In a writable temp-home simulation without ignored local files, hot startup stabilized around `0.08s`.
+- In a writable temp-home simulation with SDKMAN installed but not enabled locally, hot startup stabilized around `0.09s`.
+- In the same simulation with `ENABLE_SDKMAN=1`, hot startup was about `0.10s` to `0.11s`, confirming the opt-in saves a small but measurable amount when SDKMAN is present but unnecessary.
+- `bash tools/verify-init.sh` passed, covering syntax checks plus help/smoke checks for the main install scripts.
+- `ssh -F softlinks/sshconfig -G bwg` resolved successfully after introducing `softlinks/sshconfig.shared`.
 
 ## Pending Confirmation
 
-- Task 5: Separate shared config from machine-local config.
-- Task 6: Continue shell startup optimization.
-- Task 7: Add repo documentation and verification.
+- None for the current refactor plan.
 
 ## Notes
 

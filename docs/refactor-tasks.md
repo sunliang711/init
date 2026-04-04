@@ -99,6 +99,9 @@ Done when:
 
 ### Task 5: Separate shared config from machine-local config
 
+Status:
+Completed.
+
 Goal:
 Make the sync boundary explicit.
 
@@ -112,7 +115,16 @@ Done when:
 
 - Shared files no longer assume machine-specific tools, secrets, or local paths by default.
 
+Notes:
+
+- `shellConfigs/local` remains the main ignored shell extension point.
+- `softlinks/sshconfig` now includes machine-local SSH files instead of carrying host-specific entries directly.
+- `softlinks/zed/settings.json` keeps only shareable editor preferences.
+
 ### Task 6: Continue shell startup optimization
+
+Status:
+Completed.
 
 Goal:
 Address the remaining major startup costs after the first round.
@@ -128,7 +140,15 @@ Done when:
 
 - Startup cost is reduced further without breaking common workflows.
 
+Notes:
+
+- The remaining dominant hotspot is still `oh-my-zsh` completion initialization (`compinit` and `compdump`).
+- The repo-specific follow-up changes focused on machine-local opt-ins with low behavior risk instead of patching `oh-my-zsh` internals.
+
 ### Task 7: Add repo documentation and verification
+
+Status:
+Completed.
 
 Goal:
 Make future changes safer and easier to understand.
@@ -142,6 +162,11 @@ Scope:
 Done when:
 
 - A new machine user can understand what the repo changes and how to test it.
+
+Notes:
+
+- Added a root `README.md` covering install flow, shared/local boundaries, rollback notes, and verification commands.
+- Added `tools/verify-init.sh` as the lightweight verification entrypoint for the current install chain.
 
 ## Execution Policy
 

@@ -1,0 +1,37 @@
+# Shared SSH config for hosts that are expected to be reachable across machines.
+
+Host *
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+
+Host shros
+    HostName sh.rustez.cc
+    User userxx1
+    Port 20000
+
+Host zhiying
+    HostName 8.148.67.125
+    User root
+    Port 22
+
+Host bwg
+    HostName 45.78.51.79
+    User root
+    Port 29837
+
+Host yang
+    HostName 104.194.66.229
+    User root
+
+Host dmit
+    HostName 154.17.4.62
+    User root
+
+Host aliyun
+    HostName aliyun.rustez.cc
+    User eagle
+    Port 22
+
+Host yunqing
+    HostName 124.156.226.147
+    User ubuntu

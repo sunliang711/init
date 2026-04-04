@@ -156,11 +156,13 @@ corepack() { _with_nvm corepack "$@"; }
 # Amazon Q post block. Keep at the bottom of this file.
 [[ -f "${HOME}/Library/Application Support/amazon-q/shell/zshrc.post.zsh" ]] && builtin source "${HOME}/Library/Application Support/amazon-q/shell/zshrc.post.zsh"
 
-#THIS MUST BE AT THE END OF THE FILE FOR SDKMAN TO WORK!!!
+# Opt in from shellConfigs/local when this machine needs SDKMAN on startup.
 export SDKMAN_DIR="$HOME/.sdkman"
-if ! command -v sdk >/dev/null 2>&1 && [[ -s "$SDKMAN_DIR/bin/sdkman-init.sh" ]]; then
+if [ -n "${ENABLE_SDKMAN:-}" ] && ! command -v sdk >/dev/null 2>&1 && [[ -s "$SDKMAN_DIR/bin/sdkman-init.sh" ]]; then
   source "$SDKMAN_DIR/bin/sdkman-init.sh"
 fi
 
-autoload -U +X bashcompinit && bashcompinit
-complete -o nospace -C /usr/local/bin/nomad nomad
+if [ -n "${ENABLE_NOMAD_COMPLETION:-}" ] && command -v nomad >/dev/null 2>&1; then
+  autoload -U +X bashcompinit && bashcompinit
+  complete -o nospace -C "$(command -v nomad)" nomad
+fi
