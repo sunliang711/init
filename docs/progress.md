@@ -3,7 +3,7 @@
 ## Status
 
 Current phase:
-Task 1 completed. Waiting for confirmation before starting Task 2.
+Task 2 completed. Waiting for confirmation before starting Task 3.
 
 ## Completed
 
@@ -14,6 +14,11 @@ Task 1 completed. Waiting for confirmation before starting Task 2.
 - Stopped automatic `screenfetch` on every shell startup unless `AUTO_SCREENFETCH` is set locally.
 - Completed Task 1 by making `install.sh` componentized with `install`, `uninstall`, `check`, and `components` command support.
 - Added component selection, safer default install components, install summaries, and `--dry-run` support in `install.sh`.
+- Completed Task 2 by shrinking uninstall scope to repo-managed artifacts only.
+- Updated `scripts/zsh.sh` to remove repo-owned symlinks, managed blocks, and plugin clones instead of deleting entire user directories.
+- Updated `scripts/installFzf.sh` and `scripts/tmux.sh` to track managed artifacts in local state files and uninstall only those artifacts.
+- Updated `tools/updateInit.sh` to remove only the exact cron entry created by this repo.
+- Updated `scripts/setGit.sh unset` to clear only the keys managed by the script instead of deleting the whole `~/.gitconfig`.
 
 ## Verification
 
@@ -26,10 +31,19 @@ Task 1 completed. Waiting for confirmation before starting Task 2.
 - `bash install.sh check --components zsh,fzf` passed.
 - `bash install.sh check all` passed.
 - `bash install.sh install --dry-run git,zsh --proxy http://127.0.0.1:7890` passed.
+- `bash -n scripts/zsh.sh` passed.
+- `bash -n scripts/installFzf.sh` passed.
+- `bash -n scripts/tmux.sh` passed.
+- `bash -n tools/updateInit.sh` passed.
+- `bash -n scripts/setGit.sh` passed.
+- Simulated `scripts/zsh.sh uninstall` removed only repo-managed symlinks, theme links, plugin clones, and managed config blocks while preserving unrelated files.
+- Simulated `scripts/installFzf.sh uninstall` removed only the managed `fzf` dir and generated shell files.
+- Simulated `scripts/tmux.sh uninstall` removed only the managed tmux config and TPM clone while preserving unrelated tmux files.
+- Simulated `scripts/setGit.sh unset` preserved unrelated git config entries.
+- Simulated `tools/updateInit.sh install/uninstall` kept unrelated cron entries and removed only the exact repo-managed cron line.
 
 ## Pending Confirmation
 
-- Task 2: Reduce destructive uninstall behavior.
 - Task 3: Extract shared shell library.
 - Task 4: Make install scripts idempotent.
 - Task 5: Separate shared config from machine-local config.

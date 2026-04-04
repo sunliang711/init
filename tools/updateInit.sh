@@ -363,16 +363,29 @@ show_help() {
 COMMANDS=("help" "install" "uninstall" "check" "update")
 
 thisScript="${this}/updateInit.sh"
+cronLine="0 0 * * * ${thisScript} update >/dev/null 2>&1"
 # install to crontab
 install() {
+    local existing_crontab
+    existing_crontab="$(crontab -l 2>/dev/null || true)"
+
+    if printf '%s\n' "${existing_crontab}" | grep -Fqx "${cronLine}"; then
+        echo "update crontab already exists"
+        return 0
+    fi
+
     (
-        crontab -l
-        echo "0 0 * * * ${thisScript} update >/dev/null 2>&1"
-    ) | crontab -
+        printf '%s\n' "${existing_crontab}"
+        echo "${cronLine}"
+    ) | sed '/^$/d' | crontab -
 }
 
 uninstall() {
-    (crontab -l | grep -v updateInit.sh) | crontab -
+    local existing_crontab
+    existing_crontab="$(crontab -l 2>/dev/null || true)"
+    [ -n "${existing_crontab}" ] || return 0
+
+    printf '%s\n' "${existing_crontab}" | grep -Fvx "${cronLine}" | crontab -
 }
 
 check() {

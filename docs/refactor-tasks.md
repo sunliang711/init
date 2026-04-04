@@ -39,6 +39,9 @@ Done when:
 
 ### Task 2: Reduce destructive uninstall behavior
 
+Status:
+Completed.
+
 Goal:
 Make uninstall operations remove only artifacts created by this repo.
 

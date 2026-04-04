@@ -361,6 +361,45 @@ show_help() {
 # ------------------------------------------------------------
 # 子命令数组
 COMMANDS=("help" "check" "install" "uninstall")
+STATE_DIR="${home}/.local/state/init"
+STATE_FILE="${STATE_DIR}/fzf.state"
+FZF_DIR="${HOME}/.fzf"
+FZF_REPO="https://github.com/junegunn/fzf.git"
+FZF_ZSH_FILE="${HOME}/.fzf.zsh"
+FZF_BASH_FILE="${HOME}/.fzf.bash"
+
+_ensure_state_dir() {
+    mkdir -p "${STATE_DIR}"
+}
+
+_write_state() {
+    _ensure_state_dir
+    cat >"${STATE_FILE}" <<EOF
+MANAGED_FZF_DIR=${1:-0}
+MANAGED_FZF_ZSH=${2:-0}
+MANAGED_FZF_BASH=${3:-0}
+EOF
+}
+
+_state_get() {
+    local key="${1:?missing state key}"
+    [ -f "${STATE_FILE}" ] || return 1
+    awk -F= -v key="${key}" '$1 == key { print $2 }' "${STATE_FILE}"
+}
+
+_cleanup_state_file() {
+    [ -f "${STATE_FILE}" ] && /bin/rm -f "${STATE_FILE}"
+}
+
+_git_remote_matches() {
+    local repo_dir="${1:?missing repo dir}"
+    local expected_remote="${2:?missing expected remote}"
+    local current_remote
+
+    [ -d "${repo_dir}/.git" ] || return 1
+    current_remote="$(git -C "${repo_dir}" config --get remote.origin.url 2>/dev/null)"
+    [ "${current_remote}" = "${expected_remote}" ]
+}
 
 check() {
     _require_commands git
@@ -369,12 +408,24 @@ check() {
 install() {
     cd "${this}"
     echo "Install fzf ..."
+    local managed_fzf_dir=0
+    local managed_fzf_zsh=0
+    local managed_fzf_bash=0
+    local fzf_zsh_existed=0
+    local fzf_bash_existed=0
 
-    if [ ! -d ~/.fzf ]; then
-        git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf
-        ~/.fzf/install --all
+    [ -e "${FZF_ZSH_FILE}" ] && fzf_zsh_existed=1
+    [ -e "${FZF_BASH_FILE}" ] && fzf_bash_existed=1
+
+    if [ ! -d "${FZF_DIR}" ]; then
+        git clone --depth 1 "${FZF_REPO}" "${FZF_DIR}"
+        "${FZF_DIR}/install" --all
+        managed_fzf_dir=1
+        [ "${fzf_zsh_existed}" -eq 0 ] && [ -e "${FZF_ZSH_FILE}" ] && managed_fzf_zsh=1
+        [ "${fzf_bash_existed}" -eq 0 ] && [ -e "${FZF_BASH_FILE}" ] && managed_fzf_bash=1
+        _write_state "${managed_fzf_dir}" "${managed_fzf_zsh}" "${managed_fzf_bash}"
     else
-        echo "~/.fzf exists, skip ..."
+        echo "${FZF_DIR} exists, skip ..."
     fi
 
     #     if ! grep -q '#BEGIN FZF function' ~/.zshrc; then
@@ -405,11 +456,22 @@ install() {
 }
 
 uninstall() {
-    ~/.fzf/uninstall
-    /bin/rm -rf ~/.fzf
-    local output=/tmp/$$.fzf
-    sed -e '/#BEGIN FZF function/,/#END FZF function/d' $home/.zshrc >"${output}"
-    mv "${output}" $home/.zshrc
+    if [ "$(_state_get MANAGED_FZF_DIR)" = "1" ] && [ -d "${FZF_DIR}" ] && _git_remote_matches "${FZF_DIR}" "${FZF_REPO}"; then
+        if [ -x "${FZF_DIR}/uninstall" ]; then
+            "${FZF_DIR}/uninstall" >/dev/null 2>&1 || echo "Warning: ${FZF_DIR}/uninstall failed, continuing cleanup."
+        fi
+        /bin/rm -rf "${FZF_DIR}"
+    fi
+
+    if [ "$(_state_get MANAGED_FZF_ZSH)" = "1" ] && [ -e "${FZF_ZSH_FILE}" ]; then
+        /bin/rm -f "${FZF_ZSH_FILE}"
+    fi
+
+    if [ "$(_state_get MANAGED_FZF_BASH)" = "1" ] && [ -e "${FZF_BASH_FILE}" ]; then
+        /bin/rm -f "${FZF_BASH_FILE}"
+    fi
+
+    _cleanup_state_file
 }
 
 # ------------------------------------------------------------

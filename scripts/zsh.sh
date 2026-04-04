@@ -332,6 +332,128 @@ COMMANDS=("help" "check" "install" "uninstall" "linksshpems")
 
 ZSH=${ZSH:-${HOME}/.oh-my-zsh}
 ZSH_CUSTOM=${ZSH_CUSTOM:-${ZSH}/custom}
+STATE_DIR="${home}/.local/state/init"
+STATE_FILE="${STATE_DIR}/zsh.state"
+ZSHRC_LINK_TARGET="${this}/../softlinks/zshrc"
+SSH_CONFIG_LINK_TARGET="${this}/../softlinks/sshconfig"
+AUTOSUGGESTIONS_DIR="${ZSH_CUSTOM}/plugins/zsh-autosuggestions"
+AUTOSUGGESTIONS_REPO="https://github.com/zsh-users/zsh-autosuggestions"
+SYNTAX_HIGHLIGHTING_DIR="${ZSH_CUSTOM}/plugins/zsh-syntax-highlighting"
+SYNTAX_HIGHLIGHTING_REPO="https://github.com/zsh-users/zsh-syntax-highlighting.git"
+EDITRC_MARKER_BEGIN="# BEGIN managed by init:zsh"
+EDITRC_MARKER_END="# END managed by init:zsh"
+INPUTRC_MARKER_BEGIN="# BEGIN managed by init:zsh"
+INPUTRC_MARKER_END="# END managed by init:zsh"
+
+_ensure_state_dir() {
+    mkdir -p "${STATE_DIR}"
+}
+
+_write_state() {
+    _ensure_state_dir
+    cat >"${STATE_FILE}" <<EOF
+MANAGED_AUTOSUGGESTIONS_DIR=${1:-0}
+MANAGED_SYNTAX_HIGHLIGHTING_DIR=${2:-0}
+EOF
+}
+
+_state_get() {
+    local key="${1:?missing state key}"
+    [ -f "${STATE_FILE}" ] || return 1
+    awk -F= -v key="${key}" '$1 == key { print $2 }' "${STATE_FILE}"
+}
+
+_cleanup_state_file() {
+    [ -f "${STATE_FILE}" ] && /bin/rm -f "${STATE_FILE}"
+}
+
+_ensure_managed_block() {
+    local file="${1:?missing file}"
+    local begin="${2:?missing begin marker}"
+    local end="${3:?missing end marker}"
+    local body="${4:?missing body}"
+
+    [ -f "${file}" ] || touch "${file}"
+
+    if grep -Fq "${begin}" "${file}" || grep -Fxq "${body}" "${file}"; then
+        return 0
+    fi
+
+    cat >>"${file}" <<EOF
+${begin}
+${body}
+${end}
+EOF
+}
+
+_remove_managed_block() {
+    local file="${1:?missing file}"
+    local begin="${2:?missing begin marker}"
+    local end="${3:?missing end marker}"
+    local tmp_file
+
+    [ -f "${file}" ] || return 0
+    grep -Fq "${begin}" "${file}" || return 0
+
+    tmp_file="$(mktemp "${TMPDIR:-/tmp}/init-zsh.XXXXXX")" || return 1
+    awk -v begin="${begin}" -v end="${end}" '
+        $0 == begin { skip = 1; next }
+        $0 == end { skip = 0; next }
+        skip != 1 { print }
+    ' "${file}" >"${tmp_file}" && mv "${tmp_file}" "${file}"
+
+    if [ ! -s "${file}" ]; then
+        /bin/rm -f "${file}"
+    fi
+}
+
+_remove_symlink_if_matches() {
+    local path="${1:?missing path}"
+    local expected_target="${2:?missing expected target}"
+    local current_target
+
+    [ -L "${path}" ] || return 0
+    current_target="$(readlink "${path}")"
+    if [ "${current_target}" = "${expected_target}" ]; then
+        /bin/rm -f "${path}"
+    fi
+}
+
+_git_remote_matches() {
+    local repo_dir="${1:?missing repo dir}"
+    local expected_remote="${2:?missing expected remote}"
+    local current_remote
+
+    [ -d "${repo_dir}/.git" ] || return 1
+    current_remote="$(git -C "${repo_dir}" config --get remote.origin.url 2>/dev/null)"
+    [ "${current_remote}" = "${expected_remote}" ]
+}
+
+_remove_plugin_dir_if_managed() {
+    local repo_dir="${1:?missing repo dir}"
+    local expected_remote="${2:?missing expected remote}"
+    local state_key="${3:?missing state key}"
+
+    [ "$(_state_get "${state_key}")" = "1" ] || return 0
+    [ -d "${repo_dir}" ] || return 0
+
+    if _git_remote_matches "${repo_dir}" "${expected_remote}"; then
+        /bin/rm -rf "${repo_dir}"
+    fi
+}
+
+_remove_repo_theme_symlinks() {
+    local theme_source
+    local theme_name
+    local theme_target
+
+    for theme_source in "${this}"/../softlinks/*.zsh-theme; do
+        [ -e "${theme_source}" ] || continue
+        theme_name="$(basename "${theme_source}")"
+        theme_target="${ZSH_CUSTOM}/themes/${theme_name}"
+        _remove_symlink_if_matches "${theme_target}" "${theme_source}"
+    done
+}
 
 check() {
     _require_commands git curl zsh
@@ -340,14 +462,15 @@ check() {
 install() {
     export SHELLRC_ROOT=${HOME}/.local/apps/init/shellConfigs
     check
-
-    if [ ! -e "$HOME/.editrc" ] || ! grep -q 'bind -v' "$HOME/.editrc"; then
-        echo 'bind -v' >>"$HOME/.editrc"
-    fi
-    if [ ! -e "$HOME"/.inputrc ] || ! grep -q 'set editing-mode vi' "$HOME/.inputrc"; then
-        echo 'set editing-mode vi' >>"$HOME/.inputrc"
-    fi
     set -e
+    local managed_autosuggestions_dir=0
+    local managed_syntax_highlighting_dir=0
+
+    [ "$(_state_get MANAGED_AUTOSUGGESTIONS_DIR)" = "1" ] && managed_autosuggestions_dir=1
+    [ "$(_state_get MANAGED_SYNTAX_HIGHLIGHTING_DIR)" = "1" ] && managed_syntax_highlighting_dir=1
+
+    _ensure_managed_block "$HOME/.editrc" "${EDITRC_MARKER_BEGIN}" "${EDITRC_MARKER_END}" "bind -v"
+    _ensure_managed_block "$HOME/.inputrc" "${INPUTRC_MARKER_BEGIN}" "${INPUTRC_MARKER_END}" "set editing-mode vi"
 
     # install omz
     (
@@ -357,23 +480,31 @@ install() {
         RUNZSH=no bash ${installer}
     )
 
-    ln -sf "${this}"/../softlinks/zshrc ~/.zshrc || {
+    ln -sf "${ZSHRC_LINK_TARGET}" ~/.zshrc || {
         echo "Please fork the repo first"
         exit 1
     }
 
     # omz plugins
     # zsh-autosuggestions
-    git clone https://github.com/zsh-users/zsh-autosuggestions "${ZSH_CUSTOM}"/plugins/zsh-autosuggestions
+    if [ ! -d "${AUTOSUGGESTIONS_DIR}" ]; then
+        git clone "${AUTOSUGGESTIONS_REPO}" "${AUTOSUGGESTIONS_DIR}"
+        managed_autosuggestions_dir=1
+    fi
     # zsh-syntax-highlighting
-    git clone https://github.com/zsh-users/zsh-syntax-highlighting.git "${ZSH_CUSTOM}"/plugins/zsh-syntax-highlighting
+    if [ ! -d "${SYNTAX_HIGHLIGHTING_DIR}" ]; then
+        git clone "${SYNTAX_HIGHLIGHTING_REPO}" "${SYNTAX_HIGHLIGHTING_DIR}"
+        managed_syntax_highlighting_dir=1
+    fi
 
     # custom theme
     ln -svf "${this}"/../softlinks/*.zsh-theme "${ZSH_CUSTOM}/themes"
 
     # soft link sshconfig
     [ ! -d ~/.ssh ] && mkdir ~/.ssh
-    ln -svf "${this}"/../softlinks/sshconfig "$HOME"/.ssh/config
+    ln -svf "${SSH_CONFIG_LINK_TARGET}" "$HOME"/.ssh/config
+
+    _write_state "${managed_autosuggestions_dir}" "${managed_syntax_highlighting_dir}"
 }
 
 linksshpems() {
@@ -382,17 +513,14 @@ linksshpems() {
 }
 
 uninstall() {
-    cp ~/.zshrc{,.old}
-    _rm ~/.zshrc
-    _rm ${ZSH}
-    _rm ${ZSH_CUSTOM}
-    _rm ~/.zsh-syntax-highlighting
-    _rm ~/.fzf
-    _rm ~/.fzf.zsh
-    _rm ~/.fzf.bash
-    _rm ~/.ssh/config
-    _rm ~/.editrc
-    _rm ~/.inputrc
+    _remove_symlink_if_matches "$HOME/.zshrc" "${ZSHRC_LINK_TARGET}"
+    _remove_symlink_if_matches "$HOME/.ssh/config" "${SSH_CONFIG_LINK_TARGET}"
+    _remove_repo_theme_symlinks
+    _remove_plugin_dir_if_managed "${AUTOSUGGESTIONS_DIR}" "${AUTOSUGGESTIONS_REPO}" "MANAGED_AUTOSUGGESTIONS_DIR"
+    _remove_plugin_dir_if_managed "${SYNTAX_HIGHLIGHTING_DIR}" "${SYNTAX_HIGHLIGHTING_REPO}" "MANAGED_SYNTAX_HIGHLIGHTING_DIR"
+    _remove_managed_block "$HOME/.editrc" "${EDITRC_MARKER_BEGIN}" "${EDITRC_MARKER_END}"
+    _remove_managed_block "$HOME/.inputrc" "${INPUTRC_MARKER_BEGIN}" "${INPUTRC_MARKER_END}"
+    _cleanup_state_file
 }
 
 _rm() {

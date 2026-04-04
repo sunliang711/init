@@ -395,7 +395,24 @@ set() {
 }
 
 unset() {
-    /bin/rm -rf ~/.gitconfig
+    local keys=(
+        user.email
+        user.name
+        http.postBuffer
+        push.default
+        pull.rebase
+        credential.helper
+        merge.tool
+        alias.tree
+        alias.list
+        core.editor
+        diff.tool
+    )
+    local key
+
+    for key in "${keys[@]}"; do
+        git config --global --unset-all "${key}" >/dev/null 2>&1 || true
+    done
 }
 # write your code above
 

@@ -329,6 +329,50 @@ show_help() {
 # ------------------------------------------------------------
 # 子命令数组
 COMMANDS=("help" "check" "install" "uninstall" "reinstall")
+STATE_DIR="${home}/.local/state/init"
+STATE_FILE="${STATE_DIR}/tmux.state"
+TMUX_CONF="${home}/.tmux.conf"
+TMUX_CONF_MARKER="# managed-by: init/tmux"
+TPM_DIR="${home}/.tmux/plugins/tpm"
+TPM_REPO="https://github.com/tmux-plugins/tpm"
+
+_ensure_state_dir() {
+    mkdir -p "${STATE_DIR}"
+}
+
+_write_state() {
+    _ensure_state_dir
+    cat >"${STATE_FILE}" <<EOF
+MANAGED_TPM_DIR=${1:-0}
+EOF
+}
+
+_state_get() {
+    local key="${1:?missing state key}"
+    [ -f "${STATE_FILE}" ] || return 1
+    awk -F= -v key="${key}" '$1 == key { print $2 }' "${STATE_FILE}"
+}
+
+_cleanup_state_file() {
+    [ -f "${STATE_FILE}" ] && /bin/rm -f "${STATE_FILE}"
+}
+
+_git_remote_matches() {
+    local repo_dir="${1:?missing repo dir}"
+    local expected_remote="${2:?missing expected remote}"
+    local current_remote
+
+    [ -d "${repo_dir}/.git" ] || return 1
+    current_remote="$(git -C "${repo_dir}" config --get remote.origin.url 2>/dev/null)"
+    [ "${current_remote}" = "${expected_remote}" ]
+}
+
+_remove_empty_dir() {
+    local dir="${1:?missing dir}"
+    [ -d "${dir}" ] || return 0
+    [ -z "$(ls -A "${dir}" 2>/dev/null)" ] || return 0
+    rmdir "${dir}"
+}
 
 
 check() {
@@ -341,11 +385,18 @@ check() {
 install() {
     check
     set -e
+    local managed_tpm_dir=0
+
+    [ "$(_state_get MANAGED_TPM_DIR)" = "1" ] && managed_tpm_dir=1
 
     log INFO "Install tmux plugins..."
-    git clone https://github.com/tmux-plugins/tpm ~/.tmux/plugins/tpm
+    if [ ! -d "${TPM_DIR}" ]; then
+        git clone "${TPM_REPO}" "${TPM_DIR}"
+        managed_tpm_dir=1
+    fi
 
-    cat <<EOF >$home/.tmux.conf
+    cat <<EOF >"${TMUX_CONF}"
+${TMUX_CONF_MARKER}
 ##################################################
 # enable vi mode
 set-window-option -g mode-keys vi
@@ -435,17 +486,26 @@ bind-key g popup -E -w 95% -h 95% -d '#{pane_current_path}' lazygit
 run '~/.tmux/plugins/tpm/tpm'
 EOF
 
+    _write_state "${managed_tpm_dir}"
     log SUCCESS "start tmux,then press <prefix> + I to install plugins"
 }
 
 uninstall() {
     log INFO "Uninstall tmux plugins..."
 
-    log INFO "Remove $home/.tmux.conf"
-    /bin/rm -rf $home/.tmux.conf
+    if [ -f "${TMUX_CONF}" ] && grep -Fqx "${TMUX_CONF_MARKER}" "${TMUX_CONF}"; then
+        log INFO "Remove ${TMUX_CONF}"
+        /bin/rm -f "${TMUX_CONF}"
+    fi
 
-    log INFO "Remove $home/.tmux"
-    /bin/rm -rf $home/.tmux
+    if [ "$(_state_get MANAGED_TPM_DIR)" = "1" ] && [ -d "${TPM_DIR}" ] && _git_remote_matches "${TPM_DIR}" "${TPM_REPO}"; then
+        log INFO "Remove ${TPM_DIR}"
+        /bin/rm -rf "${TPM_DIR}"
+    fi
+
+    _remove_empty_dir "${home}/.tmux/plugins"
+    _remove_empty_dir "${home}/.tmux"
+    _cleanup_state_file
 
     log SUCCESS "Uninstall tmux plugins success!"
 }
