@@ -15,7 +15,6 @@ DEFAULT_UNINSTALL_COMPONENTS=("zsh" "fzf" "tmux")
 DEFAULT_CHECK_COMPONENTS=("${ALL_COMPONENTS[@]}")
 
 repo="https://github.com/sunliang711/init"
-dest="${home}/.local/apps/init"
 
 ACTION_PROXY=""
 DRY_RUN=0
@@ -246,14 +245,6 @@ Examples:
 EOF
 }
 
-ensure_install_location() {
-    if [ "$this" != "$dest" ]; then
-        echo "Please clone this to $dest"
-        echo "Run git clone $repo $dest"
-        exit 1
-    fi
-}
-
 configure_install_proxy() {
     local proxy="$1"
     [ -n "$proxy" ] || return 0
@@ -473,7 +464,6 @@ run_checks() {
 }
 
 install() {
-    ensure_install_location
     parse_action_args install "$@"
     print_action_summary install
     run_checks

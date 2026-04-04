@@ -14,12 +14,12 @@ This repository is shared across multiple machines, so tracked config should sta
 
 - `softlinks/sshconfig.local`
   - Ignored by git.
-  - Included by the shared `softlinks/sshconfig`.
+  - Included by the generated `~/.ssh/config` wrapper written by `scripts/zsh.sh install`.
   - Use it for machine-local SSH hosts, agent sockets, OrbStack includes, and network-specific host aliases.
   - Start from `softlinks/sshconfig.local.example`.
 
 - `~/.ssh/config.local`
-  - Also included by the shared `softlinks/sshconfig`.
+  - Also included by the generated `~/.ssh/config` wrapper.
   - Useful when you want local SSH overrides outside this repo.
 
 ## Shared Files
@@ -30,8 +30,8 @@ This repository is shared across multiple machines, so tracked config should sta
   - SDKMAN and Nomad completion are now opt-in instead of unconditional shared defaults.
 
 - `softlinks/sshconfig`
-  - Acts as the wrapper that composes local SSH config files with the tracked shared host list.
-  - Local includes are loaded first so a machine can override a shared alias if needed.
+  - Documents the wrapper layout used when `scripts/zsh.sh install` writes `~/.ssh/config`.
+  - The live wrapper uses the current repo path, so the repo no longer has to live under `~/.local/apps/init`.
 
 - `softlinks/sshconfig.shared`
   - Keeps cross-machine SSH defaults and host aliases that are genuinely shared.
@@ -47,3 +47,4 @@ This repository is shared across multiple machines, so tracked config should sta
 - Keep secrets and internal endpoints out of tracked files.
 - Prefer opt-in flags in `shellConfigs/local` over unconditional startup work in shared config.
 - When a setting depends on a specific machine, network, or installed app, put it in a local file instead of the shared layer.
+- If the repo moves, rerun the relevant install step so generated wrappers point at the new location.

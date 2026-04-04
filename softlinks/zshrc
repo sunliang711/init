@@ -107,8 +107,22 @@ source $ZSH/oh-my-zsh.sh
 # source ~/.zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
 
 ##CUSTOM BEGIN v3
-export SHELLRC_ROOT=${HOME}/.local/apps/init/shellConfigs
-source ${SHELLRC_ROOT}/index
+_init_zshrc_source="${(%):-%N}"
+[[ -n "${_init_zshrc_source}" ]] || _init_zshrc_source="${HOME}/.zshrc"
+_init_zshrc_source="${_init_zshrc_source:A}"
+while [[ -L "${_init_zshrc_source}" ]]; do
+  _init_zshrc_link_target="$(readlink "${_init_zshrc_source}")"
+  if [[ "${_init_zshrc_link_target}" == /* ]]; then
+    _init_zshrc_source="${_init_zshrc_link_target}"
+  else
+    _init_zshrc_source="${_init_zshrc_source:h}/${_init_zshrc_link_target}"
+  fi
+  _init_zshrc_source="${_init_zshrc_source:A}"
+done
+export INIT_REPO_ROOT="${_init_zshrc_source:A:h:h}"
+export SHELLRC_ROOT="${INIT_REPO_ROOT}/shellConfigs"
+source "${SHELLRC_ROOT}/index"
+unset _init_zshrc_source _init_zshrc_link_target
 ##CUSTOM END v3
 
 #

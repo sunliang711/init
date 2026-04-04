@@ -46,6 +46,9 @@ Task 7 completed. Refactor plan complete for the current scope, with post-plan h
 - Kept `whiptail` as an optional interactive UI layer instead of making it the primary input path.
 - Removed the old hardcoded git identity defaults and added explicit validation/error handling for git config writes.
 - Added `install.sh --all` as an explicit shorthand for selecting all components supported by the current action.
+- Removed the active install chain's runtime dependency on `~/.local/apps/init` by deriving the repo root dynamically from the current script location.
+- Updated `scripts/zsh.sh` to generate `~/.ssh/config` with absolute includes for the current repo instead of symlinking a fixed-path wrapper file.
+- Updated `softlinks/zshrc` and `tools/updateInit.sh` to follow the repo's actual path, while keeping `~/.local/apps/init` as a documented default instead of a hard requirement.
 
 ## Verification
 
@@ -91,6 +94,8 @@ Task 7 completed. Refactor plan complete for the current scope, with post-plan h
 - Simulated `scripts/setGit.sh set --non-interactive` without a usable email failed with a clear error.
 - Simulated `scripts/setGit.sh set --email invalid-email --non-interactive` failed validation as expected.
 - `bash install.sh install --all --dry-run` passed, confirming the new full-selection flag maps cleanly onto the existing component expansion flow.
+- `bash tools/verify-init.sh` passed after removing hardcoded runtime repo-path assumptions from the active install chain.
+- Simulated `scripts/zsh.sh install` in a temp home wrote `~/.ssh/config` with absolute includes pointing at the current repo path, and simulated uninstall removed the generated wrapper cleanly.
 
 ## Pending Confirmation
 

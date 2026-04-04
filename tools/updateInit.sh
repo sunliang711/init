@@ -50,15 +50,13 @@ uninstall() {
 }
 
 check() {
-    _require_commands crontab
+    _require_commands crontab git
 }
 
 update() {
-    repo=${home}/.local/apps/init
-    cd ${repo}
-    if git diff-index --quiet HEAD --; then
-        echo "the repo is clean. git pull.."
-        git pull
+    if git -C "${INIT_REPO_ROOT}" diff-index --quiet HEAD --; then
+        echo "the repo is clean. git pull --ff-only.."
+        git -C "${INIT_REPO_ROOT}" pull --ff-only
     else
         echo "the repo has changes."
     fi

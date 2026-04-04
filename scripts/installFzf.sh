@@ -22,12 +22,12 @@ show_help() {
 # ------------------------------------------------------------
 # 子命令数组
 COMMANDS=("help" "check" "install" "uninstall")
-STATE_DIR="${home}/.local/state/init"
+STATE_DIR="${INIT_TARGET_HOME}/.local/state/init"
 STATE_FILE="${STATE_DIR}/fzf.state"
-FZF_DIR="${home}/.fzf"
+FZF_DIR="${INIT_TARGET_HOME}/.fzf"
 FZF_REPO="https://github.com/junegunn/fzf.git"
-FZF_ZSH_FILE="${home}/.fzf.zsh"
-FZF_BASH_FILE="${home}/.fzf.bash"
+FZF_ZSH_FILE="${INIT_TARGET_HOME}/.fzf.zsh"
+FZF_BASH_FILE="${INIT_TARGET_HOME}/.fzf.bash"
 
 _ensure_state_dir() {
     mkdir -p "${STATE_DIR}"

@@ -22,11 +22,11 @@ show_help() {
 # ------------------------------------------------------------
 # 子命令数组
 COMMANDS=("help" "check" "install" "uninstall" "reinstall")
-STATE_DIR="${home}/.local/state/init"
+STATE_DIR="${INIT_TARGET_HOME}/.local/state/init"
 STATE_FILE="${STATE_DIR}/tmux.state"
-TMUX_CONF="${home}/.tmux.conf"
+TMUX_CONF="${INIT_TARGET_HOME}/.tmux.conf"
 TMUX_CONF_MARKER="# managed-by: init/tmux"
-TPM_DIR="${home}/.tmux/plugins/tpm"
+TPM_DIR="${INIT_TARGET_HOME}/.tmux/plugins/tpm"
 TPM_REPO="https://github.com/tmux-plugins/tpm"
 
 _ensure_state_dir() {
@@ -219,8 +219,8 @@ uninstall() {
         /bin/rm -rf "${TPM_DIR}"
     fi
 
-    _remove_empty_dir "${home}/.tmux/plugins"
-    _remove_empty_dir "${home}/.tmux"
+    _remove_empty_dir "${INIT_TARGET_HOME}/.tmux/plugins"
+    _remove_empty_dir "${INIT_TARGET_HOME}/.tmux"
     _cleanup_state_file
 
     log SUCCESS "Uninstall tmux plugins success!"

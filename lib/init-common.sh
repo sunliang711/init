@@ -22,17 +22,21 @@ _init_resolve_script_dir() {
 }
 
 this="$(_init_resolve_script_dir "${INIT_CALLER_SOURCE:-${BASH_SOURCE[1]:-${BASH_SOURCE[0]}}}")"
+INIT_LIB_DIR="$(_init_resolve_script_dir "${BASH_SOURCE[0]}")"
+INIT_REPO_ROOT="$(CDPATH= cd -- "${INIT_LIB_DIR}/.." && pwd)"
+export INIT_LIB_DIR INIT_REPO_ROOT
 
-user="${SUDO_USER:-$(id -un)}"
+INIT_TARGET_USER="${SUDO_USER:-$(id -un)}"
 if [ -n "${INIT_HOME:-}" ]; then
-    home="${INIT_HOME}"
+    INIT_TARGET_HOME="${INIT_HOME}"
 elif [ -n "${SUDO_USER:-}" ]; then
-    home="$(eval echo ~"${user}")"
+    INIT_TARGET_HOME="$(eval echo ~"${INIT_TARGET_USER}")"
 elif [ -n "${HOME:-}" ]; then
-    home="${HOME}"
+    INIT_TARGET_HOME="${HOME}"
 else
-    home="$(eval echo ~"${user}")"
+    INIT_TARGET_HOME="$(eval echo ~"${INIT_TARGET_USER}")"
 fi
+export INIT_TARGET_USER INIT_TARGET_HOME
 
 if ! printf ':%s:' "${PATH}" | grep -q ':/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:'; then
     export PATH="${PATH}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

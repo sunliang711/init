@@ -26,9 +26,9 @@ COMMANDS=("help" "check" "global" "user")
 
 globalPath=/etc/vim/vimrc.local
 macOSGlobalPath=/usr/share/vim/vimrc
-userPath="${home}/.vimrc"
+userPath="${INIT_TARGET_HOME}/.vimrc"
 sourceVimrc="${this}/vimrc"
-nerdtreePath="${home}/.vim/pack/vendor/start/nerdtree"
+nerdtreePath="${INIT_TARGET_HOME}/.vim/pack/vendor/start/nerdtree"
 nerdtreeRepo="https://github.com/preservim/nerdtree.git"
 
 _git_remote_matches() {

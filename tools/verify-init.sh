@@ -4,10 +4,26 @@ set -euo pipefail
 
 ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-all}"
+RUNTIME_PATH_FILES=(
+    "${ROOT_DIR}/install.sh"
+    "${ROOT_DIR}/lib/init-common.sh"
+    "${ROOT_DIR}/scripts/zsh.sh"
+    "${ROOT_DIR}/tools/updateInit.sh"
+    "${ROOT_DIR}/softlinks/zshrc"
+    "${ROOT_DIR}/softlinks/sshconfig"
+)
 
 run() {
     printf '==> %s\n' "$*"
     "$@"
+}
+
+path_checks() {
+    if rg -n '\.local/apps/init' "${RUNTIME_PATH_FILES[@]}" >/dev/null; then
+        echo "Unexpected hardcoded init repo path found in runtime files:" >&2
+        rg -n '\.local/apps/init' "${RUNTIME_PATH_FILES[@]}" >&2
+        exit 1
+    fi
 }
 
 syntax_checks() {
@@ -21,6 +37,7 @@ syntax_checks() {
         "${ROOT_DIR}/scripts/vim.sh" \
         "${ROOT_DIR}/tools/updateInit.sh"
     run zsh -n "${ROOT_DIR}/softlinks/zshrc"
+    run path_checks
 }
 
 smoke_checks() {

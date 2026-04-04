@@ -4,12 +4,14 @@ Personal shell and workstation bootstrap repo with a shared core plus machine-lo
 
 ## Install Flow
 
-Clone the repo to `~/.local/apps/init`, then use the componentized installer:
+Clone the repo anywhere, then use the componentized installer. `~/.local/apps/init` is still a reasonable default:
 
 ```bash
 bash install.sh components
 bash install.sh install
 ```
+
+If you move the repo later, rerun the relevant install step so managed symlinks and generated wrapper files can pick up the new path.
 
 Useful examples:
 
