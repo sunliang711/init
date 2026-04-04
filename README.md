@@ -51,6 +51,49 @@ This repo is used across multiple machines.
 
 See [docs/local-config.md](docs/local-config.md) for the current boundary and local templates.
 
+## Lazy Shell Tools
+
+Zsh-only lazy-loading helpers live in [shellConfigs/function](shellConfigs/function). They let machine-local toolchains load on first use instead of during every shell startup.
+
+Keep actual registrations in `shellConfigs/local`, not in `softlinks/zshrc`. That keeps shared config machine-agnostic and avoids enabling toolchains on machines that do not have them installed.
+
+Basic pattern:
+
+```zsh
+export TOOL_DIR="$HOME/.tool"
+_lazy_register_source toolname "$TOOL_DIR/init.sh" "$TOOL_DIR/completion.sh" -- \
+  toolname tool-subcommand another-command
+```
+
+- First argument: registration name used internally by the helper.
+- Second argument: main script to `source` on first use.
+- Extra arguments before `--`: optional extra scripts, such as completions.
+- Arguments after `--`: commands that should trigger the lazy load.
+
+If a machine needs eager startup after registration, load it explicitly:
+
+```zsh
+_lazy_load_registered toolname
+```
+
+Real examples for `shellConfigs/local`:
+
+```zsh
+# nvm and common Node.js commands
+export NVM_DIR="$HOME/.nvm"
+_lazy_register_source nvm "$NVM_DIR/nvm.sh" "$NVM_DIR/bash_completion" -- \
+  nvm node npm npx pnpm yarn corepack
+
+# SDKMAN, with optional eager startup when this machine needs it
+export SDKMAN_DIR="$HOME/.sdkman"
+_lazy_register_source sdkman "$SDKMAN_DIR/bin/sdkman-init.sh" -- sdk
+if [[ "${ENABLE_SDKMAN:-}" == "1" ]]; then
+  _lazy_load_registered sdkman
+fi
+```
+
+Use this pattern for machine-specific toolchains such as `nvm`, `sdkman`, `pyenv`, or similar startup-heavy shells integrations.
+
 ## Rollback Notes
 
 The install scripts now try to avoid destructive changes:
