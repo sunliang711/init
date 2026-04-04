@@ -20,6 +20,9 @@ This repository is shared across multiple machines.
 
 ### Task 1: Make `install.sh` componentized
 
+Status:
+Completed.
+
 Goal:
 Split the current all-in-one install flow into explicit components.
 

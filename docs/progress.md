@@ -3,7 +3,7 @@
 ## Status
 
 Current phase:
-Startup optimization completed, refactor planning pending confirmation.
+Task 1 completed. Waiting for confirmation before starting Task 2.
 
 ## Completed
 
@@ -12,16 +12,23 @@ Startup optimization completed, refactor planning pending confirmation.
 - Prevented duplicate `sdkman` initialization by guarding the shared `zshrc` load path.
 - Stopped automatic proxy detection on every shell startup unless `AUTO_DETECT_PROXY_ENV` is set locally.
 - Stopped automatic `screenfetch` on every shell startup unless `AUTO_SCREENFETCH` is set locally.
+- Completed Task 1 by making `install.sh` componentized with `install`, `uninstall`, `check`, and `components` command support.
+- Added component selection, safer default install components, install summaries, and `--dry-run` support in `install.sh`.
 
 ## Verification
 
 - `zsh -n softlinks/zshrc` passed.
 - Measured `zsh -i -c exit` improved from about `0.42s` to about `0.29s` in the current sandboxed environment.
 - Remaining startup hotspots are still dominated by `oh-my-zsh` completion initialization.
+- `bash -n install.sh` passed.
+- `bash install.sh help` passed.
+- `bash install.sh components` passed.
+- `bash install.sh check --components zsh,fzf` passed.
+- `bash install.sh check all` passed.
+- `bash install.sh install --dry-run git,zsh --proxy http://127.0.0.1:7890` passed.
 
 ## Pending Confirmation
 
-- Task 1: Make `install.sh` componentized.
 - Task 2: Reduce destructive uninstall behavior.
 - Task 3: Extract shared shell library.
 - Task 4: Make install scripts idempotent.
