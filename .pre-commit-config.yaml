@@ -1,6 +1,11 @@
 repos:
   - repo: local
     hooks:
+      - id: verify-syntax
+        name: bootstrap verify syntax
+        entry: bash bootstrap/verify.sh syntax
+        language: system
+        pass_filenames: false
       - id: verify-fmt-check
         name: bootstrap verify fmt-check
         entry: bash bootstrap/verify.sh fmt-check
