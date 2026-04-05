@@ -127,17 +127,51 @@ bash bootstrap/verify.sh
 It now covers:
 
 - shell syntax checks for the active install chain
+- `shfmt` checks when available locally
 - `shellcheck` when available locally
 - temp-home integration tests for the main component scripts
+- `bats` tests under `tests/` when available locally
 
 Extra smoke checks:
 
 ```bash
 bash bootstrap/verify.sh smoke
 bash bootstrap/verify.sh integration
+bash bootstrap/verify.sh fmt-check
+bash bootstrap/verify.sh fmt
 bash install.sh install --all --dry-run
 bash install.sh install --dry-run git,zsh --proxy http://127.0.0.1:7890
 ```
+
+## Dev Tooling
+
+Recommended local tooling for working on this repo:
+
+- `shellcheck`
+- `shfmt`
+- `pre-commit`
+- `just`
+- `bats`
+
+Common commands:
+
+```bash
+just verify
+just syntax
+just fmt-check
+just fmt
+just smoke
+just integration
+pre-commit install
+```
+
+The repo now includes:
+
+- `.editorconfig` for cross-editor whitespace and newline defaults
+- `.shellcheckrc` for shared shellcheck behavior
+- `.pre-commit-config.yaml` with syntax and formatting gates
+- `justfile` for common development commands
+- `tests/cli-smoke.bats` as a starter Bats suite
 
 ## Task Tracking
 

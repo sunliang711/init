@@ -16,8 +16,34 @@ RUNTIME_PATH_FILES=(
     "${ROOT_DIR}/config/zsh/zshrc"
     "${ROOT_DIR}/config/ssh/config.template"
 )
+BASH_SYNTAX_FILES=(
+    "${ROOT_DIR}/install.sh"
+    "${ROOT_DIR}/bootstrap/lib/runtime.sh"
+    "${ROOT_DIR}/bootstrap/verify.sh"
+    "${ROOT_DIR}/bootstrap/components/git-config.sh"
+    "${ROOT_DIR}/bootstrap/components/zsh-setup.sh"
+    "${ROOT_DIR}/bootstrap/components/fzf.sh"
+    "${ROOT_DIR}/bootstrap/components/tmux-setup.sh"
+    "${ROOT_DIR}/bootstrap/components/vim-setup.sh"
+    "${ROOT_DIR}/bootstrap/jobs/repo-update.sh"
+    "${ROOT_DIR}/config/shell/init.sh"
+    "${ROOT_DIR}/config/shell/local.example.sh"
+    "${ROOT_DIR}/config/shell/shared/colors.sh"
+    "${ROOT_DIR}/config/shell/shared/functions.sh"
+    "${ROOT_DIR}/config/shell/shared/environment.sh"
+    "${ROOT_DIR}/config/shell/shared/aliases.sh"
+    "${ROOT_DIR}/config/shell/shared/extras.sh"
+    "${ROOT_DIR}/config/shell/shared/shelllib.sh"
+    "${ROOT_DIR}/bin/newsh"
+    "${ROOT_DIR}/bin/newrust"
+    "${ROOT_DIR}/bin/newsolanaprogram"
+)
+SHFMT_FILES=(
+    "${BASH_SYNTAX_FILES[@]}"
+)
 SHELLCHECK_FILES=(
     "${ROOT_DIR}/bootstrap/lib/runtime.sh"
+    "${ROOT_DIR}/bootstrap/verify.sh"
     "${ROOT_DIR}/bootstrap/components/git-config.sh"
     "${ROOT_DIR}/bootstrap/components/zsh-setup.sh"
     "${ROOT_DIR}/bootstrap/components/fzf.sh"
@@ -279,34 +305,33 @@ path_checks() {
 
 shellcheck_checks() {
     if command -v shellcheck >/dev/null 2>&1; then
-        run shellcheck -x -e SC1091 "${SHELLCHECK_FILES[@]}"
+        run shellcheck "${SHELLCHECK_FILES[@]}"
     else
         echo "==> skip shellcheck (not installed)"
     fi
 }
 
+shfmt_checks() {
+    if command -v shfmt >/dev/null 2>&1; then
+        run shfmt -d "${SHFMT_FILES[@]}"
+    else
+        echo "==> skip shfmt (not installed)"
+    fi
+}
+
+shfmt_write() {
+    if command -v shfmt >/dev/null 2>&1; then
+        run shfmt -w "${SHFMT_FILES[@]}"
+    else
+        fail "shfmt is not installed"
+    fi
+}
+
 syntax_checks() {
-    run bash -n \
-        "${ROOT_DIR}/bootstrap/lib/runtime.sh" \
-        "${ROOT_DIR}/bootstrap/components/git-config.sh" \
-        "${ROOT_DIR}/bootstrap/components/zsh-setup.sh" \
-        "${ROOT_DIR}/bootstrap/components/fzf.sh" \
-        "${ROOT_DIR}/bootstrap/components/tmux-setup.sh" \
-        "${ROOT_DIR}/bootstrap/components/vim-setup.sh" \
-        "${ROOT_DIR}/bootstrap/jobs/repo-update.sh" \
-        "${ROOT_DIR}/config/shell/init.sh" \
-        "${ROOT_DIR}/config/shell/shared/colors.sh" \
-        "${ROOT_DIR}/config/shell/shared/functions.sh" \
-        "${ROOT_DIR}/config/shell/shared/environment.sh" \
-        "${ROOT_DIR}/config/shell/shared/aliases.sh" \
-        "${ROOT_DIR}/config/shell/shared/extras.sh" \
-        "${ROOT_DIR}/config/shell/shared/shelllib.sh" \
-        "${ROOT_DIR}/bin/newsh" \
-        "${ROOT_DIR}/bin/newrust" \
-        "${ROOT_DIR}/bin/newsolanaprogram" \
-        "${ROOT_DIR}/install.sh"
+    run bash -n "${BASH_SYNTAX_FILES[@]}"
     run zsh -n "${ROOT_DIR}/config/zsh/zshrc"
     run path_checks
+    shfmt_checks
     shellcheck_checks
 }
 
@@ -512,11 +537,20 @@ integration_checks() {
     run test_update_init
 }
 
+bats_checks() {
+    if command -v bats >/dev/null 2>&1; then
+        run bats "${ROOT_DIR}/tests"
+    else
+        echo "==> skip bats (not installed)"
+    fi
+}
+
 case "${MODE}" in
 all)
     syntax_checks
     smoke_checks
     integration_checks
+    bats_checks
     ;;
 syntax)
     syntax_checks
@@ -527,8 +561,14 @@ smoke)
 integration)
     integration_checks
     ;;
+fmt)
+    shfmt_write
+    ;;
+fmt-check)
+    shfmt_checks
+    ;;
 *)
-    echo "Usage: $0 [all|syntax|smoke|integration]" >&2
+    echo "Usage: $0 [all|syntax|smoke|integration|fmt|fmt-check]" >&2
     exit 1
     ;;
 esac
