@@ -33,6 +33,8 @@ mappings=(
 
 "tcp|5666|10.1.1.199|5666|fnOS web"
 
+"tcp|7190|10.1.1.33||temp http proxy"
+
 )
 
 #"tcp|52400|10.1.1.121|32400|plex server gamePC"
