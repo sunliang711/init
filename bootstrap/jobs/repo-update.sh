@@ -6,7 +6,7 @@ RUNTIME_LIB="${SCRIPT_DIR}/../lib/runtime.sh"
 INIT_CALLER_SOURCE="${BASH_SOURCE[0]}"
 # shellcheck source=../lib/runtime.sh
 source "${RUNTIME_LIB}"
-unset RUNTIME_LIB INIT_CALLER_SOURCE SCRIPT_DIR
+unset RUNTIME_LIB INIT_CALLER_SOURCE
 
 # ------------------------------------------------------------
 # 子命令数组
@@ -19,8 +19,15 @@ show_help() {
     show_standard_help "$0 [-l LOG_LEVEL] <command>" COMMANDS HELP_OPTIONS
 }
 
-JOB_SCRIPT_PATH="${SCRIPT_DIR}/repo-update.sh"
+JOB_SCRIPT_PATH="${INIT_REPO_ROOT}/bootstrap/jobs/repo-update.sh"
 CRON_LINE="0 0 * * * ${JOB_SCRIPT_PATH} update >/dev/null 2>&1"
+LEGACY_CRON_LINE_BROKEN="0 0 * * * /repo-update.sh update >/dev/null 2>&1"
+LEGACY_CRON_LINE_OLD_PATH="0 0 * * * ${INIT_REPO_ROOT}/tools/updateInit.sh update >/dev/null 2>&1"
+
+filter_repo_update_crontab_lines() {
+    grep -Fvx "${CRON_LINE}" | grep -Fvx "${LEGACY_CRON_LINE_BROKEN}" | grep -Fvx "${LEGACY_CRON_LINE_OLD_PATH}" || true
+}
+
 # install to crontab
 install() {
     local existing_crontab
@@ -32,7 +39,7 @@ install() {
     fi
 
     (
-        printf '%s\n' "${existing_crontab}"
+        printf '%s\n' "${existing_crontab}" | filter_repo_update_crontab_lines
         echo "${CRON_LINE}"
     ) | sed '/^$/d' | crontab -
 }
@@ -42,7 +49,7 @@ uninstall() {
     existing_crontab="$(crontab -l 2>/dev/null || true)"
     [ -n "${existing_crontab}" ] || return 0
 
-    printf '%s\n' "${existing_crontab}" | grep -Fvx "${CRON_LINE}" | crontab -
+    printf '%s\n' "${existing_crontab}" | filter_repo_update_crontab_lines | crontab -
 }
 
 check() {
@@ -60,3 +67,4 @@ update() {
 
 
 dispatch_cli show_help resolve_cli_handler "$@"
+unset SCRIPT_DIR
