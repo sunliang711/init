@@ -108,6 +108,73 @@ Project and script generator templates now live under:
 - `templates/projects/`
 - `templates/scripts/`
 
+## Repo Helpers
+
+Reusable shell helpers for new repositories live in `config/shell/shared/functions.sh`.
+
+### `newprecommit`
+
+Use `newprecommit` inside an existing repository to scaffold staged binary and large-file checks.
+
+Common examples:
+
+```bash
+newprecommit --init
+newprecommit --max-mb 2
+newprecommit --allow-ext png,jpg,pdf
+newprecommit --allow-dir docs/assets,fixtures
+newprecommit --allow-file docs/logo.png,fixtures/sample.bin
+```
+
+What it creates:
+
+- `.pre-commit-config.yaml`
+- `.precommit-allow`
+- `.githooks/check-staged-no-binary.sh`
+- `.githooks/check-staged-file-size.sh`
+- `.gitignore` when `--init` or `--init-gitignore` is used
+
+Notes:
+
+- The generated hook scripts read `.precommit-allow`.
+- `--init` is a shortcut for `--init-gitignore --install`.
+- If `.pre-commit-config.yaml` already exists and you do not pass `--force`, `newprecommit` preserves the file and prints a suggested YAML snippet for manual merge.
+- If `.githooks/` scripts already exist and you do not pass `--force`, the command refuses to overwrite them.
+
+### `newgitrepo`
+
+Use `newgitrepo` to initialize a fresh Git repository with a minimal shared baseline.
+
+Common examples:
+
+```bash
+newgitrepo myproj
+newgitrepo myproj --commit
+newgitrepo myproj --desc "Internal deployment CLI"
+newgitrepo myproj --license mit
+newgitrepo myproj --remote git@github.com:user/myproj.git
+```
+
+What it does by default:
+
+- creates the target directory
+- initializes Git and switches the default branch to `main`
+- creates `README.md`, `.editorconfig`, and `.gitattributes`
+- runs `newprecommit --init` unless `--no-precommit` is used
+
+Supported `newgitrepo` options:
+
+- `--commit`
+- `--no-precommit`
+- `--desc`
+- `--license` with `mit`, `apache-2.0`, or `none`
+- `--remote`
+
+Repository templates used by `newgitrepo` live under:
+
+- `templates/git/repo/`
+- `templates/git/licenses/`
+
 ## Rollback Notes
 
 The install scripts now try to avoid destructive changes:

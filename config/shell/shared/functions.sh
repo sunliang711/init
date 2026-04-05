@@ -2814,6 +2814,246 @@ function newprecommitconfig() {
     newprecommit "$@"
 }
 
+function newgitrepo() {
+    local repo_input=""
+    local repo_name=""
+    local target_dir=""
+    local do_commit=0
+    local no_precommit=0
+    local remote_url=""
+    local desc="Project description."
+    local license_name="none"
+    local created_dir=0
+    local repo_template_root=""
+    local readme_template=""
+    local editorconfig_template=""
+    local gitattributes_template=""
+    local license_template=""
+    local license_file=""
+    local readme_file=""
+    local escaped_repo_name=""
+    local escaped_desc=""
+    local current_year=""
+    local license_author=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: newgitrepo <name-or-path> [--commit] [--no-precommit] [--desc TEXT] [--license NAME] [--remote URL]
+
+Create a new git repository with a minimal starter layout.
+
+Options:
+  --commit        Create an initial commit after initialization
+  --no-precommit  Skip newprecommit --init
+  --desc TEXT     Set the README project description
+  --license NAME  Set the license: mit, apache-2.0, none
+  --remote URL    Add git remote origin
+  -h, --help      Show this help
+
+Examples:
+  newgitrepo myproj
+  newgitrepo ~/Workspace/rust/myproj
+  newgitrepo myproj --commit
+  newgitrepo myproj --no-precommit
+  newgitrepo myproj --desc "Internal deployment CLI"
+  newgitrepo myproj --license mit
+  newgitrepo myproj --remote git@github.com:user/myproj.git
+EOF
+                return 0
+                ;;
+            --commit)
+                do_commit=1
+                ;;
+            --no-precommit)
+                no_precommit=1
+                ;;
+            --desc)
+                shift
+                if [ -z "${1:-}" ]; then
+                    echo "missing value for --desc"
+                    return 1
+                fi
+                desc="$1"
+                ;;
+            --desc=*)
+                desc="${1#*=}"
+                ;;
+            --license)
+                shift
+                if [ -z "${1:-}" ]; then
+                    echo "missing value for --license"
+                    return 1
+                fi
+                license_name="$1"
+                ;;
+            --license=*)
+                license_name="${1#*=}"
+                ;;
+            --remote)
+                shift
+                if [ -z "${1:-}" ]; then
+                    echo "missing value for --remote"
+                    return 1
+                fi
+                remote_url="$1"
+                ;;
+            --remote=*)
+                remote_url="${1#*=}"
+                ;;
+            -*)
+                echo "unknown option: $1"
+                return 1
+                ;;
+            *)
+                if [ -n "${repo_input}" ]; then
+                    echo "too many repository names: $1"
+                    return 1
+                fi
+                repo_input="$1"
+                ;;
+        esac
+        shift
+    done
+
+    if [ -z "${repo_input}" ]; then
+        echo "missing repository name"
+        echo "usage: newgitrepo <name-or-path> [--commit] [--no-precommit] [--desc TEXT] [--license NAME] [--remote URL]"
+        return 1
+    fi
+
+    if ! command -v git >/dev/null 2>&1; then
+        echo "git is not installed"
+        return 1
+    fi
+
+    if [ -z "${INIT_REPO_ROOT:-}" ] || [ ! -d "${INIT_REPO_ROOT}" ]; then
+        echo "INIT_REPO_ROOT is not available"
+        return 1
+    fi
+
+    case "${repo_input}" in
+        /*)
+            target_dir="${repo_input}"
+            ;;
+        *)
+            target_dir="${PWD}/${repo_input}"
+            ;;
+    esac
+    target_dir="${target_dir%/}"
+    repo_name="$(basename "${target_dir}")"
+    repo_template_root="${INIT_REPO_ROOT}/templates/git/repo"
+    readme_template="${repo_template_root}/README.md"
+    editorconfig_template="${repo_template_root}/.editorconfig"
+    gitattributes_template="${repo_template_root}/.gitattributes"
+    license_author="${GIT_AUTHOR_NAME:-${GIT_COMMITTER_NAME:-$(git config --global --get user.name 2>/dev/null || whoami)}}"
+
+    case "${license_name}" in
+        none|'')
+            license_template=""
+            ;;
+        mit|MIT)
+            license_template="${INIT_REPO_ROOT}/templates/git/licenses/MIT"
+            ;;
+        apache-2.0|Apache-2.0|apache|apache2)
+            license_template="${INIT_REPO_ROOT}/templates/git/licenses/Apache-2.0"
+            ;;
+        *)
+            echo "unsupported license: ${license_name}"
+            echo "supported licenses: mit, apache-2.0, none"
+            return 1
+            ;;
+    esac
+
+    if [ ! -f "${readme_template}" ] || [ ! -f "${editorconfig_template}" ] || [ ! -f "${gitattributes_template}" ]; then
+        echo "repository templates are missing from ${repo_template_root}"
+        return 1
+    fi
+
+    if [ -n "${license_template}" ] && [ ! -f "${license_template}" ]; then
+        echo "license template is missing: ${license_template}"
+        return 1
+    fi
+
+    if [ -e "${target_dir}" ]; then
+        if [ ! -d "${target_dir}" ]; then
+            echo "target exists and is not a directory: ${target_dir}"
+            return 1
+        fi
+        if [ -n "$(find "${target_dir}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+            echo "target directory is not empty: ${target_dir}"
+            return 1
+        fi
+    else
+        mkdir -p "${target_dir}" || return 1
+        created_dir=1
+    fi
+
+    (
+        cd "${target_dir}" || exit 1
+
+        if git init -b main >/dev/null 2>&1; then
+            :
+        else
+            git init >/dev/null 2>&1 || exit 1
+            git branch -M main >/dev/null 2>&1 || true
+        fi
+
+        cp "${editorconfig_template}" .editorconfig
+        cp "${gitattributes_template}" .gitattributes
+
+        escaped_repo_name="$(printf '%s' "${repo_name}" | sed 's/[&|]/\\&/g')"
+        escaped_desc="$(printf '%s' "${desc}" | sed 's/[&|]/\\&/g')"
+        readme_file="$(mktemp "${TMPDIR:-/tmp}/newgitrepo-readme.XXXXXX")" || exit 1
+        sed \
+            -e "s|__PROJECT_NAME__|${escaped_repo_name}|g" \
+            -e "s|Project description\\.|${escaped_desc}|g" \
+            "${readme_template}" >"${readme_file}"
+        mv "${readme_file}" README.md
+
+        if [ -n "${license_template}" ]; then
+            current_year="$(date +%Y)"
+            license_file="$(mktemp "${TMPDIR:-/tmp}/newgitrepo-license.XXXXXX")" || exit 1
+            sed \
+                -e "s|__YEAR__|${current_year}|g" \
+                -e "s|__AUTHOR__|$(printf '%s' "${license_author}" | sed 's/[&|]/\\&/g')|g" \
+                "${license_template}" >"${license_file}"
+            mv "${license_file}" LICENSE
+        fi
+
+        if [ "${no_precommit}" -eq 0 ]; then
+            newprecommit --init .
+        fi
+
+        if [ -n "${remote_url}" ]; then
+            if git remote get-url origin >/dev/null 2>&1; then
+                echo "git remote origin already exists"
+                exit 1
+            fi
+            git remote add origin "${remote_url}" || exit 1
+        fi
+
+        if [ "${do_commit}" -eq 1 ]; then
+            git add . >/dev/null 2>&1 || exit 1
+            git commit -m "Initial commit" >/dev/null 2>&1 || exit 1
+            echo "Created initial commit"
+        fi
+    ) || {
+        if [ "${created_dir}" -eq 1 ] && [ -d "${target_dir}" ] && [ -z "$(find "${target_dir}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]; then
+            rmdir "${target_dir}" >/dev/null 2>&1 || true
+        fi
+        return 1
+    }
+
+    echo "Initialized repository: ${target_dir}"
+    echo "Next steps:"
+    echo "  cd ${target_dir}"
+    if [ -n "${remote_url}" ]; then
+        echo "  git remote -v"
+    fi
+}
+
 function gofmtdir() {
     if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
         echo "Usage: $0 <dir>"
