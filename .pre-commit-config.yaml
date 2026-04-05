@@ -3,7 +3,7 @@ repos:
     hooks:
       - id: git-diff-check
         name: git diff whitespace/conflict check
-        entry: git --no-pager diff --check --cached --
+        entry: bash -lc 'git --no-pager diff --check --cached --'
         language: system
         pass_filenames: false
       - id: verify-syntax
