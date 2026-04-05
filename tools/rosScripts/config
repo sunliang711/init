@@ -24,9 +24,9 @@ mappings=(
 
 "udp|51820|10.1.1.33||wireguard"
 
-"tcp|8443|10.1.1.135||syncthing discovery"
-"tcp|22067|10.1.1.135||syncthing relay"
-"tcp|22070|10.1.1.135||syncthing relay"
+"tcp|8443|10.1.1.99||syncthing discovery"
+"tcp|22067|10.1.1.99||syncthing relay"
+"tcp|22070|10.1.1.99||syncthing relay"
 
 "tcp|8008|10.1.1.135||nginx"
 "tcp|8009|10.1.1.135||nginx"
