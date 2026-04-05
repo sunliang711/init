@@ -2752,8 +2752,21 @@ EOF
 
     cat >"${precommit_snippet_file}" <<EOF
 repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-json
   - repo: local
     hooks:
+      - id: git-diff-check
+        name: git diff whitespace/conflict check
+        entry: bash -lc 'git --no-pager diff --check --cached --'
+        language: system
+        pass_filenames: false
       - id: check-staged-no-binary
         name: block staged binary files
         entry: bash .githooks/check-staged-no-binary.sh
@@ -3517,20 +3530,20 @@ done
 _extract() {
     local archive="$1"
     local target_dir="$2"
-    
+
     # Check parameters
     if [ $# -ne 2 ]; then
         echo "Usage: _extract <archive_file> <target_directory>"
         echo "Example: _extract file.tar.gz /path/to/extract"
         return 1
     fi
-    
+
     # Check if archive file exists
     if [ ! -f "$archive" ]; then
         echo "Error: File '$archive' does not exist"
         return 1
     fi
-    
+
     # Create target directory if it doesn't exist
     if [ ! -d "$target_dir" ]; then
         echo "Creating directory: $target_dir"
@@ -3539,50 +3552,50 @@ _extract() {
             return 1
         }
     fi
-    
+
     # Get absolute paths
     archive=$(realpath "$archive")
     target_dir=$(realpath "$target_dir")
-    
+
     echo "Analyzing file format..."
-    
+
     # Use file command to detect file type
     local file_type=$(file -b "$archive")
     local file_mime=$(file -b --mime-type "$archive")
-    
+
     echo "File type: $file_type"
     echo "MIME type: $file_mime"
     echo "Extracting '$archive' to '$target_dir'..."
-    
+
     # Define extraction functions
     extract_tar_bz2() {
         tar -xjf "$archive" -C "$target_dir" --strip-components=0
     }
-    
+
     extract_tar_gz() {
         tar -xzf "$archive" -C "$target_dir" --strip-components=0
     }
-    
+
     extract_tar_xz() {
         tar -xJf "$archive" -C "$target_dir" --strip-components=0
     }
-    
+
     extract_tar_lz() {
         tar --lzip -xf "$archive" -C "$target_dir" --strip-components=0
     }
-    
+
     extract_tar_lzma() {
         tar --lzma -xf "$archive" -C "$target_dir" --strip-components=0
     }
-    
+
     extract_tar_zst() {
         tar --zstd -xf "$archive" -C "$target_dir" --strip-components=0
     }
-    
+
     extract_tar() {
         tar -xf "$archive" -C "$target_dir" --strip-components=0
     }
-    
+
     extract_gzip() {
         local basename=$(basename "$archive")
         # Remove possible .gz extension
@@ -3591,46 +3604,46 @@ _extract() {
         [ "$basename" = "$(basename "$archive")" ] && basename="${basename}.extracted"
         gunzip -c "$archive" > "$target_dir/$basename"
     }
-    
+
     extract_bzip2() {
         local basename=$(basename "$archive")
         basename=${basename%.bz2}
         [ "$basename" = "$(basename "$archive")" ] && basename="${basename}.extracted"
         bunzip2 -c "$archive" > "$target_dir/$basename"
     }
-    
+
     extract_xz() {
         local basename=$(basename "$archive")
         basename=${basename%.xz}
         [ "$basename" = "$(basename "$archive")" ] && basename="${basename}.extracted"
         xz -dc "$archive" > "$target_dir/$basename"
     }
-    
+
     extract_lzip() {
         local basename=$(basename "$archive")
         basename=${basename%.lz}
         [ "$basename" = "$(basename "$archive")" ] && basename="${basename}.extracted"
         lzip -dc "$archive" > "$target_dir/$basename"
     }
-    
+
     extract_lzma() {
         local basename=$(basename "$archive")
         basename=${basename%.lzma}
         [ "$basename" = "$(basename "$archive")" ] && basename="${basename}.extracted"
         unlzma -c "$archive" > "$target_dir/$basename"
     }
-    
+
     extract_zstd() {
         local basename=$(basename "$archive")
         basename=${basename%.zst}
         [ "$basename" = "$(basename "$archive")" ] && basename="${basename}.extracted"
         zstd -dc "$archive" > "$target_dir/$basename"
     }
-    
+
     extract_zip() {
         unzip -q "$archive" -d "$target_dir"
     }
-    
+
     extract_rar() {
         if command -v unrar >/dev/null 2>&1; then
             unrar x "$archive" "$target_dir/"
@@ -3641,7 +3654,7 @@ _extract() {
             return 1
         fi
     }
-    
+
     extract_7z() {
         if command -v 7z >/dev/null 2>&1; then
             7z x "$archive" -o"$target_dir"
@@ -3652,14 +3665,14 @@ _extract() {
             return 1
         fi
     }
-    
+
     extract_compress() {
         local basename=$(basename "$archive")
         basename=${basename%.Z}
         [ "$basename" = "$(basename "$archive")" ] && basename="${basename}.extracted"
         uncompress -c "$archive" > "$target_dir/$basename"
     }
-    
+
     extract_lzo() {
         if command -v lzop >/dev/null 2>&1; then
             local basename=$(basename "$archive")
@@ -3671,7 +3684,7 @@ _extract() {
             return 1
         fi
     }
-    
+
     extract_cab() {
         if command -v cabextract >/dev/null 2>&1; then
             cabextract -d "$target_dir" "$archive"
@@ -3680,11 +3693,11 @@ _extract() {
             return 1
         fi
     }
-    
+
     extract_deb() {
         ar p "$archive" data.tar.* | tar -xf - -C "$target_dir"
     }
-    
+
     extract_rpm() {
         if command -v rpm2cpio >/dev/null 2>&1; then
             cd "$target_dir" && rpm2cpio "$archive" | cpio -idmv
@@ -3694,10 +3707,10 @@ _extract() {
             return 1
         fi
     }
-    
+
     # First try to determine format based on file command output
     local format_detected=false
-    
+
     # Check MIME type
     case "$file_mime" in
         application/x-tar)
@@ -3793,7 +3806,7 @@ _extract() {
             extract_cab && format_detected=true
             ;;
     esac
-    
+
     # If MIME type detection failed, try based on detailed file command output
     if [ "$format_detected" = false ]; then
         case "$file_type" in
@@ -3890,11 +3903,11 @@ _extract() {
                 ;;
         esac
     fi
-    
+
     # If format detection failed, fallback to filename extension method
     if [ "$format_detected" = false ]; then
         echo "Warning: Cannot detect format by file content, trying filename extension..."
-        
+
         case "${archive,,}" in  # ${archive,,} converts to lowercase
             *.tar.bz2|*.tbz2)
                 echo "Detected by extension: TAR.BZ2"
@@ -3982,7 +3995,7 @@ _extract() {
                 ;;
         esac
     fi
-    
+
     # If still cannot recognize format
     if [ "$format_detected" = false ]; then
         echo "Error: Cannot recognize file format"
@@ -3995,12 +4008,12 @@ _extract() {
         echo "                  gz, bz2, xz, lz, lzma, zst, zip, rar, 7z, Z, lzo, cab, deb, rpm"
         return 1
     fi
-    
+
     local exit_code=$?
-    
+
     if [ $exit_code -eq 0 ]; then
         echo "Extraction completed: '$archive' -> '$target_dir'"
-        
+
         # Handle special case: if only one directory after extraction, suggest flattening
         local extracted_items=($(ls -A "$target_dir" 2>/dev/null))
         if [ ${#extracted_items[@]} -eq 1 ] && [ -d "$target_dir/${extracted_items[0]}" ]; then
@@ -4020,7 +4033,7 @@ extract() {
     local archive="$1"
     local target_dir="$2"
     local flatten="${3:-true}"  # Default to true for auto-flattening
-    
+
     # Check parameters
     if [ $# -lt 2 ] || [ $# -gt 3 ]; then
         echo "Usage: extract <archive_file> <target_directory> [flatten]"
@@ -4028,10 +4041,10 @@ extract() {
         echo "         extract file.tar.gz /path/to/extract false  # disable auto-flatten"
         return 1
     fi
-    
+
     # Call internal extraction function
     _extract "$archive" "$target_dir" || return $?
-    
+
     # If auto-flattening is enabled
     if [ "$flatten" = "true" ] || [ "$flatten" = "1" ]; then
         local extracted_items=($(ls -A "$target_dir" 2>/dev/null))
@@ -4057,17 +4070,17 @@ extract_batch() {
         echo "Example: extract_batch file1.tar.gz file2.zip file3.rar /path/to/extract"
         return 1
     fi
-    
+
     # Last argument is the target directory
     local target_dir="${!#}"
-    
+
     # All arguments except the last one are archive files
     local archives=("${@:1:$#-1}")
-    
+
     echo "Target directory: $target_dir"
     echo "Archives to extract: ${#archives[@]}"
     echo ""
-    
+
     for archive in "${archives[@]}"; do
         echo "Processing: $archive"
         extract "$archive" "$target_dir"
@@ -4078,21 +4091,21 @@ extract_batch() {
 # File format detection function (detect only, no extraction)
 detect_format() {
     local archive="$1"
-    
+
     if [ ! -f "$archive" ]; then
         echo "Error: File '$archive' does not exist"
         return 1
     fi
-    
+
     echo "File: $archive"
     echo "File type: $(file -b "$archive")"
     echo "MIME type: $(file -b --mime-type "$archive")"
     echo "File size: $(du -h "$archive" | cut -f1)"
-    
+
     # If it's an archive file, try to list contents
     local file_type=$(file -b "$archive")
     local file_mime=$(file -b --mime-type "$archive")
-    
+
     echo "Content preview:"
     case "$file_mime" in
         application/x-tar)
