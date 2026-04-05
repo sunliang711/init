@@ -310,7 +310,13 @@ smoke_checks() {
 }
 
 test_set_git() {
+    local state_file
+
     setup_test_env set-git
+    state_file="${TEST_HOME}/.local/state/init/git.state"
+
+    env HOME="${TEST_HOME}" git config --global user.name "Existing User"
+    env HOME="${TEST_HOME}" git config --global core.editor "emacs"
 
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${ORIGINAL_PATH}" \
         bash "${ROOT_DIR}/scripts/setGit.sh" set \
@@ -320,13 +326,17 @@ test_set_git() {
 
     assert_equals "Init Tester" "$(env HOME="${TEST_HOME}" git config --global --get user.name)" "git user.name"
     assert_equals "init@example.com" "$(env HOME="${TEST_HOME}" git config --global --get user.email)" "git user.email"
+    assert_exists "${state_file}"
 
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${ORIGINAL_PATH}" \
         bash "${ROOT_DIR}/scripts/setGit.sh" unset
 
-    if env HOME="${TEST_HOME}" git config --global --get user.name >/dev/null 2>&1; then
-        fail "expected git user.name to be unset"
+    assert_equals "Existing User" "$(env HOME="${TEST_HOME}" git config --global --get user.name)" "restored git user.name"
+    assert_equals "emacs" "$(env HOME="${TEST_HOME}" git config --global --get core.editor)" "restored git core.editor"
+    if env HOME="${TEST_HOME}" git config --global --get user.email >/dev/null 2>&1; then
+        fail "expected git user.email to be unset"
     fi
+    assert_not_exists "${state_file}"
 }
 
 test_zsh_install_uninstall() {

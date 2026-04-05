@@ -159,7 +159,7 @@ EOF
 
 
 check() {
-    _require_commands tmux
+    _require_commands git tmux
 }
 
 # 示例子命令函数

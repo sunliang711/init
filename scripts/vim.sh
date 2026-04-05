@@ -27,7 +27,7 @@ nerdtreePath="${INIT_TARGET_HOME}/.vim/pack/vendor/start/nerdtree"
 nerdtreeRepo="https://github.com/preservim/nerdtree.git"
 
 check() {
-    _require_commands vim
+    _require_commands git vim
 }
 
 global() {

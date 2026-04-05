@@ -21,6 +21,22 @@ SET_COMMAND_OPTIONS=(
     "--non-interactive    Fail instead of prompting when values are missing"
 )
 
+STATE_DIR="${INIT_TARGET_HOME}/.local/state/init"
+STATE_FILE="${STATE_DIR}/git.state"
+MANAGED_GIT_KEYS=(
+    user.email
+    user.name
+    http.postBuffer
+    push.default
+    pull.rebase
+    credential.helper
+    merge.tool
+    alias.tree
+    alias.list
+    core.editor
+    diff.tool
+)
+
 show_help() {
     _show_standard_help \
         "$0 [-l LOG_LEVEL] <command> [options]" \
@@ -32,6 +48,50 @@ show_help() {
 
 check() {
     _require_commands git
+}
+
+_ensure_state_dir() {
+    mkdir -p "${STATE_DIR}"
+}
+
+_cleanup_state_file() {
+    [ -f "${STATE_FILE}" ] && /bin/rm -f "${STATE_FILE}"
+}
+
+_snapshot_git_config_once() {
+    local tmp_file
+    local key
+    local value
+
+    [ -f "${STATE_FILE}" ] && return 0
+
+    tmp_file="$(mktemp "${TMPDIR:-/tmp}/init-git-state.XXXXXX")" || return 1
+    printf '# init previous git config snapshot\n' >"${tmp_file}"
+
+    for key in "${MANAGED_GIT_KEYS[@]}"; do
+        while IFS= read -r value; do
+            git config -f "${tmp_file}" --add "${key}" "${value}" || {
+                /bin/rm -f "${tmp_file}"
+                return 1
+            }
+        done < <(git config --global --get-all "${key}" 2>/dev/null || true)
+    done
+
+    _ensure_state_dir
+    mv "${tmp_file}" "${STATE_FILE}"
+}
+
+_restore_git_config_from_state() {
+    local key
+    local value
+
+    [ -f "${STATE_FILE}" ] || return 0
+
+    for key in "${MANAGED_GIT_KEYS[@]}"; do
+        while IFS= read -r value; do
+            git config --global --add "${key}" "${value}" || return 1
+        done < <(git config -f "${STATE_FILE}" --get-all "${key}" 2>/dev/null || true)
+    done
 }
 
 _trim() {
@@ -213,6 +273,8 @@ apply_git_config() {
         return 1
     fi
 
+    _snapshot_git_config_once || return 1
+
     _set_global_git_config user.email "${email}" || return 1
     _set_global_git_config user.name "${name}" || return 1
     _set_global_git_config http.postBuffer 524288000 || return 1
@@ -241,24 +303,16 @@ apply_git_config() {
 }
 
 clear_git_config() {
-    local keys=(
-        user.email
-        user.name
-        http.postBuffer
-        push.default
-        pull.rebase
-        credential.helper
-        merge.tool
-        alias.tree
-        alias.list
-        core.editor
-        diff.tool
-    )
     local key
 
-    for key in "${keys[@]}"; do
+    check
+
+    for key in "${MANAGED_GIT_KEYS[@]}"; do
         git config --global --unset-all "${key}" >/dev/null 2>&1 || true
     done
+
+    _restore_git_config_from_state || return 1
+    _cleanup_state_file
 }
 
 _resolve_set_git_handler() {

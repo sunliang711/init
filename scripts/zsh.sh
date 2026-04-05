@@ -11,7 +11,7 @@ unset COMMON_LIB INIT_CALLER_SOURCE
 # ------------------------------------------------------------
 # 子命令数组
 # shellcheck disable=SC2034
-COMMANDS=("help" "check" "install" "uninstall" "linksshpems")
+COMMANDS=("help" "check" "install" "uninstall")
 # shellcheck disable=SC2034
 HELP_OPTIONS=("-l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)")
 
@@ -241,11 +241,6 @@ install() {
     _write_ssh_config
 
     _write_state "${managed_autosuggestions_dir}" "${managed_syntax_highlighting_dir}"
-}
-
-linksshpems() {
-    _ensure_symlink "${INIT_REPO_ROOT}/softlinks/sshpems" "${INIT_TARGET_HOME}/.ssh/sshpems"
-    chmod 0600 "${INIT_TARGET_HOME}"/.ssh/sshpems/*
 }
 
 uninstall() {
