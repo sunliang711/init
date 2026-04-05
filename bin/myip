@@ -9,7 +9,6 @@ import logging
 LOG_FORMAT = "[%(asctime)s - %(levelname)s - %(message)s]"
 DATE_FORMAT = "%Y/%m%d %H:%M:%S %p"
 
-
 DefaultHost = "socks5://localhost"
 DefaultPort = 1080
 DefaultMTime = 3
