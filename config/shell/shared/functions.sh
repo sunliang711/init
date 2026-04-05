@@ -2409,6 +2409,235 @@ AGENTS.md
 EOF
 }
 
+function newprecommitconfig() {
+    local dest="${PWD}"
+    local force=0
+    local max_kb=2048
+    local allow_regex=""
+    local allow_exts=""
+    local dest_set=0
+    local precommit_file
+    local hooks_dir
+    local binary_hook_template
+    local size_hook_template
+    local binary_hook_target
+    local size_hook_target
+    local escaped_allow_regex
+    local ext_regex=""
+    local ext_item=""
+    local ext_item_escaped=""
+
+    _append_allow_regex() {
+        local fragment="${1:-}"
+        [ -n "${fragment}" ] || return 0
+        if [ -n "${allow_regex}" ]; then
+            allow_regex="${allow_regex}|${fragment}"
+        else
+            allow_regex="${fragment}"
+        fi
+    }
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -h|--help)
+                cat <<EOF
+Usage: newprecommitconfig [--max-kb N] [--allow-regex REGEX] [--allow-ext LIST] [--force] [dest]
+
+Create a starter .pre-commit-config.yaml plus staged binary and large-file checks.
+
+Options:
+  --max-kb N         Block staged files larger than N KB. Default: 2048
+  --allow-regex RX   Allow staged paths that match RX
+  --exclude-regex RX Alias of --allow-regex
+  --allow-ext LIST   Allow file extensions like png,jpg,pdf
+  --force            Overwrite existing generated files
+  -h, --help         Show this help
+
+Examples:
+  newprecommitconfig
+  newprecommitconfig --max-kb 512
+  newprecommitconfig --allow-ext png,jpg,pdf
+  newprecommitconfig --allow-regex '^docs/assets/|\\.png$'
+EOF
+                return 0
+                ;;
+            --force|-f)
+                force=1
+                ;;
+            --max-kb)
+                shift
+                if [ -z "${1:-}" ]; then
+                    echo "missing value for --max-kb"
+                    return 1
+                fi
+                max_kb="$1"
+                ;;
+            --max-kb=*)
+                max_kb="${1#*=}"
+                ;;
+            --allow-regex|--exclude-regex)
+                shift
+                if [ -z "${1:-}" ]; then
+                    echo "missing value for allow regex"
+                    return 1
+                fi
+                _append_allow_regex "${1}"
+                ;;
+            --allow-regex=*|--exclude-regex=*)
+                _append_allow_regex "${1#*=}"
+                ;;
+            --allow-ext)
+                shift
+                if [ -z "${1:-}" ]; then
+                    echo "missing value for --allow-ext"
+                    return 1
+                fi
+                if [ -n "${allow_exts}" ]; then
+                    allow_exts="${allow_exts},${1}"
+                else
+                    allow_exts="${1}"
+                fi
+                ;;
+            --allow-ext=*)
+                if [ -n "${allow_exts}" ]; then
+                    allow_exts="${allow_exts},${1#*=}"
+                else
+                    allow_exts="${1#*=}"
+                fi
+                ;;
+            -*)
+                echo "unknown option: $1"
+                return 1
+                ;;
+            *)
+                if [ "${dest_set}" -eq 1 ]; then
+                    echo "too many destination arguments: $1"
+                    return 1
+                fi
+                dest="$1"
+                dest_set=1
+                ;;
+        esac
+        shift
+    done
+
+    case "${max_kb}" in
+        ''|*[!0-9]*)
+            echo "--max-kb must be a positive integer"
+            return 1
+            ;;
+    esac
+
+    if [ -n "${allow_exts}" ]; then
+        OLD_IFS="${IFS}"
+        IFS=,
+        for ext_item in ${allow_exts}; do
+            IFS="${OLD_IFS}"
+            ext_item="$(printf '%s' "${ext_item}" | sed 's/^\.//; s/^[[:space:]]*//; s/[[:space:]]*$//')"
+            [ -n "${ext_item}" ] || continue
+            ext_item_escaped="$(printf '%s' "${ext_item}" | sed 's/[][(){}.^$+*?|\\]/\\&/g')"
+            if [ -n "${ext_regex}" ]; then
+                ext_regex="${ext_regex}|${ext_item_escaped}"
+            else
+                ext_regex="${ext_item_escaped}"
+            fi
+            IFS=,
+        done
+        IFS="${OLD_IFS}"
+    fi
+
+    if [ -n "${ext_regex}" ]; then
+        _append_allow_regex "\\.(${ext_regex})$"
+    fi
+
+    if [ ! -d "${dest}" ]; then
+        echo "destination directory not found: ${dest}"
+        return 1
+    fi
+
+    if [ -z "${INIT_REPO_ROOT:-}" ] || [ ! -d "${INIT_REPO_ROOT}" ]; then
+        echo "INIT_REPO_ROOT is not available"
+        return 1
+    fi
+
+    precommit_file="${dest}/.pre-commit-config.yaml"
+    hooks_dir="${dest}/.githooks"
+    binary_hook_target="${hooks_dir}/check-staged-no-binary.sh"
+    size_hook_target="${hooks_dir}/check-staged-file-size.sh"
+    binary_hook_template="${INIT_REPO_ROOT}/templates/git/hooks/check-staged-no-binary.sh"
+    size_hook_template="${INIT_REPO_ROOT}/templates/git/hooks/check-staged-file-size.sh"
+
+    if [ ! -f "${binary_hook_template}" ] || [ ! -f "${size_hook_template}" ]; then
+        echo "pre-commit hook templates are missing from ${INIT_REPO_ROOT}/templates/git/hooks"
+        return 1
+    fi
+
+    if [ "${force}" -ne 1 ]; then
+        for existing_path in "${precommit_file}" "${binary_hook_target}" "${size_hook_target}"; do
+            if [ -e "${existing_path}" ]; then
+                echo "refusing to overwrite existing file: ${existing_path}"
+                echo "rerun with --force if you want to replace the generated files"
+                return 1
+            fi
+        done
+    fi
+
+    mkdir -p "${hooks_dir}"
+    cp "${binary_hook_template}" "${binary_hook_target}"
+    cp "${size_hook_template}" "${size_hook_target}"
+    chmod +x "${binary_hook_target}" "${size_hook_target}"
+    escaped_allow_regex="$(printf '%s' "${allow_regex}" | sed "s/'/''/g")"
+
+    cat >"${precommit_file}" <<EOF
+repos:
+  - repo: local
+    hooks:
+      - id: check-staged-no-binary
+        name: block staged binary files
+        entry: bash .githooks/check-staged-no-binary.sh
+        language: system
+        pass_filenames: false
+EOF
+
+    if [ -n "${allow_regex}" ]; then
+        cat >>"${precommit_file}" <<EOF
+        args:
+          - '${escaped_allow_regex}'
+EOF
+    fi
+
+    cat >>"${precommit_file}" <<EOF
+      - id: check-staged-file-size
+        name: block staged files larger than ${max_kb} KB
+        entry: bash .githooks/check-staged-file-size.sh ${max_kb}
+        language: system
+        pass_filenames: false
+EOF
+
+    if [ -n "${allow_regex}" ]; then
+        cat >>"${precommit_file}" <<EOF
+        args:
+          - '${escaped_allow_regex}'
+EOF
+    fi
+
+    echo "Created ${precommit_file}"
+    echo "Created ${binary_hook_target}"
+    echo "Created ${size_hook_target}"
+    if [ -n "${allow_regex}" ]; then
+        echo "Allow regex: ${allow_regex}"
+    fi
+    echo "Next steps:"
+    echo "  cd ${dest}"
+    if command -v pre-commit >/dev/null 2>&1; then
+        echo "  pre-commit install"
+    else
+        echo "  pre-commit is not installed yet"
+        echo "  install it first, then run: pre-commit install"
+        echo "  examples: brew install pre-commit  |  pipx install pre-commit"
+    fi
+}
+
 function gofmtdir() {
     if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
         echo "Usage: $0 <dir>"
@@ -2863,6 +3092,7 @@ function clearall() {
 }
 
 for s in "${SHELL_SHARED_ROOT}"/auto-source/*; do
+    [ -e "${s}" ] || continue
     source "$s"
 done
 
