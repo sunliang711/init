@@ -39,7 +39,7 @@ if [ -n "${ZSH_VERSION:-}" ]; then
             return 1
         }
 
-        extra_scripts=("${(@f)__lazy_extra_scripts[$name]}")
+        extra_scripts=(${(@f)__lazy_extra_scripts[$name]})
         _lazy_source_once "$name" "$main_script" "${extra_scripts[@]}"
     }
 
@@ -49,7 +49,7 @@ if [ -n "${ZSH_VERSION:-}" ]; then
         shift 2
 
         local -a wrapped_cmds
-        wrapped_cmds=("${(@f)__lazy_command_groups[$name]}")
+        wrapped_cmds=(${(@f)__lazy_command_groups[$name]})
 
         (( ${#wrapped_cmds[@]} )) && unset -f "${wrapped_cmds[@]}" 2>/dev/null
         _lazy_load_registered "$name" >/dev/null 2>&1 || true
@@ -86,8 +86,8 @@ if [ -n "${ZSH_VERSION:-}" ]; then
         fi
 
         __lazy_main_scripts[$name]="$main_script"
-        __lazy_extra_scripts[$name]="${(j:\n:)extra_scripts}"
-        __lazy_command_groups[$name]="${(j:\n:)commands}"
+        __lazy_extra_scripts[$name]="${(F)extra_scripts}"
+        __lazy_command_groups[$name]="${(F)commands}"
 
         local cmd
         for cmd in "${commands[@]}"; do

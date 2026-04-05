@@ -1,6 +1,11 @@
 repos:
   - repo: local
     hooks:
+      - id: git-diff-check
+        name: git diff whitespace/conflict check
+        entry: git --no-pager diff --check --cached --
+        language: system
+        pass_filenames: false
       - id: verify-syntax
         name: bootstrap verify syntax
         entry: bash bootstrap/verify.sh syntax
