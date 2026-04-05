@@ -15,16 +15,28 @@ else
     this="$(cd $(dirname $rpath) && pwd)"
 fi
 
-if [ -r ${SHELLRC_ROOT}/shelllib ]; then
-    source ${SHELLRC_ROOT}/shelllib
-elif [ -r /tmp/shelllib ]; then
-    source /tmp/shelllib
+search_dir="${this}"
+shelllib_path=""
+while [ "${search_dir}" != "/" ]; do
+    if [ -r "${search_dir}/config/shell/shared/shelllib.sh" ]; then
+        shelllib_path="${search_dir}/config/shell/shared/shelllib.sh"
+        break
+    fi
+    search_dir="$(dirname "${search_dir}")"
+done
+
+if [ -r "${shelllib_path}" ]; then
+    # shellcheck source=/dev/null
+    source "${shelllib_path}"
+elif [ -r /tmp/shelllib.sh ]; then
+    # shellcheck source=/dev/null
+    source /tmp/shelllib.sh
 else
-    # download shelllib then source
     shelllibURL=https://gitee.com/sunliang711/init2/raw/master/shell/shellrc.d/shelllib
-    (cd /tmp && curl -s -LO ${shelllibURL})
-    if [ -r /tmp/shelllib ]; then
-        source /tmp/shelllib
+    curl -fsSL -o /tmp/shelllib.sh "${shelllibURL}"
+    if [ -r /tmp/shelllib.sh ]; then
+        # shellcheck source=/dev/null
+        source /tmp/shelllib.sh
     fi
 fi
 

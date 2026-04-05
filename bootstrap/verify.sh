@@ -8,21 +8,23 @@ ORIGINAL_PATH="${PATH}"
 TEMP_DIRS=()
 RUNTIME_PATH_FILES=(
     "${ROOT_DIR}/install.sh"
-    "${ROOT_DIR}/lib/init-common.sh"
-    "${ROOT_DIR}/scripts/zsh.sh"
-    "${ROOT_DIR}/tools/updateInit.sh"
-    "${ROOT_DIR}/softlinks/zshrc"
-    "${ROOT_DIR}/softlinks/sshconfig"
+    "${ROOT_DIR}/bootstrap/lib/runtime.sh"
+    "${ROOT_DIR}/bootstrap/components/zsh-setup.sh"
+    "${ROOT_DIR}/bootstrap/jobs/repo-update.sh"
+    "${ROOT_DIR}/config/shell/init.sh"
+    "${ROOT_DIR}/config/shell/shared/environment.sh"
+    "${ROOT_DIR}/config/zsh/zshrc"
+    "${ROOT_DIR}/config/ssh/config.template"
 )
 SHELLCHECK_FILES=(
-    "${ROOT_DIR}/lib/init-common.sh"
+    "${ROOT_DIR}/bootstrap/lib/runtime.sh"
+    "${ROOT_DIR}/bootstrap/components/git-config.sh"
+    "${ROOT_DIR}/bootstrap/components/zsh-setup.sh"
+    "${ROOT_DIR}/bootstrap/components/fzf.sh"
+    "${ROOT_DIR}/bootstrap/components/tmux-setup.sh"
+    "${ROOT_DIR}/bootstrap/components/vim-setup.sh"
+    "${ROOT_DIR}/bootstrap/jobs/repo-update.sh"
     "${ROOT_DIR}/install.sh"
-    "${ROOT_DIR}/scripts/setGit.sh"
-    "${ROOT_DIR}/scripts/zsh.sh"
-    "${ROOT_DIR}/scripts/installFzf.sh"
-    "${ROOT_DIR}/scripts/tmux.sh"
-    "${ROOT_DIR}/scripts/vim.sh"
-    "${ROOT_DIR}/tools/updateInit.sh"
 )
 
 cleanup() {
@@ -285,15 +287,25 @@ shellcheck_checks() {
 
 syntax_checks() {
     run bash -n \
-        "${ROOT_DIR}/lib/init-common.sh" \
-        "${ROOT_DIR}/install.sh" \
-        "${ROOT_DIR}/scripts/setGit.sh" \
-        "${ROOT_DIR}/scripts/zsh.sh" \
-        "${ROOT_DIR}/scripts/installFzf.sh" \
-        "${ROOT_DIR}/scripts/tmux.sh" \
-        "${ROOT_DIR}/scripts/vim.sh" \
-        "${ROOT_DIR}/tools/updateInit.sh"
-    run zsh -n "${ROOT_DIR}/softlinks/zshrc"
+        "${ROOT_DIR}/bootstrap/lib/runtime.sh" \
+        "${ROOT_DIR}/bootstrap/components/git-config.sh" \
+        "${ROOT_DIR}/bootstrap/components/zsh-setup.sh" \
+        "${ROOT_DIR}/bootstrap/components/fzf.sh" \
+        "${ROOT_DIR}/bootstrap/components/tmux-setup.sh" \
+        "${ROOT_DIR}/bootstrap/components/vim-setup.sh" \
+        "${ROOT_DIR}/bootstrap/jobs/repo-update.sh" \
+        "${ROOT_DIR}/config/shell/init.sh" \
+        "${ROOT_DIR}/config/shell/shared/colors.sh" \
+        "${ROOT_DIR}/config/shell/shared/functions.sh" \
+        "${ROOT_DIR}/config/shell/shared/environment.sh" \
+        "${ROOT_DIR}/config/shell/shared/aliases.sh" \
+        "${ROOT_DIR}/config/shell/shared/extras.sh" \
+        "${ROOT_DIR}/config/shell/shared/shelllib.sh" \
+        "${ROOT_DIR}/bin/newsh" \
+        "${ROOT_DIR}/bin/newrust" \
+        "${ROOT_DIR}/bin/newsolanaprogram" \
+        "${ROOT_DIR}/install.sh"
+    run zsh -n "${ROOT_DIR}/config/zsh/zshrc"
     run path_checks
     shellcheck_checks
 }
@@ -302,11 +314,12 @@ smoke_checks() {
     run bash "${ROOT_DIR}/install.sh" help
     run bash "${ROOT_DIR}/install.sh" components
     run bash "${ROOT_DIR}/install.sh" install --all --dry-run
-    run bash "${ROOT_DIR}/scripts/zsh.sh" help
-    run bash "${ROOT_DIR}/scripts/installFzf.sh" help
-    run bash "${ROOT_DIR}/scripts/tmux.sh" help
-    run bash "${ROOT_DIR}/scripts/vim.sh" help
-    run bash "${ROOT_DIR}/tools/updateInit.sh" help
+    run bash "${ROOT_DIR}/bootstrap/components/git-config.sh" help
+    run bash "${ROOT_DIR}/bootstrap/components/zsh-setup.sh" help
+    run bash "${ROOT_DIR}/bootstrap/components/fzf.sh" help
+    run bash "${ROOT_DIR}/bootstrap/components/tmux-setup.sh" help
+    run bash "${ROOT_DIR}/bootstrap/components/vim-setup.sh" help
+    run bash "${ROOT_DIR}/bootstrap/jobs/repo-update.sh" help
 }
 
 test_set_git() {
@@ -319,7 +332,7 @@ test_set_git() {
     env HOME="${TEST_HOME}" git config --global core.editor "emacs"
 
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${ORIGINAL_PATH}" \
-        bash "${ROOT_DIR}/scripts/setGit.sh" set \
+        bash "${ROOT_DIR}/bootstrap/components/git-config.sh" set \
         --name "Init Tester" \
         --email "init@example.com" \
         --non-interactive
@@ -329,7 +342,7 @@ test_set_git() {
     assert_exists "${state_file}"
 
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${ORIGINAL_PATH}" \
-        bash "${ROOT_DIR}/scripts/setGit.sh" unset
+        bash "${ROOT_DIR}/bootstrap/components/git-config.sh" unset
 
     assert_equals "Existing User" "$(env HOME="${TEST_HOME}" git config --global --get user.name)" "restored git user.name"
     assert_equals "emacs" "$(env HOME="${TEST_HOME}" git config --global --get core.editor)" "restored git core.editor"
@@ -352,12 +365,12 @@ test_zsh_install_uninstall() {
     printf 'legacy ssh config\n' >"${TEST_HOME}/.ssh/config"
 
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
-        bash "${ROOT_DIR}/scripts/zsh.sh" install
+        bash "${ROOT_DIR}/bootstrap/components/zsh-setup.sh" install
 
-    assert_symlink_target "${TEST_HOME}/.zshrc" "${ROOT_DIR}/softlinks/zshrc"
+    assert_symlink_target "${TEST_HOME}/.zshrc" "${ROOT_DIR}/config/zsh/zshrc"
     assert_find_count "${TEST_HOME}" ".zshrc.init.bak.*" 1
     assert_file_contains "${TEST_HOME}/.ssh/config" "# managed-by: init/sshconfig"
-    assert_file_contains "${TEST_HOME}/.ssh/config" "Include ${ROOT_DIR}/softlinks/sshconfig.local"
+    assert_file_contains "${TEST_HOME}/.ssh/config" "Include ${ROOT_DIR}/config/ssh/local.conf"
     assert_find_count "${TEST_HOME}/.ssh" "config.init.bak.*" 1
     assert_file_contains "${TEST_HOME}/.editrc" "bind -v"
     assert_file_contains "${TEST_HOME}/.inputrc" "set editing-mode vi"
@@ -366,7 +379,7 @@ test_zsh_install_uninstall() {
     assert_exists "${TEST_HOME}/.oh-my-zsh/custom/plugins/zsh-syntax-highlighting/.git"
     assert_symlink_target \
         "${TEST_HOME}/.oh-my-zsh/custom/themes/agnoster-newline.zsh-theme" \
-        "${ROOT_DIR}/scripts/../softlinks/agnoster-newline.zsh-theme"
+        "${ROOT_DIR}/config/zsh/themes/agnoster-newline.zsh-theme"
 
     state_file="${TEST_HOME}/.local/state/init/zsh.state"
     assert_exists "${state_file}"
@@ -374,7 +387,7 @@ test_zsh_install_uninstall() {
     assert_file_contains "${state_file}" "MANAGED_SYNTAX_HIGHLIGHTING_DIR=1"
 
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
-        bash "${ROOT_DIR}/scripts/zsh.sh" uninstall
+        bash "${ROOT_DIR}/bootstrap/components/zsh-setup.sh" uninstall
 
     assert_not_exists "${TEST_HOME}/.zshrc"
     assert_not_exists "${TEST_HOME}/.ssh/config"
@@ -393,7 +406,7 @@ test_fzf_install_uninstall() {
     install_fake_git
 
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
-        bash "${ROOT_DIR}/scripts/installFzf.sh" install
+        bash "${ROOT_DIR}/bootstrap/components/fzf.sh" install
 
     assert_exists "${TEST_HOME}/.fzf/.git"
     assert_exists "${TEST_HOME}/.fzf.zsh"
@@ -405,7 +418,7 @@ test_fzf_install_uninstall() {
     assert_file_contains "${state_file}" "MANAGED_FZF_BASH=1"
 
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
-        bash "${ROOT_DIR}/scripts/installFzf.sh" uninstall
+        bash "${ROOT_DIR}/bootstrap/components/fzf.sh" uninstall
 
     assert_not_exists "${TEST_HOME}/.fzf"
     assert_not_exists "${TEST_HOME}/.fzf.zsh"
@@ -424,7 +437,7 @@ test_tmux_install_uninstall() {
     printf 'keep\n' >"${TEST_HOME}/.tmux/keep/marker"
 
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
-        bash "${ROOT_DIR}/scripts/tmux.sh" install
+        bash "${ROOT_DIR}/bootstrap/components/tmux-setup.sh" install
 
     assert_file_contains "${TEST_HOME}/.tmux.conf" "# managed-by: init/tmux"
     assert_exists "${TEST_HOME}/.tmux/plugins/tpm/.git"
@@ -432,7 +445,7 @@ test_tmux_install_uninstall() {
     assert_file_contains "${state_file}" "MANAGED_TPM_DIR=1"
 
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
-        bash "${ROOT_DIR}/scripts/tmux.sh" uninstall
+        bash "${ROOT_DIR}/bootstrap/components/tmux-setup.sh" uninstall
 
     assert_not_exists "${TEST_HOME}/.tmux.conf"
     assert_not_exists "${TEST_HOME}/.tmux/plugins/tpm"
@@ -448,11 +461,11 @@ test_vim_user_install() {
     printf 'legacy vimrc\n' >"${TEST_HOME}/.vimrc"
 
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
-        bash "${ROOT_DIR}/scripts/vim.sh" user
+        bash "${ROOT_DIR}/bootstrap/components/vim-setup.sh" user
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
-        bash "${ROOT_DIR}/scripts/vim.sh" user
+        bash "${ROOT_DIR}/bootstrap/components/vim-setup.sh" user
 
-    assert_same_file "${TEST_HOME}/.vimrc" "${ROOT_DIR}/scripts/vimrc"
+    assert_same_file "${TEST_HOME}/.vimrc" "${ROOT_DIR}/config/editors/vim/vimrc"
     assert_find_count "${TEST_HOME}" ".vimrc.init.bak.*" 1
     assert_exists "${TEST_HOME}/.vim/pack/vendor/start/nerdtree/.git"
     assert_exists "${TEST_HOME}/.vim/pack/vendor/start/nerdtree/doc/nerdtree.txt"
@@ -468,23 +481,23 @@ test_update_init() {
 
     crontab_file="${TEST_STATE_DIR}/crontab.txt"
     printf '15 3 * * * echo existing\n' >"${crontab_file}"
-    cron_fragment="updateInit.sh update >/dev/null 2>&1"
+    cron_fragment="repo-update.sh update >/dev/null 2>&1"
 
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
-        bash "${ROOT_DIR}/tools/updateInit.sh" install
+        bash "${ROOT_DIR}/bootstrap/jobs/repo-update.sh" install
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
-        bash "${ROOT_DIR}/tools/updateInit.sh" install
+        bash "${ROOT_DIR}/bootstrap/jobs/repo-update.sh" install
 
     assert_file_contains "${crontab_file}" "15 3 * * * echo existing"
     assert_file_contains "${crontab_file}" "${cron_fragment}"
     assert_find_count "${TEST_STATE_DIR}" "git-pulls.log" 0
 
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
-        bash "${ROOT_DIR}/tools/updateInit.sh" update
+        bash "${ROOT_DIR}/bootstrap/jobs/repo-update.sh" update
     assert_file_contains "${TEST_STATE_DIR}/git-pulls.log" "${ROOT_DIR}"
 
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
-        bash "${ROOT_DIR}/tools/updateInit.sh" uninstall
+        bash "${ROOT_DIR}/bootstrap/jobs/repo-update.sh" uninstall
 
     assert_file_contains "${crontab_file}" "15 3 * * * echo existing"
     assert_file_not_contains "${crontab_file}" "${cron_fragment}"

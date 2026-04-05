@@ -368,10 +368,10 @@ link() {
     # require bash >= 4.0
     # on MacOS install bash with brew (brew install bash),then add $(brew --prefix)/bin to PATH
     declare -A link_table=(
-        ["${this}/../softlinks/zed/settings.json"]="${dest}/settings.json"
-        ["${this}/../softlinks/zed/keymap.json"]="${dest}/keymap.json"
-        ["${this}/../softlinks/zed/snippets"]="${dest}/snippets"
-        ["${this}/../softlinks/zed/tasks.json"]="${dest}/tasks.json"
+        ["${this}/../config/editors/zed/settings.json"]="${dest}/settings.json"
+        ["${this}/../config/editors/zed/keymap.json"]="${dest}/keymap.json"
+        ["${this}/../config/editors/zed/snippets"]="${dest}/snippets"
+        ["${this}/../config/editors/zed/tasks.json"]="${dest}/tasks.json"
     )
 
     if [ ! -d "$dest}" ]; then

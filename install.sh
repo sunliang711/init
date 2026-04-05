@@ -1,25 +1,25 @@
 #!/bin/bash
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-COMMON_LIB="${SCRIPT_DIR}/lib/init-common.sh"
+RUNTIME_LIB="${SCRIPT_DIR}/bootstrap/lib/runtime.sh"
 # shellcheck disable=SC2034
 INIT_CALLER_SOURCE="${BASH_SOURCE[0]}"
-# shellcheck source=lib/init-common.sh
-source "${COMMON_LIB}"
-unset COMMON_LIB INIT_CALLER_SOURCE
+# shellcheck source=bootstrap/lib/runtime.sh
+source "${RUNTIME_LIB}"
+unset RUNTIME_LIB INIT_CALLER_SOURCE
 
 # ------------------------------------------------------------
-ALL_COMPONENTS=("git" "zsh" "fzf" "tmux" "vim" "update")
+COMPONENT_IDS=("git" "zsh" "fzf" "tmux" "vim" "update")
 DEFAULT_INSTALL_COMPONENTS=("zsh" "fzf" "tmux" "vim")
 DEFAULT_UNINSTALL_COMPONENTS=("zsh" "fzf" "tmux")
-DEFAULT_CHECK_COMPONENTS=("${ALL_COMPONENTS[@]}")
+DEFAULT_CHECK_COMPONENTS=("${COMPONENT_IDS[@]}")
 
 ACTION_PROXY=""
 DRY_RUN=0
 RAW_COMPONENTS=()
 SELECTED_COMPONENTS=()
 
-join_by() {
+join_with() {
     local sep="$1"
     shift
     local output=""
@@ -36,14 +36,14 @@ join_by() {
     printf '%s' "$output"
 }
 
-trim() {
+trim_whitespace() {
     local value="$1"
     value="${value#"${value%%[![:space:]]*}"}"
     value="${value%"${value##*[![:space:]]}"}"
     printf '%s' "$value"
 }
 
-add_component_once() {
+select_component_once() {
     local candidate="$1"
     local existing
     for existing in "${SELECTED_COMPONENTS[@]}"; do
@@ -54,7 +54,7 @@ add_component_once() {
     SELECTED_COMPONENTS+=("$candidate")
 }
 
-append_component_tokens() {
+parse_component_tokens() {
     local raw="$1"
     local token
     local IFS=','
@@ -62,14 +62,14 @@ append_component_tokens() {
 
     read -r -a parts <<< "$raw"
     for token in "${parts[@]}"; do
-        token="$(trim "$token")"
+        token="$(trim_whitespace "$token")"
         [ -z "$token" ] && continue
         token="$(printf '%s' "$token" | tr '[:upper:]' '[:lower:]')"
         RAW_COMPONENTS+=("$token")
     done
 }
 
-component_exists() {
+is_known_component() {
     local candidate="$1"
     case "$candidate" in
     git | zsh | fzf | tmux | vim | update)
@@ -100,7 +100,7 @@ component_supports_action() {
     esac
 }
 
-component_description() {
+describe_component() {
     case "$1" in
     git)
         echo "Git identity and global defaults"
@@ -123,7 +123,7 @@ component_description() {
     esac
 }
 
-component_change_summary() {
+summarize_component_change() {
     local action="$1"
     local component="$2"
 
@@ -147,7 +147,7 @@ component_change_summary() {
         echo "Adds a crontab entry to update this repo every day."
         ;;
     uninstall:zsh)
-        echo "Removes zsh artifacts managed by scripts/zsh.sh."
+        echo "Removes zsh artifacts managed by bootstrap/components/zsh-setup.sh."
         ;;
     uninstall:fzf)
         echo "Runs ~/.fzf/uninstall and removes ~/.fzf."
@@ -182,14 +182,14 @@ component_change_summary() {
     esac
 }
 
-print_component_list() {
+show_component_matrix() {
     local component
     local install_supported
     local uninstall_supported
     local check_supported
 
     echo "Available components:"
-    for component in "${ALL_COMPONENTS[@]}"; do
+    for component in "${COMPONENT_IDS[@]}"; do
         install_supported="no"
         uninstall_supported="no"
         check_supported="no"
@@ -198,7 +198,7 @@ print_component_list() {
         component_supports_action check "$component" && check_supported="yes"
         printf "  %-8s install=%-3s uninstall=%-3s check=%-3s %s\n" \
             "$component" "$install_supported" "$uninstall_supported" "$check_supported" \
-            "$(component_description "$component")"
+            "$(describe_component "$component")"
     done
 }
 
@@ -221,9 +221,9 @@ Component selection:
   Use "all" to select all supported components for that action.
 
 Defaults:
-  install      $(join_by ', ' "${DEFAULT_INSTALL_COMPONENTS[@]}")
-  uninstall    $(join_by ', ' "${DEFAULT_UNINSTALL_COMPONENTS[@]}")
-  check        $(join_by ', ' "${DEFAULT_CHECK_COMPONENTS[@]}")
+  install      $(join_with ', ' "${DEFAULT_INSTALL_COMPONENTS[@]}")
+  uninstall    $(join_with ', ' "${DEFAULT_UNINSTALL_COMPONENTS[@]}")
+  check        $(join_with ', ' "${DEFAULT_CHECK_COMPONENTS[@]}")
 
 Options:
   -l LOG_LEVEL       Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)
@@ -243,11 +243,11 @@ Examples:
 EOF
 }
 
-configure_install_proxy() {
+apply_install_proxy() {
     local proxy="$1"
     [ -n "$proxy" ] || return 0
 
-    _require_command git
+    require_command git
 
     log INFO "Apply install proxy and update global git proxy settings"
     git config --global http.proxy "$proxy"
@@ -258,7 +258,7 @@ configure_install_proxy() {
     export HTTPS_PROXY="$proxy"
 }
 
-normalize_action_components() {
+resolve_selected_components() {
     local action="$1"
     local component
     local candidate
@@ -287,21 +287,21 @@ normalize_action_components() {
 
     for component in "${input_components[@]}"; do
         if [ "$component" = "all" ]; then
-            for candidate in "${ALL_COMPONENTS[@]}"; do
+            for candidate in "${COMPONENT_IDS[@]}"; do
                 if component_supports_action "$action" "$candidate"; then
-                    add_component_once "$candidate"
+                    select_component_once "$candidate"
                 fi
             done
             continue
         fi
 
-        if ! component_exists "$component"; then
+        if ! is_known_component "$component"; then
             log FATAL "Unknown component: $component"
         fi
         if ! component_supports_action "$action" "$component"; then
             log FATAL "Component '$component' does not support action '$action'"
         fi
-        add_component_once "$component"
+        select_component_once "$component"
     done
 
     if [ "${#SELECTED_COMPONENTS[@]}" -eq 0 ]; then
@@ -309,7 +309,7 @@ normalize_action_components() {
     fi
 }
 
-parse_action_args() {
+parse_action_arguments() {
     local action="$1"
     shift
 
@@ -322,10 +322,10 @@ parse_action_args() {
         --components | --component | --only)
             shift
             [ $# -gt 0 ] || log FATAL "Missing value for --components"
-            append_component_tokens "$1"
+            parse_component_tokens "$1"
             ;;
         --all)
-            append_component_tokens "all"
+            parse_component_tokens "all"
             ;;
         --proxy)
             [ "$action" = "install" ] || log FATAL "--proxy is only supported for install"
@@ -343,7 +343,7 @@ parse_action_args() {
         --)
             shift
             while [ $# -gt 0 ]; do
-                append_component_tokens "$1"
+                parse_component_tokens "$1"
                 shift
             done
             break
@@ -355,22 +355,22 @@ parse_action_args() {
             if [ "$action" = "install" ] && [ -z "$ACTION_PROXY" ] && echo "$1" | grep -Eq '^[A-Za-z][A-Za-z0-9+.-]*://'; then
                 ACTION_PROXY="$1"
             else
-                append_component_tokens "$1"
+                parse_component_tokens "$1"
             fi
             ;;
         esac
         shift
     done
 
-    normalize_action_components "$action"
+    resolve_selected_components "$action"
 }
 
-print_action_summary() {
+show_action_summary() {
     local action="$1"
     local component
 
     echo "Action: ${action}"
-    echo "Components: $(join_by ', ' "${SELECTED_COMPONENTS[@]}")"
+    echo "Components: $(join_with ', ' "${SELECTED_COMPONENTS[@]}")"
 
     if [ "$action" = "install" ] && [ -n "$ACTION_PROXY" ]; then
         echo "Proxy: ${ACTION_PROXY}"
@@ -383,7 +383,7 @@ print_action_summary() {
 
     echo "Summary:"
     for component in "${SELECTED_COMPONENTS[@]}"; do
-        echo "  - ${component}: $(component_change_summary "$action" "$component")"
+        echo "  - ${component}: $(summarize_component_change "$action" "$component")"
     done
 }
 
@@ -393,52 +393,52 @@ run_component_action() {
 
     case "${action}:${component}" in
     check:git)
-        (cd "${SCRIPT_DIR}/scripts" && bash setGit.sh check)
+        bash "${SCRIPT_DIR}/bootstrap/components/git-config.sh" check
         ;;
     install:git)
-        (cd "${SCRIPT_DIR}/scripts" && bash setGit.sh set)
+        bash "${SCRIPT_DIR}/bootstrap/components/git-config.sh" set
         ;;
     check:zsh)
-        (cd "${SCRIPT_DIR}/scripts" && bash zsh.sh check)
+        bash "${SCRIPT_DIR}/bootstrap/components/zsh-setup.sh" check
         ;;
     install:zsh)
-        (cd "${SCRIPT_DIR}/scripts" && bash zsh.sh install)
+        bash "${SCRIPT_DIR}/bootstrap/components/zsh-setup.sh" install
         ;;
     uninstall:zsh)
-        (cd "${SCRIPT_DIR}/scripts" && bash zsh.sh uninstall)
+        bash "${SCRIPT_DIR}/bootstrap/components/zsh-setup.sh" uninstall
         ;;
     check:fzf)
-        (cd "${SCRIPT_DIR}/scripts" && bash installFzf.sh check)
+        bash "${SCRIPT_DIR}/bootstrap/components/fzf.sh" check
         ;;
     install:fzf)
-        (cd "${SCRIPT_DIR}/scripts" && bash installFzf.sh install)
+        bash "${SCRIPT_DIR}/bootstrap/components/fzf.sh" install
         ;;
     uninstall:fzf)
-        (cd "${SCRIPT_DIR}/scripts" && bash installFzf.sh uninstall)
+        bash "${SCRIPT_DIR}/bootstrap/components/fzf.sh" uninstall
         ;;
     check:tmux)
-        (cd "${SCRIPT_DIR}/scripts" && bash tmux.sh check)
+        bash "${SCRIPT_DIR}/bootstrap/components/tmux-setup.sh" check
         ;;
     install:tmux)
-        (cd "${SCRIPT_DIR}/scripts" && bash tmux.sh install)
+        bash "${SCRIPT_DIR}/bootstrap/components/tmux-setup.sh" install
         ;;
     uninstall:tmux)
-        (cd "${SCRIPT_DIR}/scripts" && bash tmux.sh uninstall)
+        bash "${SCRIPT_DIR}/bootstrap/components/tmux-setup.sh" uninstall
         ;;
     check:vim)
-        (cd "${SCRIPT_DIR}/scripts" && bash vim.sh check)
+        bash "${SCRIPT_DIR}/bootstrap/components/vim-setup.sh" check
         ;;
     install:vim)
-        (cd "${SCRIPT_DIR}/scripts" && bash vim.sh user)
+        bash "${SCRIPT_DIR}/bootstrap/components/vim-setup.sh" user
         ;;
     check:update)
-        (cd "${SCRIPT_DIR}/tools" && bash updateInit.sh check)
+        bash "${SCRIPT_DIR}/bootstrap/jobs/repo-update.sh" check
         ;;
     install:update)
-        (cd "${SCRIPT_DIR}/tools" && bash updateInit.sh install)
+        bash "${SCRIPT_DIR}/bootstrap/jobs/repo-update.sh" install
         ;;
     uninstall:update)
-        (cd "${SCRIPT_DIR}/tools" && bash updateInit.sh uninstall)
+        bash "${SCRIPT_DIR}/bootstrap/jobs/repo-update.sh" uninstall
         ;;
     *)
         log FATAL "Unsupported action '${action}' for component '${component}'"
@@ -446,7 +446,7 @@ run_component_action() {
     esac
 }
 
-run_checks() {
+run_selected_checks() {
     local component
     local error_checks=0
 
@@ -462,16 +462,16 @@ run_checks() {
 }
 
 install() {
-    parse_action_args install "$@"
-    print_action_summary install
-    run_checks
+    parse_action_arguments install "$@"
+    show_action_summary install
+    run_selected_checks
 
     if [ "$DRY_RUN" -eq 1 ]; then
         log INFO "Dry run only. Skipping install."
         return 0
     fi
 
-    configure_install_proxy "$ACTION_PROXY"
+    apply_install_proxy "$ACTION_PROXY"
 
     local component
     for component in "${SELECTED_COMPONENTS[@]}"; do
@@ -481,8 +481,8 @@ install() {
 }
 
 uninstall() {
-    parse_action_args uninstall "$@"
-    print_action_summary uninstall
+    parse_action_arguments uninstall "$@"
+    show_action_summary uninstall
 
     if [ "$DRY_RUN" -eq 1 ]; then
         log INFO "Dry run only. Skipping uninstall."
@@ -497,13 +497,13 @@ uninstall() {
 }
 
 check() {
-    parse_action_args check "$@"
-    print_action_summary check
-    run_checks
+    parse_action_arguments check "$@"
+    show_action_summary check
+    run_selected_checks
 }
 
 components() {
-    print_component_list
+    show_component_matrix
 }
 
-_dispatch_cli show_help _resolve_cli_handler "$@"
+dispatch_cli show_help resolve_cli_handler "$@"

@@ -2,6 +2,13 @@
 
 Personal shell and workstation bootstrap repo with a shared core plus machine-local overrides.
 
+Canonical runtime layout:
+
+- `bootstrap/`: active install chain, verification, and shared runtime helpers
+- `config/`: shared tracked config for zsh, ssh, vim, and zed
+- `templates/`: reusable tracked script and project templates
+- `bootstrap/` and `config/` are the active runtime/config roots
+
 ## Install Flow
 
 Clone the repo anywhere, then use the componentized installer. `~/.local/apps/init` is still a reasonable default:
@@ -45,19 +52,19 @@ This repo is used across multiple machines.
 
 - Keep tracked files machine-agnostic.
 - Put secrets, internal endpoints, private hosts, and machine-specific startup flags in ignored local files.
-- Shared public SSH hosts can live in `softlinks/sshconfig.shared`.
+- Shared public SSH hosts can live in `config/ssh/shared.conf`.
 - Main local extension points:
-  - `shellConfigs/local`
-  - `softlinks/sshconfig.local`
+  - `config/shell/local.sh`
+  - `config/ssh/local.conf`
   - `~/.ssh/config.local`
 
 See [docs/local-config.md](docs/local-config.md) for the current boundary and local templates.
 
 ## Lazy Shell Tools
 
-Zsh-only lazy-loading helpers live in [shellConfigs/function](shellConfigs/function). They let machine-local toolchains load on first use instead of during every shell startup.
+Zsh-only lazy-loading helpers live in [config/shell/shared/functions.sh](config/shell/shared/functions.sh).
 
-Keep actual registrations in `shellConfigs/local`, not in `softlinks/zshrc`. That keeps shared config machine-agnostic and avoids enabling toolchains on machines that do not have them installed.
+Keep actual registrations in `config/shell/local.sh`, not in `config/zsh/zshrc`. That keeps shared config machine-agnostic and avoids enabling toolchains on machines that do not have them installed.
 
 Basic pattern:
 
@@ -78,7 +85,7 @@ If a machine needs eager startup after registration, load it explicitly:
 _lazy_load_registered toolname
 ```
 
-Real examples for `shellConfigs/local`:
+Real examples for `config/shell/local.sh`:
 
 ```zsh
 # nvm and common Node.js commands
@@ -96,6 +103,11 @@ fi
 
 Use this pattern for machine-specific toolchains such as `nvm`, `sdkman`, `pyenv`, or similar startup-heavy shells integrations.
 
+Project and script generator templates now live under:
+
+- `templates/projects/`
+- `templates/scripts/`
+
 ## Rollback Notes
 
 The install scripts now try to avoid destructive changes:
@@ -109,7 +121,7 @@ The install scripts now try to avoid destructive changes:
 Run the lightweight verification script:
 
 ```bash
-bash tools/verify-init.sh
+bash bootstrap/verify.sh
 ```
 
 It now covers:
@@ -121,8 +133,8 @@ It now covers:
 Extra smoke checks:
 
 ```bash
-bash tools/verify-init.sh smoke
-bash tools/verify-init.sh integration
+bash bootstrap/verify.sh smoke
+bash bootstrap/verify.sh integration
 bash install.sh install --all --dry-run
 bash install.sh install --dry-run git,zsh --proxy http://127.0.0.1:7890
 ```

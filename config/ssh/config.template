@@ -1,12 +1,12 @@
 # Shared SSH config for all machines.
-# This file documents the generated ~/.ssh/config layout used by scripts/zsh.sh.
+# This file documents the generated ~/.ssh/config layout used by bootstrap/components/zsh-setup.sh.
 # The live wrapper written to ~/.ssh/config uses the current repo path.
 # Keep machine-specific hosts, agents, and network-specific settings in one of:
-#   - <repo>/softlinks/sshconfig.local
+#   - <repo>/config/ssh/local.conf
 #   - ~/.ssh/config.local
 #
 # Include directives must appear before any Host blocks.
 # Local includes come first so they can override shared aliases when needed.
-Include __INIT_REPO_ROOT__/softlinks/sshconfig.local
+Include __INIT_REPO_ROOT__/config/ssh/local.conf
 Include ~/.ssh/config.local
-Include __INIT_REPO_ROOT__/softlinks/sshconfig.shared
+Include __INIT_REPO_ROOT__/config/ssh/shared.conf

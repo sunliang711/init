@@ -1,12 +1,12 @@
 #!/bin/bash
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-COMMON_LIB="${SCRIPT_DIR}/../lib/init-common.sh"
+RUNTIME_LIB="${SCRIPT_DIR}/../lib/runtime.sh"
 # shellcheck disable=SC2034
 INIT_CALLER_SOURCE="${BASH_SOURCE[0]}"
-# shellcheck source=../lib/init-common.sh
-source "${COMMON_LIB}"
-unset COMMON_LIB INIT_CALLER_SOURCE SCRIPT_DIR
+# shellcheck source=../lib/runtime.sh
+source "${RUNTIME_LIB}"
+unset RUNTIME_LIB INIT_CALLER_SOURCE SCRIPT_DIR
 
 # ------------------------------------------------------------
 # 子命令数组
@@ -38,7 +38,7 @@ MANAGED_GIT_KEYS=(
 )
 
 show_help() {
-    _show_standard_help \
+    show_standard_help \
         "$0 [-l LOG_LEVEL] <command> [options]" \
         COMMANDS \
         HELP_OPTIONS \
@@ -47,14 +47,14 @@ show_help() {
 }
 
 check() {
-    _require_commands git
+    require_commands git
 }
 
-_ensure_state_dir() {
+ensure_state_dir() {
     mkdir -p "${STATE_DIR}"
 }
 
-_cleanup_state_file() {
+cleanup_state_file() {
     [ -f "${STATE_FILE}" ] && /bin/rm -f "${STATE_FILE}"
 }
 
@@ -77,7 +77,7 @@ _snapshot_git_config_once() {
         done < <(git config --global --get-all "${key}" 2>/dev/null || true)
     done
 
-    _ensure_state_dir
+    ensure_state_dir
     mv "${tmp_file}" "${STATE_FILE}"
 }
 
@@ -94,7 +94,7 @@ _restore_git_config_from_state() {
     done
 }
 
-_trim() {
+trim_value() {
     local value="${1:-}"
     value="${value#"${value%%[![:space:]]*}"}"
     value="${value%"${value##*[![:space:]]}"}"
@@ -170,7 +170,7 @@ _resolve_email() {
     local candidate_email
     local non_interactive="${3:-0}"
 
-    candidate_email="$(_trim "${2:-}")"
+    candidate_email="$(trim_value "${2:-}")"
 
     while :; do
         if [ -z "${candidate_email}" ]; then
@@ -192,7 +192,7 @@ _resolve_email() {
             echo "canceled"
             return 1
         }
-        candidate_email="$(_trim "${candidate_email}")"
+        candidate_email="$(trim_value "${candidate_email}")"
     done
 }
 
@@ -206,7 +206,7 @@ _set_global_git_config() {
     }
 }
 
-apply_git_config() {
+apply_managed_git_config() {
     check
 
     local name="${INIT_GIT_USER_NAME:-}"
@@ -246,11 +246,11 @@ apply_git_config() {
         shift
     done
 
-    name="$(_trim "${name}")"
-    email="$(_trim "${email}")"
+    name="$(trim_value "${name}")"
+    email="$(trim_value "${email}")"
 
-    [ -n "${name}" ] || name="$(_trim "$(_current_git_config user.name)")"
-    [ -n "${email}" ] || email="$(_trim "$(_current_git_config user.email)")"
+    [ -n "${name}" ] || name="$(trim_value "$(_current_git_config user.name)")"
+    [ -n "${email}" ] || email="$(trim_value "$(_current_git_config user.email)")"
 
     _resolve_email email "${email}" "${non_interactive}" || return 1
 
@@ -265,8 +265,8 @@ apply_git_config() {
         }
     fi
 
-    name="$(_trim "${name}")"
-    email="$(_trim "${email}")"
+    name="$(trim_value "${name}")"
+    email="$(trim_value "${email}")"
 
     if [ -z "${name}" ] || [ -z "${email}" ]; then
         echo "git user.name and user.email must not be empty." >&2
@@ -302,7 +302,7 @@ apply_git_config() {
     fi
 }
 
-clear_git_config() {
+restore_previous_git_config() {
     local key
 
     check
@@ -312,16 +312,16 @@ clear_git_config() {
     done
 
     _restore_git_config_from_state || return 1
-    _cleanup_state_file
+    cleanup_state_file
 }
 
 _resolve_set_git_handler() {
     case "${1:?missing command}" in
     set)
-        printf '%s\n' "apply_git_config"
+        printf '%s\n' "apply_managed_git_config"
         ;;
     unset)
-        printf '%s\n' "clear_git_config"
+        printf '%s\n' "restore_previous_git_config"
         ;;
     *)
         printf '%s\n' "$1"
@@ -329,4 +329,4 @@ _resolve_set_git_handler() {
     esac
 }
 
-_dispatch_cli show_help _resolve_set_git_handler "$@"
+dispatch_cli show_help _resolve_set_git_handler "$@"

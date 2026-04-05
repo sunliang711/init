@@ -346,7 +346,7 @@ fi
 # function is hidden when begin with '_'
 new() {
     local name=${1:?'missing script name'}
-    cp "${this}/shTmpl" "${name}"
+    cp "${this}/../templates/scripts/shell-script.sh" "${name}"
     "${ed}" "${name}"
     chmod +x "${name}"
 }

@@ -119,9 +119,10 @@ while [[ -L "${_init_zshrc_source}" ]]; do
   fi
   _init_zshrc_source="${_init_zshrc_source:A}"
 done
-export INIT_REPO_ROOT="${_init_zshrc_source:A:h:h}"
-export SHELLRC_ROOT="${INIT_REPO_ROOT}/shellConfigs"
-source "${SHELLRC_ROOT}/index"
+export INIT_REPO_ROOT="${_init_zshrc_source:A:h:h:h}"
+export INIT_CONFIG_ROOT="${INIT_REPO_ROOT}/config"
+export SHELL_CONFIG_ROOT="${INIT_REPO_ROOT}/config/shell"
+source "${SHELL_CONFIG_ROOT}/init.sh"
 unset _init_zshrc_source _init_zshrc_link_target
 ##CUSTOM END v3
 

@@ -391,7 +391,7 @@ _example() {
 newprogram(){
     name=${1:?'missing solana program name'}
     echo "create solana program: ${name}"
-    cp -r "${this}/solana_program_tmpl" "${name}"
+    cp -r "${this}/../templates/projects/solana-program" "${name}"
     cd "${name}"
     rm -rf target
 }

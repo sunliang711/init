@@ -1,5 +1,6 @@
 # Machine-local shell overrides.
-# Copy this file to shellConfigs/local on each machine as needed.
+# Canonical template path: config/shell/local.example.sh
+# Copy this file to config/shell/local.sh on each machine as needed.
 
 # Startup behaviors that should stay opt-in per machine.
 # export AUTO_DETECT_PROXY_ENV=1
@@ -20,7 +21,7 @@
 # Add extra machine-local PATH entries here if needed.
 # append_paths "$HOME/.local/custom/bin"
 
-# Lazy-load toolchains per machine instead of hardcoding them in softlinks/zshrc.
+# Lazy-load toolchains per machine instead of hardcoding them in config/zsh/zshrc.
 #
 # Example: nvm and common Node.js commands.
 # export NVM_DIR="$HOME/.nvm"

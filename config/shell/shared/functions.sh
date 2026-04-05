@@ -123,7 +123,7 @@ function dockerps1() {
 }
 
 function functions() {
-    functionFile=$SHELLRC_ROOT/function
+    functionFile="${SHELL_SHARED_ROOT}/functions.sh"
     if [ ! -f $functionFile ]; then
         echo "No file $functionFile"
         return 1
@@ -1872,7 +1872,7 @@ function em() {
     if [ -n "${editor}" ]; then
         ed=${editor}
     fi
-    destfile="$SHELLRC_ROOT/init"
+    destfile="${SHELL_INIT_FILE}"
     while getopts ":hfaeobl" opt; do
         case $opt in
         h)
@@ -1880,22 +1880,22 @@ function em() {
             return 1
             ;;
         f)
-            destfile="$SHELLRC_ROOT/function"
+            destfile="${SHELL_SHARED_ROOT}/functions.sh"
             ;;
         a)
-            destfile="$SHELLRC_ROOT/alias"
+            destfile="${SHELL_SHARED_ROOT}/aliases.sh"
             ;;
         e)
-            destfile="$SHELLRC_ROOT/env"
+            destfile="${SHELL_SHARED_ROOT}/environment.sh"
             ;;
         o)
-            destfile="$SHELLRC_ROOT/other"
+            destfile="${SHELL_SHARED_ROOT}/extras.sh"
             ;;
         b)
-            destfile="$SHELLRC_ROOT/basic"
+            destfile="${SHELL_SHARED_ROOT}/colors.sh"
             ;;
         l)
-            destfile="$SHELLRC_ROOT/local"
+            destfile="${SHELL_LOCAL_FILE}"
             ;;
         \?)
             echo "Unkown option: \"$OPTARG\""
@@ -2531,11 +2531,11 @@ cdxray() {
 }
 
 cdinit() {
-    cd ${SHELLRC_ROOT}/..
+    cd "${INIT_REPO_ROOT}"
 }
 
 cdtools() {
-    cd ${SHELLRC_ROOT}/../tools
+    cd "${INIT_REPO_ROOT}/tools"
 }
 
 cdgo() {
@@ -2705,7 +2705,7 @@ function editService() {
 
 function detectBin() {
     local root=${1:?'missing detect root'}
-    local dest="${SHELLRC_ROOT}/local"
+    local dest="${SHELL_LOCAL_FILE}"
     if [ ! -d ${root} ]; then
         echo "${root} not exist"
         return 1
@@ -2862,7 +2862,7 @@ function clearall() {
     clearinput
 }
 
-for s in "${SHELLRC_ROOT}"/autoSource/*; do
+for s in "${SHELL_SHARED_ROOT}"/auto-source/*; do
     source "$s"
 done
 

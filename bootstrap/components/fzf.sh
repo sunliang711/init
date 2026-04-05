@@ -1,12 +1,12 @@
 #!/bin/bash
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-COMMON_LIB="${SCRIPT_DIR}/../lib/init-common.sh"
+RUNTIME_LIB="${SCRIPT_DIR}/../lib/runtime.sh"
 # shellcheck disable=SC2034
 INIT_CALLER_SOURCE="${BASH_SOURCE[0]}"
-# shellcheck source=../lib/init-common.sh
-source "${COMMON_LIB}"
-unset COMMON_LIB INIT_CALLER_SOURCE SCRIPT_DIR
+# shellcheck source=../lib/runtime.sh
+source "${RUNTIME_LIB}"
+unset RUNTIME_LIB INIT_CALLER_SOURCE SCRIPT_DIR
 
 # ------------------------------------------------------------
 # 子命令数组
@@ -16,7 +16,7 @@ COMMANDS=("help" "check" "install" "uninstall")
 HELP_OPTIONS=("-l LOG_LEVEL  Set the log level (FATAL ERROR, WARNING, INFO, SUCCESS, DEBUG)")
 
 show_help() {
-    _show_standard_help "$0 [-l LOG_LEVEL] <command>" COMMANDS HELP_OPTIONS
+    show_standard_help "$0 [-l LOG_LEVEL] <command>" COMMANDS HELP_OPTIONS
 }
 
 STATE_DIR="${INIT_TARGET_HOME}/.local/state/init"
@@ -26,28 +26,28 @@ FZF_REPO="https://github.com/junegunn/fzf.git"
 FZF_ZSH_FILE="${INIT_TARGET_HOME}/.fzf.zsh"
 FZF_BASH_FILE="${INIT_TARGET_HOME}/.fzf.bash"
 
-_ensure_state_dir() {
+ensure_state_dir() {
     mkdir -p "${STATE_DIR}"
 }
 
-_write_state() {
-    _write_kv_file "${STATE_FILE}" \
+write_state() {
+    kv_file_write "${STATE_FILE}" \
         MANAGED_FZF_DIR "${1:-0}" \
         MANAGED_FZF_ZSH "${2:-0}" \
         MANAGED_FZF_BASH "${3:-0}"
 }
 
-_state_get() {
+read_state() {
     local key="${1:?missing state key}"
-    _kv_file_get "${STATE_FILE}" "${key}"
+    kv_file_get "${STATE_FILE}" "${key}"
 }
 
-_cleanup_state_file() {
+cleanup_state_file() {
     [ -f "${STATE_FILE}" ] && /bin/rm -f "${STATE_FILE}"
 }
 
 check() {
-    _require_commands git
+    require_commands git
 }
 
 install() {
@@ -66,7 +66,7 @@ install() {
         git clone --depth 1 "${FZF_REPO}" "${FZF_DIR}"
         managed_fzf_dir=1
         should_run_installer=1
-    elif _git_remote_matches "${FZF_DIR}" "${FZF_REPO}"; then
+    elif git_remote_matches "${FZF_DIR}" "${FZF_REPO}"; then
         echo "${FZF_DIR} already exists, skip clone ..."
         if [ ! -e "${FZF_ZSH_FILE}" ] || [ ! -e "${FZF_BASH_FILE}" ]; then
             should_run_installer=1
@@ -87,10 +87,10 @@ install() {
     fi
 
     if [ "${managed_fzf_dir}" -eq 1 ] || [ "${managed_fzf_zsh}" -eq 1 ] || [ "${managed_fzf_bash}" -eq 1 ] || [ -f "${STATE_FILE}" ]; then
-        [ "$(_state_get MANAGED_FZF_DIR)" = "1" ] && managed_fzf_dir=1
-        [ "$(_state_get MANAGED_FZF_ZSH)" = "1" ] && managed_fzf_zsh=1
-        [ "$(_state_get MANAGED_FZF_BASH)" = "1" ] && managed_fzf_bash=1
-        _write_state "${managed_fzf_dir}" "${managed_fzf_zsh}" "${managed_fzf_bash}"
+        [ "$(read_state MANAGED_FZF_DIR)" = "1" ] && managed_fzf_dir=1
+        [ "$(read_state MANAGED_FZF_ZSH)" = "1" ] && managed_fzf_zsh=1
+        [ "$(read_state MANAGED_FZF_BASH)" = "1" ] && managed_fzf_bash=1
+        write_state "${managed_fzf_dir}" "${managed_fzf_zsh}" "${managed_fzf_bash}"
     fi
 
     #     if ! grep -q '#BEGIN FZF function' ~/.zshrc; then
@@ -121,22 +121,22 @@ install() {
 }
 
 uninstall() {
-    if [ "$(_state_get MANAGED_FZF_DIR)" = "1" ] && [ -d "${FZF_DIR}" ] && _git_remote_matches "${FZF_DIR}" "${FZF_REPO}"; then
+    if [ "$(read_state MANAGED_FZF_DIR)" = "1" ] && [ -d "${FZF_DIR}" ] && git_remote_matches "${FZF_DIR}" "${FZF_REPO}"; then
         if [ -x "${FZF_DIR}/uninstall" ]; then
             "${FZF_DIR}/uninstall" >/dev/null 2>&1 || echo "Warning: ${FZF_DIR}/uninstall failed, continuing cleanup."
         fi
         /bin/rm -rf "${FZF_DIR}"
     fi
 
-    if [ "$(_state_get MANAGED_FZF_ZSH)" = "1" ] && [ -e "${FZF_ZSH_FILE}" ]; then
+    if [ "$(read_state MANAGED_FZF_ZSH)" = "1" ] && [ -e "${FZF_ZSH_FILE}" ]; then
         /bin/rm -f "${FZF_ZSH_FILE}"
     fi
 
-    if [ "$(_state_get MANAGED_FZF_BASH)" = "1" ] && [ -e "${FZF_BASH_FILE}" ]; then
+    if [ "$(read_state MANAGED_FZF_BASH)" = "1" ] && [ -e "${FZF_BASH_FILE}" ]; then
         /bin/rm -f "${FZF_BASH_FILE}"
     fi
 
-    _cleanup_state_file
+    cleanup_state_file
 }
 
-_dispatch_cli show_help _resolve_cli_handler "$@"
+dispatch_cli show_help resolve_cli_handler "$@"

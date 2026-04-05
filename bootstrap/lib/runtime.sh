@@ -1,6 +1,6 @@
 #!/bin/bash
 
-_init_resolve_script_dir() {
+resolve_script_dir() {
     local source_path="${1:-${PWD}}"
     local rpath=""
 
@@ -22,9 +22,9 @@ _init_resolve_script_dir() {
 }
 
 # shellcheck disable=SC2034
-this="$(_init_resolve_script_dir "${INIT_CALLER_SOURCE:-${BASH_SOURCE[1]:-${BASH_SOURCE[0]}}}")"
-INIT_LIB_DIR="$(_init_resolve_script_dir "${BASH_SOURCE[0]}")"
-INIT_REPO_ROOT="$(CDPATH='' cd -- "${INIT_LIB_DIR}/.." && pwd)"
+this="$(resolve_script_dir "${INIT_CALLER_SOURCE:-${BASH_SOURCE[1]:-${BASH_SOURCE[0]}}}")"
+INIT_LIB_DIR="$(resolve_script_dir "${BASH_SOURCE[0]}")"
+INIT_REPO_ROOT="$(CDPATH='' cd -- "${INIT_LIB_DIR}/../.." && pwd)"
 export INIT_LIB_DIR INIT_REPO_ROOT
 
 INIT_TARGET_USER="${SUDO_USER:-$(id -un)}"
@@ -260,6 +260,10 @@ _ensure_symlink() {
     fi
 
     ln -s "${target}" "${path}"
+}
+
+_init_resolve_script_dir() {
+    resolve_script_dir "$@"
 }
 
 rootID=0
@@ -588,4 +592,72 @@ _dispatch_cli() {
     fi
 
     "${handler}" "$@"
+}
+
+command_exists() {
+    _command_exists "$@"
+}
+
+require_command() {
+    _require_command "$@"
+}
+
+require_commands() {
+    _require_commands "$@"
+}
+
+ensure_dir() {
+    _ensureDir "$@"
+}
+
+ensure_parent_dir() {
+    _ensure_parent_dir "$@"
+}
+
+backup_path_if_needed() {
+    _backup_existing_path "$@"
+}
+
+files_are_identical() {
+    _files_match "$@"
+}
+
+git_remote_matches() {
+    _git_remote_matches "$@"
+}
+
+kv_file_get() {
+    _kv_file_get "$@"
+}
+
+kv_file_write() {
+    _write_kv_file "$@"
+}
+
+canonicalize_path() {
+    _canonicalize_path "$@"
+}
+
+path_matches_target() {
+    _path_matches_target "$@"
+}
+
+ensure_symlink() {
+    _ensure_symlink "$@"
+}
+
+wait_seconds() {
+    _wait "$@"
+}
+
+show_standard_help() {
+    _show_standard_help "$@"
+}
+
+resolve_cli_handler() {
+    _resolve_cli_handler "$@"
+}
+
+dispatch_cli() {
+    _dispatch_cli "$@"
 }

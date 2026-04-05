@@ -2,8 +2,8 @@
 *.swp
 .idea/
 
-/shellConfigs/local
-/softlinks/sshconfig.local
+/config/shell/local.sh
+/config/ssh/local.conf
 
 /tools/docker/useful-docker-compose/qbittorrent/docker-compose.yaml
 /tools/docker/useful-docker-compose/qbittorrent/downloads

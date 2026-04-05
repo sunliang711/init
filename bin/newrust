@@ -393,7 +393,7 @@ new(){
     set -e
 
     echo "create ${projectName}.."
-    cp -r "${this}/rust_tmpl" "${projectName}"
+    cp -r "${this}/../templates/projects/rust-cli" "${projectName}"
     cd "${projectName}"
     git init . && git add . && git commit -m "initial commit"
 }

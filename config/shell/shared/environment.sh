@@ -24,7 +24,7 @@ export COPYFILE_DISABLE=1
 #BEGIN PATH
 # export PATH=""
 append_paths "$HOME/.bin" "$HOME/.local/bin"
-append_paths "$HOME/.npm/bin" "$HOME/.cargo/bin" "$GOPATH/bin" "${SHELLRC_ROOT}/../bin"
+append_paths "$HOME/.npm/bin" "$HOME/.cargo/bin" "$GOPATH/bin" "${INIT_REPO_ROOT}/bin"
 
 append_paths /usr/local/sbin /usr/local/bin
 
@@ -39,7 +39,7 @@ append_paths /sbin /bin
 #END PATH
 
 #BEGIN proxy setting
-# Opt in from shellConfigs/local or another machine-local file when needed.
+# Opt in from config/shell/local.sh or another machine-local file when needed.
 [ -n "${AUTO_DETECT_PROXY_ENV:-}" ] && [ -e "${PROXY_FILE}" ] && detectProxyEnv
 #END proxy setting
 
