@@ -8,6 +8,7 @@ if [ -n "${dir}" ];then
     cd "${dir}"
 fi
 
+
 # Check if the repository is clean
 if git diff --quiet && git diff --cached --quiet; then
     echo "The repository is clean. Proceeding with git pull."
