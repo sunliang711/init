@@ -2409,26 +2409,43 @@ AGENTS.md
 EOF
 }
 
-function newprecommitconfig() {
+function newprecommit() {
     local dest="${PWD}"
     local force=0
+    local init_gitignore=0
+    local install_hook=0
+    local init_mode=0
     local max_kb=2048
+    local max_label="2048 KB"
     local allow_regex=""
     local allow_exts=""
+    local allow_dirs=""
+    local allow_files=""
     local dest_set=0
-    local precommit_file
-    local hooks_dir
-    local binary_hook_template
-    local size_hook_template
-    local binary_hook_target
-    local size_hook_target
-    local escaped_allow_regex
+    local precommit_file=""
+    local hooks_dir=""
+    local binary_hook_template=""
+    local size_hook_template=""
+    local allowlist_template=""
+    local binary_hook_target=""
+    local size_hook_target=""
+    local allowlist_file=""
+    local precommit_snippet_file=""
     local ext_regex=""
     local ext_item=""
     local ext_item_escaped=""
+    local dir_regex=""
+    local dir_item=""
+    local dir_item_escaped=""
+    local file_item=""
+    local file_item_escaped=""
+    local OLD_IFS=""
+    local existing_path=""
+    local print_precommit_snippet=0
 
     _append_allow_regex() {
         local fragment="${1:-}"
+
         [ -n "${fragment}" ] || return 0
         if [ -n "${allow_regex}" ]; then
             allow_regex="${allow_regex}|${fragment}"
@@ -2437,32 +2454,63 @@ function newprecommitconfig() {
         fi
     }
 
+    _append_csv_value() {
+        local current_value="${1:-}"
+        local next_value="${2:-}"
+
+        if [ -n "${current_value}" ]; then
+            printf '%s,%s' "${current_value}" "${next_value}"
+        else
+            printf '%s' "${next_value}"
+        fi
+    }
+
     while [ $# -gt 0 ]; do
         case "$1" in
             -h|--help)
                 cat <<EOF
-Usage: newprecommitconfig [--max-kb N] [--allow-regex REGEX] [--allow-ext LIST] [--force] [dest]
+Usage: newprecommit [--max-kb N] [--max-mb N] [--allow-regex REGEX] [--allow-ext LIST] [--allow-dir LIST] [--allow-file LIST] [--init-gitignore] [--install] [--init] [--force] [dest]
 
 Create a starter .pre-commit-config.yaml plus staged binary and large-file checks.
 
 Options:
   --max-kb N         Block staged files larger than N KB. Default: 2048
+  --max-mb N         Block staged files larger than N MB
   --allow-regex RX   Allow staged paths that match RX
-  --exclude-regex RX Alias of --allow-regex
   --allow-ext LIST   Allow file extensions like png,jpg,pdf
+  --allow-dir LIST   Allow directories like docs/assets,fixtures
+  --allow-file LIST  Allow exact file paths like docs/logo.png,fixtures/a.bin
+  --init-gitignore   Create a starter .gitignore when the target does not have one
+  --install          Run pre-commit install after generating the files
+  --init             Shortcut for --init-gitignore --install
   --force            Overwrite existing generated files
   -h, --help         Show this help
 
 Examples:
-  newprecommitconfig
-  newprecommitconfig --max-kb 512
-  newprecommitconfig --allow-ext png,jpg,pdf
-  newprecommitconfig --allow-regex '^docs/assets/|\\.png$'
+  newprecommit
+  newprecommit --max-kb 512
+  newprecommit --max-mb 2
+  newprecommit --allow-ext png,jpg,pdf
+  newprecommit --allow-dir docs/assets,fixtures
+  newprecommit --allow-file docs/logo.png,fixtures/sample.bin
+  newprecommit --init-gitignore
+  newprecommit --install
+  newprecommit --init
+  newprecommit --allow-regex '^docs/assets/|\\.png$'
 EOF
                 return 0
                 ;;
             --force|-f)
                 force=1
+                ;;
+            --init-gitignore)
+                init_gitignore=1
+                ;;
+            --install)
+                install_hook=1
+                ;;
+            --init)
+                init_mode=1
                 ;;
             --max-kb)
                 shift
@@ -2475,7 +2523,18 @@ EOF
             --max-kb=*)
                 max_kb="${1#*=}"
                 ;;
-            --allow-regex|--exclude-regex)
+            --max-mb)
+                shift
+                if [ -z "${1:-}" ]; then
+                    echo "missing value for --max-mb"
+                    return 1
+                fi
+                max_kb="$((1 * ${1} * 1024))"
+                ;;
+            --max-mb=*)
+                max_kb="$((1 * ${1#*=} * 1024))"
+                ;;
+            --allow-regex)
                 shift
                 if [ -z "${1:-}" ]; then
                     echo "missing value for allow regex"
@@ -2483,7 +2542,7 @@ EOF
                 fi
                 _append_allow_regex "${1}"
                 ;;
-            --allow-regex=*|--exclude-regex=*)
+            --allow-regex=*)
                 _append_allow_regex "${1#*=}"
                 ;;
             --allow-ext)
@@ -2492,18 +2551,32 @@ EOF
                     echo "missing value for --allow-ext"
                     return 1
                 fi
-                if [ -n "${allow_exts}" ]; then
-                    allow_exts="${allow_exts},${1}"
-                else
-                    allow_exts="${1}"
-                fi
+                allow_exts="$(_append_csv_value "${allow_exts}" "${1}")"
                 ;;
             --allow-ext=*)
-                if [ -n "${allow_exts}" ]; then
-                    allow_exts="${allow_exts},${1#*=}"
-                else
-                    allow_exts="${1#*=}"
+                allow_exts="$(_append_csv_value "${allow_exts}" "${1#*=}")"
+                ;;
+            --allow-dir)
+                shift
+                if [ -z "${1:-}" ]; then
+                    echo "missing value for --allow-dir"
+                    return 1
                 fi
+                allow_dirs="$(_append_csv_value "${allow_dirs}" "${1}")"
+                ;;
+            --allow-dir=*)
+                allow_dirs="$(_append_csv_value "${allow_dirs}" "${1#*=}")"
+                ;;
+            --allow-file)
+                shift
+                if [ -z "${1:-}" ]; then
+                    echo "missing value for --allow-file"
+                    return 1
+                fi
+                allow_files="$(_append_csv_value "${allow_files}" "${1}")"
+                ;;
+            --allow-file=*)
+                allow_files="$(_append_csv_value "${allow_files}" "${1#*=}")"
                 ;;
             -*)
                 echo "unknown option: $1"
@@ -2521,12 +2594,22 @@ EOF
         shift
     done
 
+    if [ "${init_mode}" -eq 1 ]; then
+        init_gitignore=1
+        install_hook=1
+    fi
+
     case "${max_kb}" in
         ''|*[!0-9]*)
-            echo "--max-kb must be a positive integer"
+            echo "size limit must be a positive integer"
             return 1
             ;;
     esac
+
+    if [ "${max_kb}" -le 0 ]; then
+        echo "size limit must be greater than zero"
+        return 1
+    fi
 
     if [ -n "${allow_exts}" ]; then
         OLD_IFS="${IFS}"
@@ -2546,8 +2629,50 @@ EOF
         IFS="${OLD_IFS}"
     fi
 
+    if [ -n "${allow_dirs}" ]; then
+        OLD_IFS="${IFS}"
+        IFS=,
+        for dir_item in ${allow_dirs}; do
+            IFS="${OLD_IFS}"
+            dir_item="$(printf '%s' "${dir_item}" | sed 's#^[[:space:]]*##; s#[[:space:]]*$##; s#^./##; s#/*$##')"
+            [ -n "${dir_item}" ] || continue
+            dir_item_escaped="$(printf '%s' "${dir_item}" | sed 's/[][(){}.^$+*?|\\]/\\&/g; s#/#\\/#g')"
+            if [ -n "${dir_regex}" ]; then
+                dir_regex="${dir_regex}|^${dir_item_escaped}/"
+            else
+                dir_regex="^${dir_item_escaped}/"
+            fi
+            IFS=,
+        done
+        IFS="${OLD_IFS}"
+    fi
+
+    if [ -n "${allow_files}" ]; then
+        OLD_IFS="${IFS}"
+        IFS=,
+        for file_item in ${allow_files}; do
+            IFS="${OLD_IFS}"
+            file_item="$(printf '%s' "${file_item}" | sed 's#^[[:space:]]*##; s#[[:space:]]*$##; s#^./##')"
+            [ -n "${file_item}" ] || continue
+            file_item_escaped="$(printf '%s' "${file_item}" | sed 's/[][(){}.^$+*?|\\]/\\&/g; s#/#\\/#g')"
+            _append_allow_regex "^${file_item_escaped}$"
+            IFS=,
+        done
+        IFS="${OLD_IFS}"
+    fi
+
     if [ -n "${ext_regex}" ]; then
         _append_allow_regex "\\.(${ext_regex})$"
+    fi
+
+    if [ -n "${dir_regex}" ]; then
+        _append_allow_regex "${dir_regex}"
+    fi
+
+    if [ "${max_kb}" -ge 1024 ] && [ $((max_kb % 1024)) -eq 0 ]; then
+        max_label="$((max_kb / 1024)) MB"
+    else
+        max_label="${max_kb} KB"
     fi
 
     if [ ! -d "${dest}" ]; then
@@ -2564,31 +2689,68 @@ EOF
     hooks_dir="${dest}/.githooks"
     binary_hook_target="${hooks_dir}/check-staged-no-binary.sh"
     size_hook_target="${hooks_dir}/check-staged-file-size.sh"
+    allowlist_file="${dest}/.precommit-allow"
     binary_hook_template="${INIT_REPO_ROOT}/templates/git/hooks/check-staged-no-binary.sh"
     size_hook_template="${INIT_REPO_ROOT}/templates/git/hooks/check-staged-file-size.sh"
+    allowlist_template="${INIT_REPO_ROOT}/templates/git/precommit-allow"
 
-    if [ ! -f "${binary_hook_template}" ] || [ ! -f "${size_hook_template}" ]; then
-        echo "pre-commit hook templates are missing from ${INIT_REPO_ROOT}/templates/git/hooks"
+    if [ ! -f "${binary_hook_template}" ] || [ ! -f "${size_hook_template}" ] || [ ! -f "${allowlist_template}" ]; then
+        echo "pre-commit templates are missing from ${INIT_REPO_ROOT}/templates/git"
         return 1
     fi
 
     if [ "${force}" -ne 1 ]; then
-        for existing_path in "${precommit_file}" "${binary_hook_target}" "${size_hook_target}"; do
+        for existing_path in "${binary_hook_target}" "${size_hook_target}"; do
             if [ -e "${existing_path}" ]; then
                 echo "refusing to overwrite existing file: ${existing_path}"
                 echo "rerun with --force if you want to replace the generated files"
                 return 1
             fi
         done
+
+        if [ -e "${precommit_file}" ]; then
+            if [ ! -f "${precommit_file}" ]; then
+                echo "target pre-commit config exists and is not a file: ${precommit_file}"
+                return 1
+            fi
+            print_precommit_snippet=1
+        fi
     fi
 
     mkdir -p "${hooks_dir}"
     cp "${binary_hook_template}" "${binary_hook_target}"
     cp "${size_hook_template}" "${size_hook_target}"
     chmod +x "${binary_hook_target}" "${size_hook_target}"
-    escaped_allow_regex="$(printf '%s' "${allow_regex}" | sed "s/'/''/g")"
 
-    cat >"${precommit_file}" <<EOF
+    if [ "${init_gitignore}" -eq 1 ]; then
+        if [ -e "${dest}/.gitignore" ]; then
+            echo "Skip existing ${dest}/.gitignore"
+        else
+            newgitignore "${dest}"
+            echo "Created ${dest}/.gitignore"
+        fi
+    fi
+
+    if [ -e "${allowlist_file}" ] && [ ! -f "${allowlist_file}" ]; then
+        echo "allowlist path exists and is not a file: ${allowlist_file}"
+        return 1
+    fi
+
+    if [ "${force}" -eq 1 ] || [ ! -f "${allowlist_file}" ]; then
+        cp "${allowlist_template}" "${allowlist_file}"
+        echo "Created ${allowlist_file}"
+    else
+        echo "Preserved existing ${allowlist_file}"
+    fi
+
+    if [ -n "${allow_regex}" ] && ! grep -Fqx -- "${allow_regex}" "${allowlist_file}" 2>/dev/null; then
+        printf '%s\n' "${allow_regex}" >>"${allowlist_file}"
+        echo "Added allow rule to ${allowlist_file}: ${allow_regex}"
+    fi
+
+    precommit_snippet_file="$(mktemp "${TMPDIR:-/tmp}/newprecommit.XXXXXX")" || return 1
+
+    cat >"${precommit_snippet_file}" <<EOF
 repos:
   - repo: local
     hooks:
@@ -2597,45 +2759,59 @@ repos:
         entry: bash .githooks/check-staged-no-binary.sh
         language: system
         pass_filenames: false
-EOF
-
-    if [ -n "${allow_regex}" ]; then
-        cat >>"${precommit_file}" <<EOF
-        args:
-          - '${escaped_allow_regex}'
-EOF
-    fi
-
-    cat >>"${precommit_file}" <<EOF
       - id: check-staged-file-size
-        name: block staged files larger than ${max_kb} KB
+        name: block staged files larger than ${max_label}
         entry: bash .githooks/check-staged-file-size.sh ${max_kb}
         language: system
         pass_filenames: false
 EOF
 
-    if [ -n "${allow_regex}" ]; then
-        cat >>"${precommit_file}" <<EOF
-        args:
-          - '${escaped_allow_regex}'
-EOF
+    if [ "${print_precommit_snippet}" -eq 1 ]; then
+        echo "Detected existing ${precommit_file}"
+        echo "Did not overwrite it because --force was not provided."
+        echo "Suggested snippet to merge into your existing .pre-commit-config.yaml:"
+        cat "${precommit_snippet_file}"
+        /bin/rm -f "${precommit_snippet_file}"
+    else
+        mv "${precommit_snippet_file}" "${precommit_file}"
+        echo "Created ${precommit_file}"
     fi
 
-    echo "Created ${precommit_file}"
     echo "Created ${binary_hook_target}"
     echo "Created ${size_hook_target}"
-    if [ -n "${allow_regex}" ]; then
-        echo "Allow regex: ${allow_regex}"
-    fi
-    echo "Next steps:"
-    echo "  cd ${dest}"
-    if command -v pre-commit >/dev/null 2>&1; then
-        echo "  pre-commit install"
+    echo "Allowlist file: ${allowlist_file}"
+
+    if [ "${install_hook}" -eq 1 ]; then
+        if ! command -v pre-commit >/dev/null 2>&1; then
+            echo "pre-commit is not installed yet; skip automatic install"
+            echo "install it first, then run: (cd ${dest} && pre-commit install)"
+            echo "examples: brew install pre-commit  |  pipx install pre-commit"
+        elif ! (cd "${dest}" && git rev-parse --git-dir >/dev/null 2>&1); then
+            echo "target is not a git repository yet; skip automatic install"
+            echo "initialize git first, then run: (cd ${dest} && pre-commit install)"
+        else
+            (
+                cd "${dest}" || exit 1
+                pre-commit install
+            ) || return 1
+            echo "Installed pre-commit hook in ${dest}"
+        fi
     else
-        echo "  pre-commit is not installed yet"
-        echo "  install it first, then run: pre-commit install"
-        echo "  examples: brew install pre-commit  |  pipx install pre-commit"
+        echo "Next steps:"
+        echo "  cd ${dest}"
+        echo "  edit .precommit-allow if you want to add or refine allow rules"
+        if command -v pre-commit >/dev/null 2>&1; then
+            echo "  pre-commit install"
+        else
+            echo "  pre-commit is not installed yet"
+            echo "  install it first, then run: pre-commit install"
+            echo "  examples: brew install pre-commit  |  pipx install pre-commit"
+        fi
     fi
+}
+
+function newprecommitconfig() {
+    newprecommit "$@"
 }
 
 function gofmtdir() {
