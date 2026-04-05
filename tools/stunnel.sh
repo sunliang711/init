@@ -415,7 +415,7 @@ add(){
             exit
     esac
 
-    cat<<EOF>/etc/stunnel/${name}.conf
+    cat>/etc/stunnel/${name}.conf<<EOF
 setuid = stunnel4
 setgid = stunnel4
 pid = /tmp/stunnel-$name.pid
@@ -435,9 +435,9 @@ connect = ${connect}
 PSKsecrets = /etc/stunnel/psk.txt
 EOF
 
-cat <<EOF>/etc/stunnel/psk.txt
+cat >/etc/stunnel/psk.txt<<EOF2
 USER:SECRET
-EOF
+EOF2
 
     echo "add psk to /etc/stunnel/psk.txt manually"
     echo "psk format: <user>:<secrets>"
