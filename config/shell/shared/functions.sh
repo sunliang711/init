@@ -2754,6 +2754,11 @@ EOF
 repos:
   - repo: local
     hooks:
+      - id: git-diff-check
+        name: git diff whitespace/conflict check
+        entry: bash -lc 'git --no-pager diff --check --cached --'
+        language: system
+        pass_filenames: false
       - id: check-staged-no-binary
         name: block staged binary files
         entry: bash .githooks/check-staged-no-binary.sh
