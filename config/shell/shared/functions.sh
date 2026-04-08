@@ -2405,7 +2405,6 @@ venv/
 .cursor/
 .codex/
 AGENTS.md
-
 EOF
 }
 
