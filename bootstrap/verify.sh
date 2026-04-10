@@ -4,7 +4,9 @@ set -euo pipefail
 
 ROOT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE="${1:-all}"
+ORIGINAL_HOME="${HOME}"
 ORIGINAL_PATH="${PATH}"
+ORIGINAL_USER="$(id -un)"
 TEMP_DIRS=()
 RUNTIME_PATH_FILES=(
     "${ROOT_DIR}/install.sh"
@@ -162,6 +164,43 @@ write_noop_stub() {
 exit 0
 EOF
     chmod +x "${TEST_BIN}/${name}"
+}
+
+install_fake_root_id() {
+    cat >"${TEST_BIN}/id" <<'EOF'
+#!/bin/sh
+set -eu
+
+case "${1:-}" in
+-u)
+    printf '0\n'
+    ;;
+-un)
+    printf 'root\n'
+    ;;
+*)
+    exec /usr/bin/id "$@"
+    ;;
+esac
+EOF
+    chmod +x "${TEST_BIN}/id"
+}
+
+write_runtime_probe() {
+    local probe_path="${1:?missing probe path}"
+    local runtime_lib="${2:?missing runtime lib}"
+
+    cat >"${probe_path}" <<EOF
+#!/bin/bash
+
+INIT_CALLER_SOURCE="\${BASH_SOURCE[0]}"
+source "${runtime_lib}"
+
+printf 'INIT_TARGET_USER=%s\n' "\${INIT_TARGET_USER}"
+printf 'INIT_TARGET_HOME=%s\n' "\${INIT_TARGET_HOME}"
+printf 'INIT_REPO_ROOT=%s\n' "\${INIT_REPO_ROOT}"
+EOF
+    chmod +x "${probe_path}"
 }
 
 install_fake_git() {
@@ -377,6 +416,55 @@ test_set_git() {
     assert_not_exists "${state_file}"
 }
 
+test_runtime_targets_sudo_user_repo() {
+    local output_file
+    local probe_path
+
+    setup_test_env runtime-sudo-user
+    install_fake_root_id
+
+    probe_path="${TEST_ROOT}/runtime-probe.sh"
+    output_file="${TEST_ROOT}/runtime-probe.out"
+    write_runtime_probe "${probe_path}" "${ROOT_DIR}/bootstrap/lib/runtime.sh"
+
+    env HOME="${TEST_HOME}" INIT_HOME= PATH="${PATH}" SUDO_USER="${ORIGINAL_USER}" \
+        bash "${probe_path}" >"${output_file}"
+
+    assert_file_contains "${output_file}" "INIT_TARGET_USER=${ORIGINAL_USER}"
+    assert_file_contains "${output_file}" "INIT_TARGET_HOME=${ORIGINAL_HOME}"
+    assert_file_contains "${output_file}" "INIT_REPO_ROOT=${ROOT_DIR}"
+}
+
+test_runtime_targets_current_user_repo() {
+    local expected_home
+    local expected_repo
+    local output_file
+    local probe_path
+    local runtime_copy
+    local root_repo
+
+    setup_test_env runtime-current-user
+    install_fake_root_id
+
+    root_repo="${TEST_HOME}/.local/apps/init"
+    runtime_copy="${root_repo}/bootstrap/lib/runtime.sh"
+    probe_path="${root_repo}/runtime-probe.sh"
+    output_file="${TEST_ROOT}/runtime-probe.out"
+    expected_home="$(CDPATH='' cd -- "${TEST_HOME}" && pwd)"
+    expected_repo="${expected_home}/.local/apps/init"
+
+    mkdir -p "$(dirname "${runtime_copy}")"
+    cp "${ROOT_DIR}/bootstrap/lib/runtime.sh" "${runtime_copy}"
+    write_runtime_probe "${probe_path}" "${runtime_copy}"
+
+    env HOME="${TEST_HOME}" INIT_HOME= PATH="${PATH}" SUDO_USER="${ORIGINAL_USER}" \
+        bash "${probe_path}" >"${output_file}"
+
+    assert_file_contains "${output_file}" "INIT_TARGET_USER=root"
+    assert_file_contains "${output_file}" "INIT_TARGET_HOME=${expected_home}"
+    assert_file_contains "${output_file}" "INIT_REPO_ROOT=${expected_repo}"
+}
+
 test_zsh_install_uninstall() {
     local state_file
 
@@ -529,6 +617,8 @@ test_update_init() {
 }
 
 integration_checks() {
+    run test_runtime_targets_sudo_user_repo
+    run test_runtime_targets_current_user_repo
     run test_set_git
     run test_zsh_install_uninstall
     run test_fzf_install_uninstall

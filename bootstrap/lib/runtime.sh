@@ -27,15 +27,80 @@ INIT_LIB_DIR="$(resolve_script_dir "${BASH_SOURCE[0]}")"
 INIT_REPO_ROOT="$(CDPATH='' cd -- "${INIT_LIB_DIR}/../.." && pwd)"
 export INIT_LIB_DIR INIT_REPO_ROOT
 
-INIT_TARGET_USER="${SUDO_USER:-$(id -un)}"
+_resolve_user_home() {
+    local user="${1:-}"
+
+    [ -n "${user}" ] || return 1
+    eval echo ~"${user}"
+}
+
+_path_is_within() {
+    local path="${1:?missing path}"
+    local parent="${2:?missing parent}"
+
+    case "${path}" in
+    "${parent}" | "${parent}/"*)
+        return 0
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+}
+
+_canonicalize_dir_if_exists() {
+    local dir="${1:-}"
+
+    [ -n "${dir}" ] || return 1
+    if [ -d "${dir}" ]; then
+        (
+            CDPATH='' cd -- "${dir}" && pwd
+        )
+        return 0
+    fi
+
+    printf '%s\n' "${dir}"
+}
+
+_resolve_target_user() {
+    local current_user="${1:?missing current user}"
+    local current_home="${2:-}"
+    local sudo_user="${SUDO_USER:-}"
+    local sudo_home=""
+
+    if [ -z "${sudo_user}" ]; then
+        printf '%s\n' "${current_user}"
+        return 0
+    fi
+
+    sudo_home="$(_resolve_user_home "${sudo_user}")"
+
+    if [ -n "${current_home}" ] && [ "${current_home}" != "${sudo_home}" ] && _path_is_within "${INIT_REPO_ROOT}" "${current_home}"; then
+        printf '%s\n' "${current_user}"
+        return 0
+    fi
+
+    if [ -n "${sudo_home}" ] && _path_is_within "${INIT_REPO_ROOT}" "${sudo_home}"; then
+        printf '%s\n' "${sudo_user}"
+        return 0
+    fi
+
+    printf '%s\n' "${sudo_user}"
+}
+
+INIT_CURRENT_USER="$(id -un)"
+INIT_CURRENT_HOME="${HOME:-$(_resolve_user_home "${INIT_CURRENT_USER}")}"
+INIT_CURRENT_HOME="$(_canonicalize_dir_if_exists "${INIT_CURRENT_HOME}")"
+INIT_TARGET_USER="$(_resolve_target_user "${INIT_CURRENT_USER}" "${INIT_CURRENT_HOME}")"
 if [ -n "${INIT_HOME:-}" ]; then
     INIT_TARGET_HOME="${INIT_HOME}"
-elif [ -n "${SUDO_USER:-}" ]; then
-    INIT_TARGET_HOME="$(eval echo ~"${INIT_TARGET_USER}")"
-elif [ -n "${HOME:-}" ]; then
-    INIT_TARGET_HOME="${HOME}"
+elif [ "${INIT_TARGET_USER}" = "${INIT_CURRENT_USER}" ] && [ -n "${INIT_CURRENT_HOME}" ]; then
+    INIT_TARGET_HOME="${INIT_CURRENT_HOME}"
 else
-    INIT_TARGET_HOME="$(eval echo ~"${INIT_TARGET_USER}")"
+    INIT_TARGET_HOME="$(_resolve_user_home "${INIT_TARGET_USER}")"
+fi
+if [ -z "${INIT_TARGET_HOME}" ]; then
+    INIT_TARGET_HOME="${INIT_CURRENT_HOME}"
 fi
 export INIT_TARGET_USER INIT_TARGET_HOME
 
