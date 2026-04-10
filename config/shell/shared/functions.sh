@@ -3203,11 +3203,6 @@ cdgo() {
     cd "$dest"
 }
 
-cdnvim() {
-    local dest="${home}/.config/nvim"
-    cd ${dest}
-}
-
 cdsolana() {
     local dest="${home}/.config/solana"
     cd ${dest}
