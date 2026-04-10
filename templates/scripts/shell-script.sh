@@ -174,6 +174,13 @@ _wait() {
     echo -ne "\033[0K\r"
 }
 
+# 用法：
+#   _runAsRoot <command> [args...]
+#   <script_or_commands> | _runAsRoot
+#   _runAsRoot <<'EOF'
+#   command1
+#   command2
+#   EOF
 _runAsRoot() {
     if [ -t 0 ]; then
         if [ $# -eq 0 ]; then
@@ -207,6 +214,13 @@ _runAsRoot() {
     fi
 }
 
+# 用法：
+#   _run <command> [args...]
+#   <script_or_commands> | _run
+#   _run <<'EOF'
+#   command1
+#   command2
+#   EOF
 _run() {
     if [ $# -gt 0 ]; then
         (
