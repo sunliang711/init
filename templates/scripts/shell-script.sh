@@ -1,4 +1,9 @@
 #!/bin/bash
+#
+# 说明：
+#   1. 本模板供 `newsh` 复制生成独立脚本。
+#   2. 生成后的脚本不得依赖仓库内其它文件。
+#   3. 与 bootstrap/lib/runtime.sh 共享的基础辅助函数需要保持行为一致。
 
 _init_resolve_script_dir() {
     local source_path="${1:-$0}"
@@ -92,6 +97,7 @@ ERR_REQUIRE_ROOT=200
 ERR_REQUIRE_LINUX=300
 ERR_CREATE_DIR=400
 
+# 以下基础辅助函数同时存在于 bootstrap/lib/runtime.sh。
 _command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
@@ -530,6 +536,7 @@ em() {
     "${ed}" "$0"
 }
 
+# 以下为模板专属入口与示例，不下沉到公共 runtime。
 show_help() {
     _show_standard_help "$0 [-l LOG_LEVEL] <command>"
 }

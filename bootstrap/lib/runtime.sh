@@ -1,4 +1,9 @@
 #!/bin/bash
+#
+# 说明：
+#   1. 本文件供仓库内脚本 source 复用。
+#   2. 这里只放公共运行时与可复用工具函数，不放具体业务命令。
+#   3. 与 templates/scripts/shell-script.sh 共享的基础辅助函数需要保持行为一致。
 
 resolve_script_dir() {
     local source_path="${1:-${PWD}}"
@@ -454,6 +459,13 @@ runAsRoot() {
     fi
 }
 
+# 用法：
+#   _runAsRoot <command> [args...]
+#   <script_or_commands> | _runAsRoot
+#   _runAsRoot <<'EOF'
+#   command1
+#   command2
+#   EOF
 _runAsRoot() {
     if [ -t 0 ]; then
         if [ $# -eq 0 ]; then
@@ -463,8 +475,13 @@ _runAsRoot() {
         echo "[Running as root]: $*"
         if [ "$(id -u)" -eq 0 ]; then
             "$@"
-        else
+        elif command -v sudo >/dev/null 2>&1; then
             sudo "$@"
+        elif command -v su >/dev/null 2>&1; then
+            su -c "$(printf '%q ' "$@")"
+        else
+            echo "Error: need sudo or su to run as root." >&2
+            return 1
         fi
     else
         echo "[Running script as root via stdin]"
@@ -479,6 +496,141 @@ _runAsRoot() {
             return 1
         fi
     fi
+}
+
+# 用法：
+#   _run <command> [args...]
+#   <script_or_commands> | _run
+#   _run <<'EOF'
+#   command1
+#   command2
+#   EOF
+_run() {
+    if [ $# -gt 0 ]; then
+        (
+            set -x
+            "$@"
+        )
+    elif [ ! -t 0 ]; then
+        (
+            set -x
+            bash -s
+        )
+    else
+        echo "Usage: _run <command> [args...]  or  <script | _run" >&2
+        return 1
+    fi
+}
+
+_must_ok() {
+    local status=$?
+    if [ "${status}" -ne 0 ]; then
+        echo "failed,exit.." >&2
+        exit "${status}"
+    fi
+}
+
+_info() {
+    printf '%s %s' "$(date +%FT%T)" "${1:-}"
+}
+
+_infoln() {
+    printf '%s %s\n' "$(date +%FT%T)" "${1:-}"
+}
+
+_error() {
+    printf '%s %s%s%s' "$(date +%FT%T)" "${RED}" "${1:-}" "${NORMAL}"
+}
+
+_errorln() {
+    printf '%s %s%s%s\n' "$(date +%FT%T)" "${RED}" "${1:-}" "${NORMAL}"
+}
+
+_checkService() {
+    local service_name="${1:?missing service name}"
+
+    _info "find service ${service_name}.."
+    if systemctl --all --no-pager | grep -q -- "${service_name}"; then
+        echo "OK"
+    else
+        echo "Not found"
+        return 1
+    fi
+}
+
+detect_os() {
+    case "$(uname -s)" in
+    Linux)
+        OS_RE='linux'
+        ;;
+    Darwin)
+        OS_RE='darwin|mac'
+        ;;
+    *)
+        log FATAL "unsupported os: $(uname -s)"
+        ;;
+    esac
+
+    case "$(uname -m)" in
+    x86_64 | amd64)
+        MACHINE_RE='amd64|x86_64'
+        ;;
+    i686 | 386)
+        MACHINE_RE='386|i686'
+        ;;
+    arm64 | aarch64)
+        MACHINE_RE='arm64|aarch64'
+        ;;
+    *)
+        log FATAL "unsupported architecture: $(uname -m)"
+        ;;
+    esac
+
+    export OS_RE MACHINE_RE
+    log INFO "osRE: ${OS_RE}"
+    log INFO "machineRE: ${MACHINE_RE}"
+}
+
+get_release_link() {
+    local repo="${1:?missing repo}"
+    local version="${2:?missing version}"
+    local result_link=""
+    local candidates=""
+    local filter_pattern
+
+    if [ "${version}" = "latest" ]; then
+        result_link="https://api.github.com/repos/${repo}/releases/latest"
+    elif [[ "${version}" =~ ^[0-9]+\.[0-9]+(\.[0-9]+)?$ ]]; then
+        result_link="https://api.github.com/repos/${repo}/releases/tags/v${version}"
+    else
+        log FATAL "invalid version: ${version}"
+    fi
+
+    _require_command curl
+    detect_os
+
+    candidates="$(
+        curl -fsSL "${result_link}" |
+            grep browser_download_url |
+            grep -iE "${OS_RE}" |
+            grep -iE "${MACHINE_RE}"
+    )"
+    log INFO "link0: ${candidates}"
+
+    shift 2
+    for filter_pattern in "$@"; do
+        log INFO "apply filter pattern: ${filter_pattern}"
+        candidates="$(printf '%s\n' "${candidates}" | grep -iE "${filter_pattern}")"
+        log INFO "filtered link0: ${candidates}"
+    done
+
+    link="$(printf '%s\n' "${candidates}" | head -n 1 | cut -d '"' -f 4)"
+    if [ -z "${link}" ]; then
+        log FATAL "failed to resolve download link for ${repo} ${version}"
+    fi
+
+    export link
+    log INFO "link: ${link}"
 }
 
 LOG_LEVELS=("FATAL" "ERROR" "WARNING" "INFO" "SUCCESS" "DEBUG")
@@ -659,6 +811,7 @@ _dispatch_cli() {
     "${handler}" "$@"
 }
 
+# 以下为推荐给 source 调用方使用的公开别名。
 command_exists() {
     _command_exists "$@"
 }
