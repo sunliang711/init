@@ -1,233 +1,45 @@
 #!/bin/bash
-if [ -z "${BASH_SOURCE}" ]; then
-    this=${PWD}
-else
-    rpath="$(readlink ${BASH_SOURCE})"
-    if [ -z "$rpath" ]; then
-        rpath=${BASH_SOURCE}
-    elif echo "$rpath" | grep -q '^/'; then
-        # absolute path
-        echo
+_init_resolve_script_dir() {
+    local source_path="${1:-${BASH_SOURCE[0]:-$0}}"
+    local resolved_path=""
+
+    if [ -n "${source_path}" ] && [ -e "${source_path}" ]; then
+        resolved_path="$(readlink "${source_path}" 2>/dev/null || true)"
+    fi
+
+    if [ -z "${resolved_path}" ]; then
+        resolved_path="${source_path}"
+    elif printf '%s' "${resolved_path}" | grep -q '^/'; then
+        :
     else
-        # relative path
-        rpath="$(dirname ${BASH_SOURCE})/$rpath"
+        resolved_path="$(dirname "${source_path}")/${resolved_path}"
     fi
-    this="$(cd $(dirname $rpath) && pwd)"
+
+    (
+        cd "$(dirname "${resolved_path}")" && pwd
+    )
+}
+
+_search_dir="$(_init_resolve_script_dir "${BASH_SOURCE[0]:-$0}")"
+_runtime_path=""
+while [ "${_search_dir}" != "/" ]; do
+    if [ -r "${_search_dir}/bootstrap/lib/runtime.sh" ]; then
+        _runtime_path="${_search_dir}/bootstrap/lib/runtime.sh"
+        break
+    fi
+    _search_dir="$(dirname "${_search_dir}")"
+done
+
+if [ -z "${_runtime_path}" ]; then
+    echo "failed to find bootstrap/lib/runtime.sh" >&2
+    exit 1
 fi
 
-export PATH=$PATH:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-
-user="${SUDO_USER:-$(whoami)}"
-home="$(eval echo ~$user)"
-
-# export TERM=xterm-256color
-
-# Use colors, but only if connected to a terminal, and that terminal
-# supports them.
-if which tput >/dev/null 2>&1; then
-  ncolors=$(tput colors 2>/dev/null)
-fi
-if [ -t 1 ] && [ -n "$ncolors" ] && [ "$ncolors" -ge 8 ]; then
-    RED="$(tput setaf 1)"
-    GREEN="$(tput setaf 2)"
-    YELLOW="$(tput setaf 3)"
-    BLUE="$(tput setaf 4)"
-    CYAN="$(tput setaf 5)"
-    BOLD="$(tput bold)"
-    NORMAL="$(tput sgr0)"
-else
-    RED=""
-    GREEN=""
-    YELLOW=""
-    CYAN=""
-    BLUE=""
-    BOLD=""
-    NORMAL=""
-fi
-
-_err(){
-    echo "$*" >&2
-}
-
-_command_exists(){
-    command -v "$@" > /dev/null 2>&1
-}
-
-rootID=0
-
-_runAsRoot(){
-    local trace=0
-    local subshell=0
-    local nostdout=0
-    local nostderr=0
-
-    local optNum=0
-    for opt in ${@};do
-        case "${opt}" in
-            --trace|-x)
-                trace=1
-                ((optNum++))
-                ;;
-            --subshell|-s)
-                subshell=1
-                ((optNum++))
-                ;;
-            --no-stdout)
-                nostdout=1
-                ((optNum++))
-                ;;
-            --no-stderr)
-                nostderr=1
-                ((optNum++))
-                ;;
-            *)
-                break
-                ;;
-        esac
-    done
-
-    shift $(($optNum))
-    local cmd="${*}"
-    bash_c='bash -c'
-    if [ "${EUID}" -ne "${rootID}" ];then
-        if _command_exists sudo; then
-            bash_c='sudo -E bash -c'
-        elif _command_exists su; then
-            bash_c='su -c'
-        else
-            cat >&2 <<-'EOF'
-			Error: this installer needs the ability to run commands as root.
-			We are unable to find either "sudo" or "su" available to make this happen.
-			EOF
-            exit 1
-        fi
-    fi
-
-    local fullcommand="${bash_c} ${cmd}"
-    if [ $nostdout -eq 1 ];then
-        cmd="${cmd} >/dev/null"
-    fi
-    if [ $nostderr -eq 1 ];then
-        cmd="${cmd} 2>/dev/null"
-    fi
-
-    if [ $subshell -eq 1 ];then
-        if [ $trace -eq 1 ];then
-            (set -x; ${bash_c} "${cmd}")
-        else
-            (${bash_c} "${cmd}")
-        fi
-    else
-        if [ $trace -eq 1 ];then
-            set -x; ${bash_c} "${cmd}";set +x;
-        else
-            ${bash_c} "${cmd}"
-        fi
-    fi
-}
-
-function _insert_path(){
-    if [ -z "$1" ];then
-        return
-    fi
-    echo -e ${PATH//:/"\n"} | grep -c "^$1$" >/dev/null 2>&1 || export PATH=$1:$PATH
-}
-
-_run(){
-    local trace=0
-    local subshell=0
-    local nostdout=0
-    local nostderr=0
-
-    local optNum=0
-    for opt in ${@};do
-        case "${opt}" in
-            --trace|-x)
-                trace=1
-                ((optNum++))
-                ;;
-            --subshell|-s)
-                subshell=1
-                ((optNum++))
-                ;;
-            --no-stdout)
-                nostdout=1
-                ((optNum++))
-                ;;
-            --no-stderr)
-                nostderr=1
-                ((optNum++))
-                ;;
-            *)
-                break
-                ;;
-        esac
-    done
-
-    shift $(($optNum))
-    local cmd="${*}"
-    bash_c='bash -c'
-
-    local fullcommand="${bash_c} ${cmd}"
-    if [ $nostdout -eq 1 ];then
-        cmd="${cmd} >/dev/null"
-    fi
-    if [ $nostderr -eq 1 ];then
-        cmd="${cmd} 2>/dev/null"
-    fi
-
-    if [ $subshell -eq 1 ];then
-        if [ $trace -eq 1 ];then
-            (set -x; ${bash_c} "${cmd}")
-        else
-            (${bash_c} "${cmd}")
-        fi
-    else
-        if [ $trace -eq 1 ];then
-            set -x; ${bash_c} "${cmd}";set +x;
-        else
-            ${bash_c} "${cmd}"
-        fi
-    fi
-}
-
-function _root(){
-    if [ ${EUID} -ne ${rootID} ];then
-        echo "Requires root privilege." 1>&2
-        exit 1
-    fi
-}
-
-function _linux(){
-    if [ "$(uname)" != "Linux" ];then
-        echo "Requires Linux" 1>&2
-        exit 1
-    fi
-}
-
-function _wait(){
-    # secs=$((5 * 60))
-    secs=${1:?'missing seconds'}
-
-    while [ $secs -gt 0 ]; do
-       echo -ne "$secs\033[0K\r"
-       sleep 1
-       : $((secs--))
-    done
-    echo -ne "\033[0K\r"
-}
-
-ed=vi
-if _command_exists vim; then
-    ed=vim
-fi
-if _command_exists nvim; then
-    ed=nvim
-fi
-# use ENV: editor to override
-if [ -n "${editor}" ];then
-    ed=${editor}
-fi
+# shellcheck disable=SC2034
+INIT_CALLER_SOURCE="${BASH_SOURCE[0]:-$0}"
+# shellcheck source=../../bootstrap/lib/runtime.sh
+source "${_runtime_path}"
+unset INIT_CALLER_SOURCE _runtime_path _search_dir
 ###############################################################################
 # write your code below (just define function[s])
 # function is hidden when begin with '_'

@@ -1,44 +1,45 @@
 #!/bin/bash
-if [ -z "${BASH_SOURCE}" ]; then
-    this=${PWD}
-else
-    rpath="$(readlink ${BASH_SOURCE})"
-    if [ -z "$rpath" ]; then
-        rpath=${BASH_SOURCE}
-    elif echo "$rpath" | grep -q '^/'; then
-        # absolute path
-        echo
-    else
-        # relative path
-        rpath="$(dirname ${BASH_SOURCE})/$rpath"
-    fi
-    this="$(cd $(dirname $rpath) && pwd)"
-fi
+_init_resolve_script_dir() {
+    local source_path="${1:-${BASH_SOURCE[0]:-$0}}"
+    local resolved_path=""
 
-search_dir="${this}"
-shelllib_path=""
-while [ "${search_dir}" != "/" ]; do
-    if [ -r "${search_dir}/config/shell/shared/shelllib.sh" ]; then
-        shelllib_path="${search_dir}/config/shell/shared/shelllib.sh"
+    if [ -n "${source_path}" ] && [ -e "${source_path}" ]; then
+        resolved_path="$(readlink "${source_path}" 2>/dev/null || true)"
+    fi
+
+    if [ -z "${resolved_path}" ]; then
+        resolved_path="${source_path}"
+    elif printf '%s' "${resolved_path}" | grep -q '^/'; then
+        :
+    else
+        resolved_path="$(dirname "${source_path}")/${resolved_path}"
+    fi
+
+    (
+        cd "$(dirname "${resolved_path}")" && pwd
+    )
+}
+
+_search_dir="$(_init_resolve_script_dir "${BASH_SOURCE[0]:-$0}")"
+_runtime_path=""
+while [ "${_search_dir}" != "/" ]; do
+    if [ -r "${_search_dir}/bootstrap/lib/runtime.sh" ]; then
+        _runtime_path="${_search_dir}/bootstrap/lib/runtime.sh"
         break
     fi
-    search_dir="$(dirname "${search_dir}")"
+    _search_dir="$(dirname "${_search_dir}")"
 done
 
-if [ -r "${shelllib_path}" ]; then
-    # shellcheck source=/dev/null
-    source "${shelllib_path}"
-elif [ -r /tmp/shelllib.sh ]; then
-    # shellcheck source=/dev/null
-    source /tmp/shelllib.sh
-else
-    shelllibURL=https://gitee.com/sunliang711/init2/raw/master/shell/shellrc.d/shelllib
-    curl -fsSL -o /tmp/shelllib.sh "${shelllibURL}"
-    if [ -r /tmp/shelllib.sh ]; then
-        # shellcheck source=/dev/null
-        source /tmp/shelllib.sh
-    fi
+if [ -z "${_runtime_path}" ]; then
+    echo "failed to find bootstrap/lib/runtime.sh" >&2
+    exit 1
 fi
+
+# shellcheck disable=SC2034
+INIT_CALLER_SOURCE="${BASH_SOURCE[0]:-$0}"
+# shellcheck source=../../bootstrap/lib/runtime.sh
+source "${_runtime_path}"
+unset INIT_CALLER_SOURCE _runtime_path _search_dir
 
 
 ###############################################################################

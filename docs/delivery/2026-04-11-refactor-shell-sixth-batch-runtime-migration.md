@@ -1,0 +1,6 @@
+## 重构摘要
+- 目标：完成第六批 `shelllib.sh` 简单兼容脚本的迁移样板，改为 source `bootstrap/lib/runtime.sh`
+- 改动脚本：`tools/archlinux/basic.sh`、`tools/archlinux/install.sh`、`tools/archlinux/installFont.sh`、`tools/archlinux/installNettools.sh`、`tools/archlinux/installPython.sh`、`tools/archlinux/installRust.sh`、`tools/archlinux/installYay.sh`、`tools/archlinux/installnode.sh`、`tools/archlinux/installsnap.sh`、`tools/userGateway.sh`、`tools/installDocker`
+- 保持不变的行为：以上脚本的命令入口、业务逻辑和帮助输出保持不变；仅删除旧的 `shelllib.sh` 定位/下载/source 头，统一改为定位并 source `bootstrap/lib/runtime.sh`
+- 验证结果：已执行 `bash -n tools/archlinux/*.sh tools/userGateway.sh tools/installDocker`，通过；已执行 `shellcheck tools/archlinux/*.sh` 与 `shellcheck tools/userGateway.sh tools/installDocker`，迁移新增告警未发现，剩余为迁移前已存在的历史告警；其中 `tools/archlinux/basic.sh`、`tools/archlinux/install.sh`、`tools/archlinux/installFont.sh`、`tools/archlinux/installNettools.sh`、`tools/archlinux/installPython.sh`、`tools/archlinux/installRust.sh`、`tools/archlinux/installYay.sh`、`tools/archlinux/installnode.sh`、`tools/archlinux/installsnap.sh`、`tools/userGateway.sh`、`tools/installDocker` 的历史告警均已分别通过 `git show HEAD:<file> | shellcheck -s bash -` 确认
+- 残余风险：剩余未迁移脚本已更多落到复杂兼容层范围，包含旧 `_root` / `_run` / `_runAsRoot` 特定语义或 heredoc/stdin 运行方式依赖；后续需要按“旧运行语义家族”单独收敛方案后再批量迁移

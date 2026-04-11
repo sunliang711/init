@@ -109,6 +109,15 @@ if [ -z "${INIT_TARGET_HOME}" ]; then
 fi
 export INIT_TARGET_USER INIT_TARGET_HOME
 
+# shellcheck disable=SC2034
+THIS="${this}"
+# shellcheck disable=SC2034
+SCRIPT_DIR="${this}"
+# shellcheck disable=SC2034
+user="${INIT_TARGET_USER}"
+# shellcheck disable=SC2034
+home="${INIT_TARGET_HOME}"
+
 if ! printf ':%s:' "${PATH}" | grep -q ':/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:'; then
     export PATH="${PATH}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 else
@@ -168,6 +177,10 @@ err_require_root=200
 err_require_linux=300
 err_create_dir=400
 
+_err() {
+    echo "$*" >&2
+}
+
 _command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
@@ -210,6 +223,13 @@ _ensureDir() {
 _ensure_parent_dir() {
     local path="${1:?missing path}"
     _ensureDir "$(dirname "${path}")"
+}
+
+_insert_path() {
+    if [ -z "$1" ]; then
+        return
+    fi
+    printf '%s\n' "${PATH//:/$'\n'}" | grep -Fx "$1" >/dev/null 2>&1 || export PATH="$1:${PATH}"
 }
 
 _timestamp() {
