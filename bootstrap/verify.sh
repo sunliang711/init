@@ -567,9 +567,12 @@ test_tmux_install_uninstall() {
 }
 
 test_vim_user_install() {
+    local state_file
+
     setup_test_env vim
     install_fake_git
     write_noop_stub vim
+    state_file="${TEST_HOME}/.local/state/init/vim.state"
 
     printf 'legacy vimrc\n' >"${TEST_HOME}/.vimrc"
 
@@ -582,6 +585,96 @@ test_vim_user_install() {
     assert_find_count "${TEST_HOME}" ".vimrc.init.bak.*" 1
     assert_exists "${TEST_HOME}/.vim/pack/vendor/start/nerdtree/.git"
     assert_exists "${TEST_HOME}/.vim/pack/vendor/start/nerdtree/doc/nerdtree.txt"
+    assert_exists "${state_file}"
+    assert_file_contains "${state_file}" "MANAGED_USER_VIMRC=1"
+    assert_file_contains "${state_file}" "MANAGED_NERDTREE_DIR=1"
+}
+
+test_vim_user_uninstall() {
+    local state_file
+
+    setup_test_env vim-uninstall
+    install_fake_git
+    write_noop_stub vim
+    state_file="${TEST_HOME}/.local/state/init/vim.state"
+
+    printf 'legacy vimrc\n' >"${TEST_HOME}/.vimrc"
+    mkdir -p "${TEST_HOME}/.vim/keep"
+    printf 'keep\n' >"${TEST_HOME}/.vim/keep/marker"
+
+    run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
+        bash "${ROOT_DIR}/bootstrap/components/vim-setup.sh" user
+    run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
+        bash "${ROOT_DIR}/bootstrap/components/vim-setup.sh" uninstall
+
+    assert_not_exists "${TEST_HOME}/.vimrc"
+    assert_not_exists "${TEST_HOME}/.vim/pack/vendor/start/nerdtree"
+    assert_exists "${TEST_HOME}/.vim/keep/marker"
+    assert_not_exists "${state_file}"
+}
+
+test_vim_uninstall_preserves_unmanaged_resources() {
+    local state_file
+
+    setup_test_env vim-unmanaged
+    install_fake_git
+    write_noop_stub vim
+    state_file="${TEST_HOME}/.local/state/init/vim.state"
+
+    cp "${ROOT_DIR}/config/editors/vim/vimrc" "${TEST_HOME}/.vimrc"
+    mkdir -p "${TEST_HOME}/.vim/pack/vendor/start/nerdtree/.git"
+    mkdir -p "${TEST_HOME}/.vim/pack/vendor/start/nerdtree/doc"
+    printf '%s\n' "https://github.com/preservim/nerdtree.git" >"${TEST_HOME}/.vim/pack/vendor/start/nerdtree/.git/init-remote"
+    printf 'nerdtree help\n' >"${TEST_HOME}/.vim/pack/vendor/start/nerdtree/doc/nerdtree.txt"
+
+    run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
+        bash "${ROOT_DIR}/bootstrap/components/vim-setup.sh" user
+    assert_file_contains "${state_file}" "MANAGED_USER_VIMRC=0"
+    assert_file_contains "${state_file}" "MANAGED_NERDTREE_DIR=0"
+
+    run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
+        bash "${ROOT_DIR}/bootstrap/components/vim-setup.sh" uninstall
+
+    assert_exists "${TEST_HOME}/.vimrc"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/nerdtree/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/nerdtree/doc/nerdtree.txt"
+    assert_not_exists "${state_file}"
+}
+
+test_vim_user_stops_on_clone_failure() {
+    local output_file
+
+    setup_test_env vim-clone-failure
+    write_noop_stub vim
+    output_file="${TEST_ROOT}/vim-user.out"
+
+    cat >"${TEST_BIN}/git" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+    chmod +x "${TEST_BIN}/git"
+
+    if env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
+        bash "${ROOT_DIR}/bootstrap/components/vim-setup.sh" user >"${output_file}" 2>&1; then
+        fail "expected vim user command to fail when git clone fails"
+    fi
+    assert_file_not_contains "${output_file}" "[SUCCESS] Done"
+}
+
+test_vim_global_rejects_unsupported_os() {
+    setup_test_env vim-global-unsupported
+    write_noop_stub vim
+
+    cat >"${TEST_BIN}/uname" <<'EOF'
+#!/bin/sh
+printf 'FreeBSD\n'
+EOF
+    chmod +x "${TEST_BIN}/uname"
+
+    if env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
+        bash "${ROOT_DIR}/bootstrap/components/vim-setup.sh" global; then
+        fail "expected vim global command to fail on unsupported os"
+    fi
 }
 
 test_update_init() {
@@ -624,6 +717,10 @@ integration_checks() {
     run test_fzf_install_uninstall
     run test_tmux_install_uninstall
     run test_vim_user_install
+    run test_vim_user_uninstall
+    run test_vim_uninstall_preserves_unmanaged_resources
+    run test_vim_user_stops_on_clone_failure
+    run test_vim_global_rejects_unsupported_os
     run test_update_init
 }
 
