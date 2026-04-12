@@ -641,6 +641,16 @@ test_vim_uninstall_preserves_unmanaged_resources() {
     assert_not_exists "${state_file}"
 }
 
+test_vim_uninstall_cleans_empty_dirs_without_state() {
+    setup_test_env vim-no-state
+    mkdir -p "${TEST_HOME}/.vim/pack/vendor/start"
+
+    run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
+        bash "${ROOT_DIR}/bootstrap/components/vim-setup.sh" uninstall
+
+    assert_not_exists "${TEST_HOME}/.vim"
+}
+
 test_vim_user_stops_on_clone_failure() {
     local output_file
 
@@ -719,6 +729,7 @@ integration_checks() {
     run test_vim_user_install
     run test_vim_user_uninstall
     run test_vim_uninstall_preserves_unmanaged_resources
+    run test_vim_uninstall_cleans_empty_dirs_without_state
     run test_vim_user_stops_on_clone_failure
     run test_vim_global_rejects_unsupported_os
     run test_update_init

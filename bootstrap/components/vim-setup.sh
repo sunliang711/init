@@ -44,7 +44,8 @@ read_state() {
 }
 
 cleanup_state_file() {
-    [ -f "${STATE_FILE}" ] && /bin/rm -f "${STATE_FILE}"
+    [ -f "${STATE_FILE}" ] || return 0
+    /bin/rm -f "${STATE_FILE}"
 }
 
 remove_empty_dir() {
