@@ -98,6 +98,29 @@ usage() {
   6. 脚本只负责安装 acme.sh、申请证书、安装证书，不自动改 Nginx/Xray 配置。
   7. 脚本需要 root 权限，并默认面向 Linux + apt-get 环境。
 
+常见 DNS Provider 环境变量:
+  dns_cf (Cloudflare)
+    推荐方式:
+      export CF_Token="你的_api_token"
+      export CF_Account_ID="你的_account_id"
+    兼容旧方式:
+      export CF_Key="你的_global_api_key"
+      export CF_Email="你的_cloudflare_email"
+
+  dns_ali (阿里云 DNS)
+      export Ali_Key="你的_access_key_id"
+      export Ali_Secret="你的_access_key_secret"
+
+  dns_tencent (腾讯云 DNSPod)
+      export Tencent_SecretId="你的_secret_id"
+      export Tencent_SecretKey="你的_secret_key"
+
+  说明:
+    1. 以上环境变量需要在执行脚本前先 export。
+    2. 脚本在 dns01 模式下会校验以上常见 Provider 的必填环境变量。
+    3. 如果使用 sudo，建议先切到 root 后再 export 并执行脚本。
+    4. 其他 DNS Provider 的变量名请查看 acme.sh 对应 dnsapi 脚本或官方文档。
+
 示例:
   # dns01: 一次签发两张证书
   acme_batch_issue.sh \
@@ -127,6 +150,60 @@ EOF
 
 command_exists() {
     command -v "$1" >/dev/null 2>&1
+}
+
+env_var_is_set() {
+    local var_name="${1:?missing env var name}"
+    [ -n "${!var_name:-}" ]
+}
+
+require_dns_provider_env_vars() {
+    local missing_vars=()
+    local env_var=""
+
+    case "${DNS_PROVIDER}" in
+        dns_cf)
+            if env_var_is_set "CF_Token" || env_var_is_set "CF_Account_ID"; then
+                if ! env_var_is_set "CF_Token"; then
+                    missing_vars+=("CF_Token")
+                fi
+                if ! env_var_is_set "CF_Account_ID"; then
+                    missing_vars+=("CF_Account_ID")
+                fi
+            elif env_var_is_set "CF_Key" || env_var_is_set "CF_Email"; then
+                if ! env_var_is_set "CF_Key"; then
+                    missing_vars+=("CF_Key")
+                fi
+                if ! env_var_is_set "CF_Email"; then
+                    missing_vars+=("CF_Email")
+                fi
+            else
+                missing_vars+=("CF_Token" "CF_Account_ID")
+            fi
+            ;;
+        dns_ali)
+            for env_var in Ali_Key Ali_Secret; do
+                if ! env_var_is_set "${env_var}"; then
+                    missing_vars+=("${env_var}")
+                fi
+            done
+            ;;
+        dns_tencent)
+            for env_var in Tencent_SecretId Tencent_SecretKey; do
+                if ! env_var_is_set "${env_var}"; then
+                    missing_vars+=("${env_var}")
+                fi
+            done
+            ;;
+        *)
+            log "skip dns provider env check for ${DNS_PROVIDER}, please ensure required variables are exported"
+            return 0
+            ;;
+    esac
+
+    if [ "${#missing_vars[@]}" -gt 0 ]; then
+        die "missing required env vars for ${DNS_PROVIDER}: ${missing_vars[*]}"
+    fi
 }
 
 require_root() {
@@ -403,6 +480,10 @@ validate_args() {
 
     if [ "${CHALLENGE}" = "dns01" ] && [ -z "${DNS_PROVIDER}" ]; then
         die "--dns-provider is required for dns01"
+    fi
+
+    if [ "${CHALLENGE}" = "dns01" ]; then
+        require_dns_provider_env_vars
     fi
 
     if [ "${CHALLENGE}" = "http01" ]; then
