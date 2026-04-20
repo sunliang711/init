@@ -3,6 +3,12 @@
 xrayConfigDir="/usr/local/etc/xray"
 serviceName="vless-reality"
 vlessRealityConfigFile="$xrayConfigDir/${serviceName}.json"
+# 监听模式：
+# - ipv6Only=true → listen 使用 "::"，streamSettings 追加 sockopt.v6only=true
+# - ipv4Only=true → listen 使用本机公网 IPv4，不追加 sockopt.v6only
+# - 二者均为 false（默认）→ listen 使用 "0.0.0.0"
+ipv6Only=false
+ipv4Only=false
 
 function log() {
     # redirect to stderr, because stdout is redirected to file
@@ -130,9 +136,39 @@ function config_xray(){
 
     log "config xray"
 
+    if [ "$ipv6Only" = "true" ] && [ "$ipv4Only" = "true" ]; then
+        log "ipv6Only and ipv4Only cannot both be true, exit"
+        exit 1
+    fi
+
     log "get public ip"
-    publicIp=$(curl -4 ifconfig.me)
+    if [ "$ipv6Only" = "true" ]; then
+        publicIp=$(curl -6 ifconfig.me)
+        # IPv6 在 URL/clash server 中按字面量给出，使用方如需要可自行加方括号
+    else
+        publicIp=$(curl -4 ifconfig.me)
+    fi
     log "public ip: $publicIp"
+    if [ -z "$publicIp" ]; then
+        log "public ip is empty, exit"
+        exit 1
+    fi
+
+    if [ "$ipv6Only" = "true" ]; then
+        listenAddr="::"
+        sockoptSegment=',
+            "sockopt": {
+                "v6only": true
+            }'
+        log "ipv6-only mode enabled, listen=$listenAddr"
+    elif [ "$ipv4Only" = "true" ]; then
+        listenAddr="$publicIp"
+        sockoptSegment=""
+        log "ipv4-only mode enabled, listen=$listenAddr"
+    else
+        listenAddr="0.0.0.0"
+        sockoptSegment=""
+    fi
 
     website="www.microsoft.com"
     date=$(date +%s)
@@ -180,7 +216,7 @@ function config_xray(){
 },
 "inbounds": [
     {
-        "listen": "0.0.0.0",
+        "listen": "$listenAddr",
         "port": 443,
         "protocol": "vless",
         "settings": {
@@ -211,7 +247,7 @@ function config_xray(){
                 "shortIds": [
                     "$shortId"
                 ]
-            }
+            }$sockoptSegment
         },
         "sniffing": {
             "enabled": true,
@@ -326,7 +362,28 @@ function install_traffic_sh(){
 
 function install(){
     set -e
-    
+
+    # 解析 install 子命令的可选参数
+    for arg in "$@"; do
+        case "$arg" in
+            --ipv6-only|ipv6-only|ipv6)
+                ipv6Only=true
+                ;;
+            --ipv4-only|ipv4-only|ipv4)
+                ipv4Only=true
+                ;;
+            *)
+                log "unknown install arg: $arg"
+                exit 1
+                ;;
+        esac
+    done
+
+    if [ "$ipv6Only" = "true" ] && [ "$ipv4Only" = "true" ]; then
+        log "--ipv6-only and --ipv4-only cannot be used together, exit"
+        exit 1
+    fi
+
     require_root
     export_path
     redirect_stdout_to_file
@@ -353,12 +410,13 @@ function uninstall(){
 
 case $1 in
     install)
-        install
+        shift
+        install "$@"
         ;;
     uninstall)
         uninstall
         ;;
     *)
-        echo "Usage: $0 {install|uninstall}"
+        echo "Usage: $0 {install [--ipv6-only|--ipv4-only] | uninstall}"
         ;;
 esac
