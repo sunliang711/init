@@ -4149,6 +4149,10 @@ detect_format() {
     esac
 }
 
+vion(){
+    set -o vi
+}
+
 
 #END function
 
