@@ -12,6 +12,7 @@ DNS_PROVIDER=""
 HTTP_MODE="standalone"
 WEBROOT=""
 KEY_LENGTH="ec-256"
+RELOAD_CMD=""
 INSTALL_ONLY=0
 APT_UPDATED=0
 
@@ -75,6 +76,10 @@ usage() {
       acme.sh 的密钥类型，默认 ec-256。
       常见值: ec-256、ec-384、2048、4096。
 
+  --reloadcmd <command>
+      可选。证书安装或后续自动续期成功后执行的 reload 命令。
+      例如: --reloadcmd /root/reload_nomad_nginx.sh
+
   -d, --domain <domains>
       一次传入一张证书的域名列表，可重复传递以批量签发多张证书。
       多个域名之间使用英文逗号分隔，第一个域名视为主域名。
@@ -95,7 +100,7 @@ usage() {
   3. dns01 适合无法开放 80 端口，或希望使用通配符证书的场景。
   4. http01 standalone 要求 80 端口未被其他服务占用。
   5. http01 webroot 要求现有 Web 服务已正确暴露 /.well-known/acme-challenge/。
-  6. 脚本只负责安装 acme.sh、申请证书、安装证书，不自动改 Nginx/Xray 配置。
+  6. 如果提供 --reloadcmd，acme.sh 会在安装证书和后续自动续期后执行该命令。
   7. 脚本需要 root 权限，并默认面向 Linux + apt-get 环境。
 
 常见 DNS Provider 环境变量:
@@ -144,6 +149,7 @@ usage() {
     --challenge http01 \
     --http-mode webroot \
     --webroot /var/www/acme-challenge \
+    --reloadcmd /root/reload_nomad_nginx.sh \
     -d example.com,www.example.com
 EOF
 }
@@ -291,6 +297,7 @@ install_acme() {
     local installer=""
 
     install_package curl curl
+    install_package jq jq
 
     if [ "${CHALLENGE}" = "http01" ] && [ "${HTTP_MODE}" = "standalone" ]; then
         install_package socat socat
@@ -361,6 +368,7 @@ issue_cert() {
     local key_file=""
     local fullchain_file=""
     local -a issue_args=()
+    local -a install_args=()
 
     IFS=',' read -r -a domains <<< "${cert_spec}"
     primary_domain="${domains[0]}"
@@ -368,32 +376,39 @@ issue_cert() {
     acme_domain_dir="$(acme_cert_dir_name "${primary_domain}")"
 
     if [ -e "${ACME_HOME}/${acme_domain_dir}/${primary_domain}.cer" ]; then
-        log "cert already exists for ${primary_domain}, skip"
-        return 0
-    fi
+        log "cert already exists for ${primary_domain}, skip issue and refresh install config"
+    else
+        while IFS= read -r line; do
+            issue_args+=("${line}")
+        done < <(build_issue_args "${cert_spec}")
 
-    while IFS= read -r line; do
-        issue_args+=("${line}")
-    done < <(build_issue_args "${cert_spec}")
+        log "issuing cert for ${cert_spec}"
+        "$(acme_bin)" --issue "${issue_args[@]}"
 
-    log "issuing cert for ${cert_spec}"
-    "$(acme_bin)" --issue "${issue_args[@]}"
-
-    if [ ! -e "${ACME_HOME}/${acme_domain_dir}/${primary_domain}.cer" ]; then
-        die "issue cert failed for ${primary_domain}"
+        if [ ! -e "${ACME_HOME}/${acme_domain_dir}/${primary_domain}.cer" ]; then
+            die "issue cert failed for ${primary_domain}"
+        fi
     fi
 
     mkdir -p "${CERT_DIR}"
     cert_file="${CERT_DIR}/${cert_name}.cer"
     key_file="${CERT_DIR}/${cert_name}.key"
     fullchain_file="${CERT_DIR}/${cert_name}.pem"
+    install_args=(
+        "--install-cert"
+        "-d" "${primary_domain}"
+        "--keylength" "${KEY_LENGTH}"
+        "--cert-file" "${cert_file}"
+        "--key-file" "${key_file}"
+        "--fullchain-file" "${fullchain_file}"
+    )
+
+    if [ -n "${RELOAD_CMD}" ]; then
+        install_args+=("--reloadcmd" "${RELOAD_CMD}")
+    fi
 
     log "installing cert for ${primary_domain} to ${CERT_DIR}"
-    "$(acme_bin)" --install-cert -d "${primary_domain}" \
-        --keylength "${KEY_LENGTH}" \
-        --cert-file "${cert_file}" \
-        --key-file "${key_file}" \
-        --fullchain-file "${fullchain_file}"
+    "$(acme_bin)" "${install_args[@]}"
 
     if [ ! -e "${fullchain_file}" ] || [ ! -e "${key_file}" ]; then
         die "cert install failed for ${primary_domain}"
@@ -443,6 +458,11 @@ parse_args() {
             --key-length)
                 [ $# -ge 2 ] || die "missing value for --key-length"
                 KEY_LENGTH="$2"
+                shift 2
+                ;;
+            --reloadcmd)
+                [ $# -ge 2 ] || die "missing value for --reloadcmd"
+                RELOAD_CMD="$2"
                 shift 2
                 ;;
             -d|--domain)
