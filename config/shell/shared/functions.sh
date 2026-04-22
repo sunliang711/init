@@ -4153,6 +4153,15 @@ vion(){
     set -o vi
 }
 
+readx509(){
+    pemfile=${1:?"pemfile is required"}
+    if [ ! -e "$pemfile" ]; then
+        echo "Error: PEM file '$pemfile' does not exist"
+        return 1
+    fi
+    openssl x509 -in "$pemfile" -text -noout
+}
+
 
 #END function
 
