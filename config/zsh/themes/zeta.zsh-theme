@@ -105,6 +105,24 @@ function get_git_short_sha_prompt {
     fi
 }
 
+function get_git_summary_prompt {
+    if [[ -n $(git rev-parse --is-inside-work-tree 2>/dev/null) ]]; then
+        local branch="$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)"
+        local git_sha="$(git rev-parse --short HEAD 2>/dev/null)"
+        local git_status="%{$green_bold%}{✔}%{$reset_color%}"
+
+        if ! git diff --quiet --ignore-submodules --cached 2>/dev/null || \
+            ! git diff --quiet --ignore-submodules 2>/dev/null || \
+            [[ -n $(git ls-files --others --exclude-standard 2>/dev/null) ]]; then
+            git_status="%{$red_bold%}{✘}%{$reset_color%}"
+        fi
+
+        if [[ -n $branch && -n $git_sha ]]; then
+            echo "%{$green_bold%}($branch)%{$reset_color%} %{$yellow%}[$git_sha]%{$reset_color%} $git_status"
+        fi
+    fi
+}
+
 function get_time_stamp {
     echo "%*"
 }
@@ -158,7 +176,8 @@ function registry_status(){
     fi
 }
 
-# Prompt: # USER@MACHINE: DIRECTORY <BRANCH [STATUS]> --- (TIME_STAMP)
+# Prompt: # GIT_BRANCH GIT_SHA GIT_STATUS
+# # USER@MACHINE: DIRECTORY --- (TIME_STAMP)
 # > command
 function print_prompt_head {
     # 再加一行，显示proxy状态
@@ -167,18 +186,25 @@ function print_prompt_head {
 "
     print -rP "$proxy_prompt"
 
+    # 单独一行显示 git branch、commit hash 和 dirty status
+    local git_summary="$(get_git_summary_prompt)"
+    if [[ -n $git_summary ]]; then
+        git_sha_prompt="├─\
+%{$green_bold%}# git:%{$reset_color%}$git_summary\
+"
+        print -rP "$git_sha_prompt"
+    fi
+
     # registry status too slow, disable it
     # registry_prompt="|-%{$green_bold%}# registry:%{$reset_color%}$(registry_status)"
     # print -rP "$registry_prompt"
 
     local left_prompt="╰─\
-$(get_git_short_sha_prompt)\
 %{$blue%}# \
 %{$green_bold%}$(get_usr_name)\
 %{$blue%}@\
 %{$magenta_bold%}$(get_box_name): \
-%{$magenta_bold%}$(get_current_dir)%{$reset_color%}\
-$(get_git_prompt)"
+%{$magenta_bold%}$(get_current_dir)%{$reset_color%}"
     local right_prompt="%{$blue%}($(get_time_stamp))%{$reset_color%} "
     print -rP "$left_prompt$(get_space $left_prompt $right_prompt)$right_prompt"
 
