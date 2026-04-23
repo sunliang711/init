@@ -11,6 +11,7 @@ local yellow=$fg[yellow]
 local magenta=$fg[magenta]
 local cyan=$fg[cyan]
 local white=$fg[white]
+local grey=$fg_bold[black]
 
 local black_bold=$fg_bold[black]
 local red_bold=$fg_bold[red]
@@ -110,20 +111,47 @@ function get_git_short_sha_prompt {
 }
 
 function get_git_summary_prompt {
-    if [[ -n $(git rev-parse --is-inside-work-tree 2>/dev/null) ]]; then
-        local branch="$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)"
-        local git_sha="$(git rev-parse --short HEAD 2>/dev/null)"
+    local git_status_output
+    if [[ "${DISABLE_UNTRACKED_FILES_DIRTY:-}" == "true" ]]; then
+        git_status_output="$(git status --porcelain=v2 --branch --untracked-files=no --ignore-submodules=all 2>/dev/null)"
+    else
+        git_status_output="$(git status --porcelain=v2 --branch --ignore-submodules=all 2>/dev/null)"
+    fi
+
+    if [[ -n $git_status_output ]]; then
+        local branch=""
+        local git_sha=""
         local git_status="%{$green_bold%}[✔]%{$reset_color%}"
         local has_changed=0
         local has_untracked=0
+        local line
 
-        if ! git diff --quiet --ignore-submodules --cached 2>/dev/null || \
-            ! git diff --quiet --ignore-submodules 2>/dev/null; then
-            has_changed=1
-        fi
+        for line in ${(f)git_status_output}; do
+            case "$line" in
+                \#\ branch.oid\ *)
+                    git_sha="${line#"# branch.oid "}"
+                    if [[ $git_sha == "(initial)" ]]; then
+                        git_sha=""
+                    else
+                        git_sha="${git_sha[1,7]}"
+                    fi
+                    ;;
+                \#\ branch.head\ *)
+                    branch="${line#"# branch.head "}"
+                    ;;
+                \?*)
+                    if [[ "${DISABLE_UNTRACKED_FILES_DIRTY:-}" != "true" ]]; then
+                        has_untracked=1
+                    fi
+                    ;;
+                [12u]*)
+                    has_changed=1
+                    ;;
+            esac
+        done
 
-        if [[ -n $(git ls-files --others --exclude-standard 2>/dev/null) ]]; then
-            has_untracked=1
+        if [[ $branch == "(detached)" ]]; then
+            branch=$git_sha
         fi
 
         if [[ $has_changed -eq 1 && $has_untracked -eq 1 ]]; then
@@ -222,26 +250,20 @@ function print_prompt_head {
     # 存在 proxy 时显示状态
     local proxy_summary="$(proxy_status)"
     if [[ -n $proxy_summary ]]; then
-        proxy_prompt="◇ \
-%{$green_bold%}proxy%{$reset_color%}  $proxy_summary\
-"
+        proxy_prompt="$proxy_summary"
         print -rP "$proxy_prompt"
     fi
 
     # 单独一行显示 git branch、commit hash 和 dirty status
     local git_summary="$(get_git_summary_prompt)"
     if [[ -n $git_summary ]]; then
-        git_sha_prompt="◇ \
-%{$green_bold%}git%{$reset_color%} %{$grey%}│%{$reset_color%} $git_summary\
-"
+        git_sha_prompt="$git_summary"
         print -rP "$git_sha_prompt"
     fi
 
     # 上条命令超过阈值时显示耗时
     if [[ -n $took_summary ]]; then
-        took_prompt="◇ \
-%{$green_bold%}took%{$reset_color%} %{$grey%}│%{$reset_color%} %{$yellow%}$took_summary%{$reset_color%}\
-"
+        took_prompt="%{$yellow%}$took_summary%{$reset_color%}"
         print -rP "$took_prompt"
     fi
 
@@ -249,8 +271,7 @@ function print_prompt_head {
     # registry_prompt="|-%{$green_bold%}# registry:%{$reset_color%}$(registry_status)"
     # print -rP "$registry_prompt"
 
-    local left_prompt="◇ \
-%{$green_bold%}$(get_usr_name)\
+    local left_prompt="%{$green_bold%}$(get_usr_name)\
 %{$blue%}@\
 %{$magenta_bold%}$(get_box_name): \
 %{$magenta_bold%}$(get_current_dir)%{$reset_color%}"
