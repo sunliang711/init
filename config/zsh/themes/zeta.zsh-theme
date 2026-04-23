@@ -98,6 +98,13 @@ function get_git_prompt {
     fi
 }
 
+function get_git_short_sha_prompt {
+    local git_sha="$(git_prompt_short_sha)"
+    if [[ -n $git_sha ]]; then
+        echo "$git_sha "
+    fi
+}
+
 function get_time_stamp {
     echo "%*"
 }
@@ -165,6 +172,7 @@ function print_prompt_head {
     # print -rP "$registry_prompt"
 
     local left_prompt="╰─\
+$(get_git_short_sha_prompt)\
 %{$blue%}# \
 %{$green_bold%}$(get_usr_name)\
 %{$blue%}@\
@@ -189,4 +197,4 @@ add-zsh-hook precmd print_prompt_head
 setopt prompt_subst
 
 PROMPT='${vim_mode} $(get_prompt_indicator)'
-RPROMPT='$(git_prompt_short_sha) '
+RPROMPT=''
