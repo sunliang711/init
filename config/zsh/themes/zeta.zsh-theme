@@ -110,11 +110,24 @@ function get_git_summary_prompt {
         local branch="$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)"
         local git_sha="$(git rev-parse --short HEAD 2>/dev/null)"
         local git_status="%{$green_bold%}{✔}%{$reset_color%}"
+        local has_changed=0
+        local has_untracked=0
 
         if ! git diff --quiet --ignore-submodules --cached 2>/dev/null || \
-            ! git diff --quiet --ignore-submodules 2>/dev/null || \
-            [[ -n $(git ls-files --others --exclude-standard 2>/dev/null) ]]; then
+            ! git diff --quiet --ignore-submodules 2>/dev/null; then
+            has_changed=1
+        fi
+
+        if [[ -n $(git ls-files --others --exclude-standard 2>/dev/null) ]]; then
+            has_untracked=1
+        fi
+
+        if [[ $has_changed -eq 1 && $has_untracked -eq 1 ]]; then
+            git_status="%{$red_bold%}{✘%{$yellow_bold%}?%{$red_bold%}}%{$reset_color%}"
+        elif [[ $has_changed -eq 1 ]]; then
             git_status="%{$red_bold%}{✘}%{$reset_color%}"
+        elif [[ $has_untracked -eq 1 ]]; then
+            git_status="%{$yellow_bold%}{?}%{$reset_color%}"
         fi
 
         if [[ -n $branch && -n $git_sha ]]; then
@@ -143,17 +156,16 @@ function get_space {
 function proxy_status(){
     # http proxy
     if [ -n "$http_proxy" ];then
-        echo -n "%{$green%}[http]=>$http_proxy %{$reset_color%}"
-    else
-        echo -n "%{$grey%}[http]=>off %{$reset_color%}"
+        echo -n "%{$green%}[http]=>$http_proxy%{$reset_color%}"
     fi
 
     # git proxy
     local gp=$(git config --global http.proxy 2>/dev/null)
     if [ -n "$gp" ];then
-        echo -n "%{$green%} [git]=>$gp %{$reset_color%}"
-    else
-        echo -n "%{$grey%} [git]=>off %{$reset_color%}"
+        if [ -n "$http_proxy" ];then
+            echo -n " "
+        fi
+        echo -n "%{$green%}[git]=>$gp%{$reset_color%}"
     fi
 }
 
@@ -180,16 +192,19 @@ function registry_status(){
 # # USER@MACHINE: DIRECTORY --- (TIME_STAMP)
 # > command
 function print_prompt_head {
-    # 再加一行，显示proxy状态
-    proxy_prompt="╭─\
-%{$green_bold%}# proxy:%{$reset_color%}$(proxy_status)\
+    # 存在 proxy 时显示状态
+    local proxy_summary="$(proxy_status)"
+    if [[ -n $proxy_summary ]]; then
+        proxy_prompt="◇ \
+%{$green_bold%}# proxy:%{$reset_color%}$proxy_summary\
 "
-    print -rP "$proxy_prompt"
+        print -rP "$proxy_prompt"
+    fi
 
     # 单独一行显示 git branch、commit hash 和 dirty status
     local git_summary="$(get_git_summary_prompt)"
     if [[ -n $git_summary ]]; then
-        git_sha_prompt="├─\
+        git_sha_prompt="◇ \
 %{$green_bold%}# git:%{$reset_color%}$git_summary\
 "
         print -rP "$git_sha_prompt"
@@ -199,7 +214,7 @@ function print_prompt_head {
     # registry_prompt="|-%{$green_bold%}# registry:%{$reset_color%}$(registry_status)"
     # print -rP "$registry_prompt"
 
-    local left_prompt="╰─\
+    local left_prompt="◇ \
 %{$blue%}# \
 %{$green_bold%}$(get_usr_name)\
 %{$blue%}@\
