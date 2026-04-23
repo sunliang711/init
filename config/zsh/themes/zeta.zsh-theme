@@ -22,6 +22,10 @@ local cyan_bold=$fg_bold[cyan]
 local white_bold=$fg_bold[white]
 
 local highlight_bg=$bg[red]
+local zeta_command_start=""
+local zeta_took_threshold=3
+
+zmodload zsh/datetime 2>/dev/null
 
 #{{vi indicator
 vim_ins_mode="%{$fg[cyan]%}[INS]%{$reset_color%}"
@@ -109,7 +113,7 @@ function get_git_summary_prompt {
     if [[ -n $(git rev-parse --is-inside-work-tree 2>/dev/null) ]]; then
         local branch="$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null)"
         local git_sha="$(git rev-parse --short HEAD 2>/dev/null)"
-        local git_status="%{$green_bold%}{✔}%{$reset_color%}"
+        local git_status="%{$green_bold%}[✔]%{$reset_color%}"
         local has_changed=0
         local has_untracked=0
 
@@ -123,21 +127,42 @@ function get_git_summary_prompt {
         fi
 
         if [[ $has_changed -eq 1 && $has_untracked -eq 1 ]]; then
-            git_status="%{$red_bold%}{✘%{$yellow_bold%}?%{$red_bold%}}%{$reset_color%}"
+            git_status="%{$red_bold%}[✘%{$yellow_bold%}?%{$red_bold%}]%{$reset_color%}"
         elif [[ $has_changed -eq 1 ]]; then
-            git_status="%{$red_bold%}{✘}%{$reset_color%}"
+            git_status="%{$red_bold%}[✘]%{$reset_color%}"
         elif [[ $has_untracked -eq 1 ]]; then
-            git_status="%{$yellow_bold%}{?}%{$reset_color%}"
+            git_status="%{$yellow_bold%}[?]%{$reset_color%}"
         fi
 
         if [[ -n $branch && -n $git_sha ]]; then
-            echo "%{$green_bold%}($branch)%{$reset_color%} %{$yellow%}[$git_sha]%{$reset_color%} $git_status"
+            echo "%{$green_bold%}⎇ $branch%{$reset_color%}  %{$yellow%}@$git_sha%{$reset_color%}  $git_status"
         fi
     fi
 }
 
 function get_time_stamp {
     echo "%*"
+}
+
+function zeta_record_command_start {
+    zeta_command_start=$EPOCHSECONDS
+}
+
+function get_took_prompt {
+    if [[ -n $zeta_command_start && -n $EPOCHSECONDS ]]; then
+        local elapsed=$(( EPOCHSECONDS - zeta_command_start ))
+        zeta_command_start=""
+
+        if [[ $elapsed -ge $zeta_took_threshold ]]; then
+            if [[ $elapsed -ge 3600 ]]; then
+                echo "$(( elapsed / 3600 ))h $(( elapsed % 3600 / 60 ))m $(( elapsed % 60 ))s"
+            elif [[ $elapsed -ge 60 ]]; then
+                echo "$(( elapsed / 60 ))m $(( elapsed % 60 ))s"
+            else
+                echo "${elapsed}s"
+            fi
+        fi
+    fi
 }
 
 function get_space {
@@ -192,11 +217,13 @@ function registry_status(){
 # # USER@MACHINE: DIRECTORY --- (TIME_STAMP)
 # > command
 function print_prompt_head {
+    local took_summary="$(get_took_prompt)"
+
     # 存在 proxy 时显示状态
     local proxy_summary="$(proxy_status)"
     if [[ -n $proxy_summary ]]; then
         proxy_prompt="◇ \
-%{$green_bold%}# proxy:%{$reset_color%}$proxy_summary\
+%{$green_bold%}proxy%{$reset_color%}  $proxy_summary\
 "
         print -rP "$proxy_prompt"
     fi
@@ -205,9 +232,17 @@ function print_prompt_head {
     local git_summary="$(get_git_summary_prompt)"
     if [[ -n $git_summary ]]; then
         git_sha_prompt="◇ \
-%{$green_bold%}# git:%{$reset_color%}$git_summary\
+%{$green_bold%}git%{$reset_color%} %{$grey%}│%{$reset_color%} $git_summary\
 "
         print -rP "$git_sha_prompt"
+    fi
+
+    # 上条命令超过阈值时显示耗时
+    if [[ -n $took_summary ]]; then
+        took_prompt="◇ \
+%{$green_bold%}took%{$reset_color%} %{$grey%}│%{$reset_color%} %{$yellow%}$took_summary%{$reset_color%}\
+"
+        print -rP "$took_prompt"
     fi
 
     # registry status too slow, disable it
@@ -215,7 +250,6 @@ function print_prompt_head {
     # print -rP "$registry_prompt"
 
     local left_prompt="◇ \
-%{$blue%}# \
 %{$green_bold%}$(get_usr_name)\
 %{$blue%}@\
 %{$magenta_bold%}$(get_box_name): \
@@ -234,6 +268,7 @@ function get_prompt_indicator {
 }
 
 autoload -U add-zsh-hook
+add-zsh-hook preexec zeta_record_command_start
 add-zsh-hook precmd print_prompt_head
 setopt prompt_subst
 
