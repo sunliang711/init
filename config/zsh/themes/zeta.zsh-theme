@@ -24,6 +24,7 @@ local white_bold=$fg_bold[white]
 
 local highlight_bg=$bg[red]
 local zeta_command_start=""
+local zeta_last_took=""
 local zeta_took_threshold=3
 
 zmodload zsh/datetime 2>/dev/null
@@ -176,21 +177,27 @@ function zeta_record_command_start {
     zeta_command_start=$EPOCHSECONDS
 }
 
-function get_took_prompt {
+function zeta_record_command_took {
+    zeta_last_took=""
+
     if [[ -n $zeta_command_start && -n $EPOCHSECONDS ]]; then
         local elapsed=$(( EPOCHSECONDS - zeta_command_start ))
         zeta_command_start=""
 
         if [[ $elapsed -ge $zeta_took_threshold ]]; then
             if [[ $elapsed -ge 3600 ]]; then
-                echo "$(( elapsed / 3600 ))h $(( elapsed % 3600 / 60 ))m $(( elapsed % 60 ))s"
+                zeta_last_took="$(( elapsed / 3600 ))h $(( elapsed % 3600 / 60 ))m $(( elapsed % 60 ))s"
             elif [[ $elapsed -ge 60 ]]; then
-                echo "$(( elapsed / 60 ))m $(( elapsed % 60 ))s"
+                zeta_last_took="$(( elapsed / 60 ))m $(( elapsed % 60 ))s"
             else
-                echo "${elapsed}s"
+                zeta_last_took="${elapsed}s"
             fi
         fi
     fi
+}
+
+function get_took_prompt {
+    echo "$zeta_last_took"
 }
 
 function get_space {
@@ -241,29 +248,34 @@ function registry_status(){
     fi
 }
 
+function get_prompt_body_prefix {
+    echo "%{$blue_bold%}# %{$reset_color%}"
+}
+
 # Prompt: # GIT_BRANCH GIT_SHA GIT_STATUS
 # # USER@MACHINE: DIRECTORY --- (TIME_STAMP)
 # > command
 function print_prompt_head {
+    zeta_record_command_took
     local took_summary="$(get_took_prompt)"
 
     # 存在 proxy 时显示状态
     local proxy_summary="$(proxy_status)"
     if [[ -n $proxy_summary ]]; then
-        proxy_prompt="$proxy_summary"
+        proxy_prompt="$(get_prompt_body_prefix)$proxy_summary"
         print -rP "$proxy_prompt"
     fi
 
     # 单独一行显示 git branch、commit hash 和 dirty status
     local git_summary="$(get_git_summary_prompt)"
     if [[ -n $git_summary ]]; then
-        git_sha_prompt="$git_summary"
+        git_sha_prompt="$(get_prompt_body_prefix)$git_summary"
         print -rP "$git_sha_prompt"
     fi
 
     # 上条命令超过阈值时显示耗时
     if [[ -n $took_summary ]]; then
-        took_prompt="%{$yellow%}$took_summary%{$reset_color%}"
+        took_prompt="$(get_prompt_body_prefix)%{$yellow%}$took_summary%{$reset_color%}"
         print -rP "$took_prompt"
     fi
 
@@ -271,7 +283,8 @@ function print_prompt_head {
     # registry_prompt="|-%{$green_bold%}# registry:%{$reset_color%}$(registry_status)"
     # print -rP "$registry_prompt"
 
-    local left_prompt="%{$green_bold%}$(get_usr_name)\
+    local left_prompt="$(get_prompt_body_prefix)\
+%{$green_bold%}$(get_usr_name)\
 %{$blue%}@\
 %{$magenta_bold%}$(get_box_name): \
 %{$magenta_bold%}$(get_current_dir)%{$reset_color%}"
