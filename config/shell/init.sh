@@ -11,4 +11,7 @@ Source "${SHELL_SHARED_ROOT}/environment.sh"
 Source "${SHELL_SHARED_ROOT}/aliases.sh"
 Source "${SHELL_SHARED_ROOT}/extras.sh"
 Source "${SHELL_LOCAL_FILE}"
+
+# Apply saved proxy only after machine-local opt-in flags are loaded.
+[ -n "${AUTO_DETECT_PROXY_ENV:-}" ] && [ -e "${PROXY_FILE}" ] && detectProxyEnv
 # vim: set ft=sh:

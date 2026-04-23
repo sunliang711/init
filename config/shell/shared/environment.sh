@@ -38,9 +38,4 @@ append_paths /sbin /bin
 #END custom PATH
 #END PATH
 
-#BEGIN proxy setting
-# Opt in from config/shell/local.sh or another machine-local file when needed.
-[ -n "${AUTO_DETECT_PROXY_ENV:-}" ] && [ -e "${PROXY_FILE}" ] && detectProxyEnv
-#END proxy setting
-
 # vim: set ft=sh:
