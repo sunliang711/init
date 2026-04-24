@@ -609,7 +609,7 @@ dockerproxyon() {
     if ! _linux; then
         return 1
     fi
-    local proxy="$(parseProxy ${1})"
+    local proxy="$(parseProxy "$@")"
     if [ -z "${proxy}" ]; then
         echo "Cannot get proxy value,exit."
         return 1
@@ -659,7 +659,7 @@ aptproxyon() {
         return 1
     fi
 
-    local proxy="$(parseProxy ${1})"
+    local proxy="$(parseProxy "$@")"
     if [ -z "${proxy}" ]; then
         echo "Cannot get proxy value,exit."
         return 1
@@ -693,7 +693,7 @@ aptproxyoff() {
 }
 
 macproxyon() {
-    local proxy="$(parseProxy ${1})"
+    local proxy="$(parseProxy "$@")"
     if [ -z "${proxy}" ]; then
         echo "Cannot get proxy value,exit."
         return 1
@@ -761,22 +761,45 @@ npmproxyoff() {
 
 parseProxy() {
     # Note: echo msg to stderr!! echo "msg" >&2
-    local proxy="${1}"
+    local proxy=""
+    local verbose=0
+    local arg
+
+    for arg in "$@"; do
+        case "${arg}" in
+        --verbose)
+            verbose=1
+            ;;
+        *)
+            if [ -z "${proxy}" ]; then
+                proxy="${arg}"
+            fi
+            ;;
+        esac
+    done
 
     if [ -z "${proxy}" ]; then
-        echo "No proxy parameter passed" >&2
+        if [ "${verbose}" -eq 1 ]; then
+            echo "No proxy parameter passed" >&2
+        fi
         # use ${PROXY_FILE}
         if [ -n "${PROXY_FILE}" ]; then
             if [ -e "${PROXY_FILE}" ]; then
                 #pass http proxy
-                echo "Use PROXY_FILE env." >&2
+                if [ "${verbose}" -eq 1 ]; then
+                    echo "Use PROXY_FILE env." >&2
+                fi
                 proxy="$(perl -lne 'print $1 if /^http_proxy=(.+)$/' ${PROXY_FILE})"
             else
-                echo "The file specified by \${PROXY_FILE}: ${PROXY_FILE} not exist,exit." >&2
+                if [ "${verbose}" -eq 1 ]; then
+                    echo "The file specified by \${PROXY_FILE}: ${PROXY_FILE} not exist,exit." >&2
+                fi
                 return 1
             fi
         else
-            echo "\${PROXY_FILE} is empty,exit." >&2
+            if [ "${verbose}" -eq 1 ]; then
+                echo "\${PROXY_FILE} is empty,exit." >&2
+            fi
             return 1
         fi
     fi
@@ -825,7 +848,7 @@ envProxyOff() {
 
 # detect git proxy as http_proxy https_proxy env
 detectProxyEnv() {
-    local proxy="$(parseProxy)"
+    local proxy="$(parseProxy "$@")"
     if [ -n "$proxy" ]; then
         envProxyOn "${proxy}"
     else
@@ -846,7 +869,7 @@ gitproxyon() {
         echo "No git command."
         return 1
     fi
-    local proxy="$(parseProxy ${1})"
+    local proxy="$(parseProxy "$@")"
     if [ -z "${proxy}" ]; then
         echo "Cannot get proxy value,exit."
         return 1
@@ -910,7 +933,7 @@ pipproxyoff() {
 }
 
 proxyon() {
-    local proxy="$(parseProxy ${1})"
+    local proxy="$(parseProxy "$@")"
 
     gitproxyon "${proxy}"
     envProxyOn "${proxy}" -s
