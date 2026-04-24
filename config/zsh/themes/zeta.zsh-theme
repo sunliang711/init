@@ -249,7 +249,7 @@ function registry_status(){
 }
 
 function get_prompt_body_prefix {
-    echo "%{$blue_bold%}# %{$reset_color%}"
+    echo "%{$blue_bold%}❯ %{$reset_color%}"
 }
 
 # Prompt: # GIT_BRANCH GIT_SHA GIT_STATUS
