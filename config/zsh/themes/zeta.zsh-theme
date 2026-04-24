@@ -273,12 +273,6 @@ function print_prompt_head {
         print -rP "$git_sha_prompt"
     fi
 
-    # 上条命令超过阈值时显示耗时
-    if [[ -n $took_summary ]]; then
-        took_prompt="$(get_prompt_body_prefix)%{$yellow%}$took_summary%{$reset_color%}"
-        print -rP "$took_prompt"
-    fi
-
     # registry status too slow, disable it
     # registry_prompt="|-%{$green_bold%}# registry:%{$reset_color%}$(registry_status)"
     # print -rP "$registry_prompt"
@@ -288,7 +282,11 @@ function print_prompt_head {
 %{$blue%}@\
 %{$magenta_bold%}$(get_box_name): \
 %{$magenta_bold%}$(get_current_dir)%{$reset_color%}"
-    local right_prompt="%{$blue%}($(get_time_stamp))%{$reset_color%} "
+    local right_prompt=""
+    if [[ -n $took_summary ]]; then
+        right_prompt+="%{$yellow%}⏱ $took_summary%{$reset_color%}  "
+    fi
+    right_prompt+="%{$blue%}($(get_time_stamp))%{$reset_color%} "
     print -rP "$left_prompt$(get_space $left_prompt $right_prompt)$right_prompt"
 
 }
