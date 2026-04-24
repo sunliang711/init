@@ -262,7 +262,7 @@ ACMEEOF
     /root/.acme.sh/acme.sh --install-cert -d "$domain" \
         --key-file "$certDir/${domain}.key" \
         --fullchain-file "$certDir/${domain}.pem" \
-        --reloadcmd "systemctl reload nginx"
+        --reloadcmd "/usr/local/bin/acme_reload_hook.sh"
 
     if [ ! -e "$certDir/${domain}.pem" ]; then
         log "cert install failed, exit"
@@ -709,6 +709,24 @@ RELOADCMDEOF
     chmod +x /usr/local/bin/acme_reload_hook.sh
 }
 
+function install_acme_reload_hook_nginx_sh(){
+    log "install acme_reload_hook.sh for nginx"
+    cat > /usr/local/bin/acme_reload_hook.sh <<RELOADCMDEOF
+#!/bin/bash
+
+nginx -t >/dev/null 2>&1 || exit 0
+
+if systemctl is-active --quiet nginx; then
+    systemctl reload nginx >/dev/null 2>&1 || systemctl restart nginx >/dev/null 2>&1 || true
+else
+    systemctl start nginx >/dev/null 2>&1 || true
+fi
+
+exit 0
+RELOADCMDEOF
+    chmod +x /usr/local/bin/acme_reload_hook.sh
+}
+
 function install_traffic_sh(){
     log "install traffic.sh"
     local script_dir
@@ -783,6 +801,7 @@ function install_nginx_proxy(){
     # 安装nginx (需要先于acme, 因为nginx模式下用webroot方式签发证书)
     install_nginx
     install_acme "$email"
+    install_acme_reload_hook_nginx_sh
     issue_cert_nginx "$domain"
 
     # 安装并配置xray (监听本地端口, 不处理TLS)
@@ -830,6 +849,7 @@ function uninstall_nginx_proxy(){
         nginx -t && systemctl reload nginx 2>/dev/null || true
     fi
 
+    rm -f /usr/local/bin/acme_reload_hook.sh
     rm -f /usr/local/bin/traffic.sh
     log "uninstall nginx proxy mode done"
 }
