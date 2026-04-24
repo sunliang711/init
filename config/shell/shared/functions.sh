@@ -1886,6 +1886,7 @@ function listen() {
 
 function em() {
     local ed=vi
+    local localExampleFile="${SHELL_CONFIG_ROOT}/local.example.sh"
     if command -v vim >/dev/null 2>&1; then
         ed=vim
     fi
@@ -1927,6 +1928,10 @@ function em() {
 
         esac
     done
+    if [ "${destfile}" = "${SHELL_LOCAL_FILE}" ] && [ ! -f "${destfile}" ] && [ -f "${localExampleFile}" ]; then
+        # 本地配置不存在时，先从示例文件复制一份，方便直接参考和修改。
+        cp "${localExampleFile}" "${destfile}"
+    fi
     $ed "$destfile"
 }
 

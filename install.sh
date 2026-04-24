@@ -387,6 +387,24 @@ show_action_summary() {
     done
 }
 
+ensure_local_shell_config() {
+    local example_file="${SCRIPT_DIR}/config/shell/local.example.sh"
+    local local_file="${SCRIPT_DIR}/config/shell/local.sh"
+
+    if [ -f "${local_file}" ]; then
+        log INFO "Local shell config already exists: ${local_file}"
+        return 0
+    fi
+
+    if [ ! -f "${example_file}" ]; then
+        log WARNING "Local shell config template not found: ${example_file}"
+        return 0
+    fi
+
+    cp "${example_file}" "${local_file}"
+    log INFO "Created local shell config from template: ${local_file}"
+}
+
 run_component_action() {
     local action="$1"
     local component="$2"
@@ -478,6 +496,8 @@ install() {
         log INFO "Install component: ${component}"
         run_component_action install "$component"
     done
+
+    ensure_local_shell_config
 }
 
 uninstall() {
