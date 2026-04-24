@@ -277,20 +277,25 @@ function install_xray(){
 }
 
 function install_nginx(){
+    # 清理当前站点残留的坏链接，避免nginx因引用不存在的配置而无法启动
+    if [ -L "$nginxSiteLink" ] && [ ! -e "$nginxSiteLink" ]; then
+        log "remove stale nginx site link: $nginxSiteLink"
+        rm -f "$nginxSiteLink"
+    fi
+
     if command -v nginx > /dev/null; then
         log "nginx already installed, skip"
-        return 0
+    else
+        log "install nginx"
+        apt-get install nginx -y >/dev/null
+
+        if ! command -v nginx > /dev/null; then
+            log "nginx install failed, exit"
+            exit 1
+        fi
+
+        log "nginx install success"
     fi
-
-    log "install nginx"
-    apt-get install nginx -y >/dev/null
-
-    if ! command -v nginx > /dev/null; then
-        log "nginx install failed, exit"
-        exit 1
-    fi
-
-    log "nginx install success"
 
     # 启动并设置开机自启
     systemctl start nginx
