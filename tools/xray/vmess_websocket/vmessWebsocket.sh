@@ -11,6 +11,7 @@ wsPath="/vmess-websocket"
 nginxConfDir="/etc/nginx"
 nginxSiteConf="/etc/nginx/sites-available/${serviceName}.conf"
 nginxSiteLink="/etc/nginx/sites-enabled/${serviceName}.conf"
+aptUpdateStampFile="/var/tmp/${serviceName}-apt-update.stamp"
 # xray在nginx模式下的本地监听端口
 xrayLocalPort=10086
 
@@ -50,8 +51,18 @@ function redirect_stdout_to_file() {
 }
 
 function update_apt() {
+    if [ -e "$aptUpdateStampFile" ]; then
+        last_update_ts=$(stat -c %Y "$aptUpdateStampFile" 2>/dev/null)
+        now_ts=$(date +%s)
+        if [ -n "$last_update_ts" ] && [ $((now_ts - last_update_ts)) -lt 3600 ]; then
+            log "skip apt update, updated within the last hour"
+            return 0
+        fi
+    fi
+
     log "update apt.."
     apt-get update >/dev/null
+    touch "$aptUpdateStampFile"
 }
 
 function install_package() {
