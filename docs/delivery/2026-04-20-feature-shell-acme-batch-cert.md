@@ -9,6 +9,7 @@
   - `--dns-provider`
   - `--http-mode standalone|webroot`
   - `--webroot`
+  - `--reloadcmd`，默认 `/usr/local/bin/acme_reload_hook.sh`
   - `-d/--domain`
   - `--cert-dir`
   - `--acme-home`
@@ -24,6 +25,8 @@
   - `dns01` 模式会校验常见 DNS Provider 的必填环境变量
   - DNS Provider 凭据仍由环境变量提供，脚本不记录敏感值
   - 下载 `acme.sh` 时先保存到临时文件，再执行，不直接使用管道执行
+  - 未显式传入 `--reloadcmd` 时，自动使用 `/usr/local/bin/acme_reload_hook.sh`
+  - 默认 reload hook 不存在时，自动创建包含 shebang 和 `exit 0` 的占位脚本
 
 ## 使用示例
 

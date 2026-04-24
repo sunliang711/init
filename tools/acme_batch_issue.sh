@@ -6,13 +6,14 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH
 
 ACME_HOME="/root/.acme.sh"
 CERT_DIR="/etc/certs"
+DEFAULT_RELOAD_CMD="/usr/local/bin/acme_reload_hook.sh"
 EMAIL=""
 CHALLENGE=""
 DNS_PROVIDER=""
 HTTP_MODE="standalone"
 WEBROOT=""
 KEY_LENGTH="ec-256"
-RELOAD_CMD=""
+RELOAD_CMD="${DEFAULT_RELOAD_CMD}"
 INSTALL_ONLY=0
 APT_UPDATED=0
 
@@ -78,6 +79,7 @@ usage() {
 
   --reloadcmd <command>
       可选。证书安装或后续自动续期成功后执行的 reload 命令。
+      默认值: /usr/local/bin/acme_reload_hook.sh
       例如: --reloadcmd /root/reload_nomad_nginx.sh
 
   -d, --domain <domains>
@@ -100,8 +102,9 @@ usage() {
   3. dns01 适合无法开放 80 端口，或希望使用通配符证书的场景。
   4. http01 standalone 要求 80 端口未被其他服务占用。
   5. http01 webroot 要求现有 Web 服务已正确暴露 /.well-known/acme-challenge/。
-  6. 如果提供 --reloadcmd，acme.sh 会在安装证书和后续自动续期后执行该命令。
-  7. 脚本需要 root 权限，并默认面向 Linux + apt-get 环境。
+  6. 如果未提供 --reloadcmd，默认使用 /usr/local/bin/acme_reload_hook.sh。
+  7. 默认 reload hook 不存在时，脚本会自动创建一个仅包含 shebang 和 exit 0 的占位文件。
+  8. 脚本需要 root 权限，并默认面向 Linux + apt-get 环境。
 
 常见 DNS Provider 环境变量:
   dns_cf (Cloudflare)
@@ -289,6 +292,24 @@ acme_cert_dir_name() {
             echo "${primary_domain}"
             ;;
     esac
+}
+
+ensure_default_reload_hook() {
+    if [ "${RELOAD_CMD}" != "${DEFAULT_RELOAD_CMD}" ]; then
+        return 0
+    fi
+
+    if [ -e "${DEFAULT_RELOAD_CMD}" ]; then
+        return 0
+    fi
+
+    log "creating default reload hook at ${DEFAULT_RELOAD_CMD}"
+    mkdir -p "$(dirname "${DEFAULT_RELOAD_CMD}")"
+    cat > "${DEFAULT_RELOAD_CMD}" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "${DEFAULT_RELOAD_CMD}"
 }
 
 install_acme() {
@@ -532,6 +553,7 @@ main() {
     require_root
     require_linux
     validate_args
+    ensure_default_reload_hook
     install_acme "${EMAIL}"
 
     if [ "${INSTALL_ONLY}" -eq 1 ]; then
