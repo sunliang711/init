@@ -193,7 +193,9 @@ function issue_cert(){
 
     log "install cert to $certDir"
     mkdir -p "$certDir"
-    /root/.acme.sh/acme.sh --install-cert -d "$domain" --key-file "$certDir/${domain}.key" --fullchain-file "$certDir/${domain}.pem"
+    # 证书续签后调用独立脚本重启服务；首次签发时服务不存在也不报错
+    /root/.acme.sh/acme.sh --install-cert -d "$domain" --key-file "$certDir/${domain}.key" --fullchain-file "$certDir/${domain}.pem" \
+        --reloadcmd "/usr/local/bin/acme_reload_hook.sh"
 
     if [ ! -e "$certDir/${domain}.pem" ]; then
         log "cert install failed, exit"
@@ -680,6 +682,17 @@ function restart_nginx(){
     log "restart nginx success"
 }
 
+function install_acme_reload_hook_sh(){
+    log "install acme_reload_hook.sh"
+    cat > /usr/local/bin/acme_reload_hook.sh <<RELOADCMDEOF
+#!/bin/bash
+
+systemctl restart "xray@${serviceName}" >/dev/null 2>&1 || true
+exit 0
+RELOADCMDEOF
+    chmod +x /usr/local/bin/acme_reload_hook.sh
+}
+
 function install_traffic_sh(){
     log "install traffic.sh"
     local script_dir
@@ -716,6 +729,7 @@ function install_xray_direct(){
     set_firewall
     enable_bbr
     install_acme "$email"
+    install_acme_reload_hook_sh
     issue_cert  "$domain"
     install_xray
     config_xray_direct "$domain"
@@ -774,6 +788,7 @@ function uninstall_xray_direct(){
     log "uninstall xray direct mode"
     systemctl disable --now xray@${serviceName} 2>/dev/null || true
     rm -f $vmessWebsocketConfigFile
+    rm -f /usr/local/bin/acme_reload_hook.sh
     rm -f /usr/local/bin/traffic.sh
     log "uninstall xray direct mode done"
 }
