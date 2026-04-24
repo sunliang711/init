@@ -164,7 +164,7 @@ function get_git_summary_prompt {
         fi
 
         if [[ -n $branch && -n $git_sha ]]; then
-            echo "%{$green_bold%}⎇ $branch%{$reset_color%}  %{$yellow%}@$git_sha%{$reset_color%}  $git_status"
+            echo "%{$green_bold%} $branch%{$reset_color%} %{$grey%}·%{$reset_color%} %{$grey%}$git_sha%{$reset_color%} %{$grey%}·%{$reset_color%} $git_status"
         fi
     fi
 }
