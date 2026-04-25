@@ -186,9 +186,9 @@ function zeta_record_command_took {
 
         if [[ $elapsed -ge $zeta_took_threshold ]]; then
             if [[ $elapsed -ge 3600 ]]; then
-                zeta_last_took="$(( elapsed / 3600 ))h $(( elapsed % 3600 / 60 ))m $(( elapsed % 60 ))s"
+                zeta_last_took="$(( elapsed / 3600 ))h$(( elapsed % 3600 / 60 ))m$(( elapsed % 60 ))s"
             elif [[ $elapsed -ge 60 ]]; then
-                zeta_last_took="$(( elapsed / 60 ))m $(( elapsed % 60 ))s"
+                zeta_last_took="$(( elapsed / 60 ))m$(( elapsed % 60 ))s"
             else
                 zeta_last_took="${elapsed}s"
             fi
