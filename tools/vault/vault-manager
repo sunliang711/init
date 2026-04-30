@@ -237,21 +237,22 @@ usage() {
 Vault manager
 
 Usage:
-  ${VAULT_MANAGER_CMD} install [--version VERSION|VERSION] [options]
+  ${VAULT_MANAGER_CMD} install [VERSION] [options]
+  ${VAULT_MANAGER_CMD} install [--version <VERSION>] [options]
   ${VAULT_MANAGER_CMD} uninstall [--purge-data] [--remove-tools|--purge]
   ${VAULT_MANAGER_CMD} status [vault options]
   ${VAULT_MANAGER_CMD} doctor [vault options]
-  ${VAULT_MANAGER_CMD} init [--key-shares N --key-threshold N --out FILE] [--force] [vault options]
-  ${VAULT_MANAGER_CMD} unseal --keys-file FILE [vault options]
+  ${VAULT_MANAGER_CMD} init [--key-shares <N> --key-threshold <N> --out <FILE>] [--force] [vault options]
+  ${VAULT_MANAGER_CMD} unseal --keys-file <FILE> [vault options]
   ${VAULT_MANAGER_CMD} auth list [vault options]
-  ${VAULT_MANAGER_CMD} auth enable TYPE [--path PATH] [vault options]
-  ${VAULT_MANAGER_CMD} auth disable PATH [vault options]
-  ${VAULT_MANAGER_CMD} auth read PATH [vault options]
-  ${VAULT_MANAGER_CMD} auth write PATH KEY=VALUE... [vault options]
+  ${VAULT_MANAGER_CMD} auth enable <TYPE> [--path <PATH>] [vault options]
+  ${VAULT_MANAGER_CMD} auth disable <PATH> [vault options]
+  ${VAULT_MANAGER_CMD} auth read <PATH> [vault options]
+  ${VAULT_MANAGER_CMD} auth write <PATH> <KEY=VALUE>... [vault options]
   ${VAULT_MANAGER_CMD} policy list [vault options]
-  ${VAULT_MANAGER_CMD} policy read NAME [vault options]
-  ${VAULT_MANAGER_CMD} policy write NAME FILE [vault options]
-  ${VAULT_MANAGER_CMD} policy delete NAME [vault options]
+  ${VAULT_MANAGER_CMD} policy read <NAME> [vault options]
+  ${VAULT_MANAGER_CMD} policy write <NAME> <FILE> [vault options]
+  ${VAULT_MANAGER_CMD} policy delete <NAME> [vault options]
   ${VAULT_MANAGER_CMD} tutor [topic]
   ${VAULT_MANAGER_CMD} help
 
@@ -270,14 +271,14 @@ Command groups:
     tutor
 
 Install options:
-  --version VERSION          Vault version, default resolves latest then falls back to ${DEFAULT_VAULT_VERSION}
-  --listen-address ADDR      Listener address, default: 0.0.0.0:8200
-  --cluster-address ADDR     Listener cluster address, default: 0.0.0.0:8201
-  --api-addr URL             Vault api_addr, default: ${DEFAULT_VAULT_ADDR}
-  --cluster-addr URL         Vault cluster_addr, default: http://127.0.0.1:8201
-  --tls-disable true|false   Disable listener TLS, default: true
-  --tls-cert-file FILE       Listener TLS certificate file
-  --tls-key-file FILE        Listener TLS key file
+  --version <VERSION>        Vault version, default resolves latest then falls back to ${DEFAULT_VAULT_VERSION}
+  --listen-address <ADDR>    Listener address, default: 0.0.0.0:8200
+  --cluster-address <ADDR>   Listener cluster address, default: 0.0.0.0:8201
+  --api-addr <URL>           Vault api_addr, default: ${DEFAULT_VAULT_ADDR}
+  --cluster-addr <URL>       Vault cluster_addr, default: http://127.0.0.1:8201
+  --tls-disable <true|false> Disable listener TLS, default: true
+  --tls-cert-file <FILE>     Listener TLS certificate file
+  --tls-key-file <FILE>      Listener TLS key file
 
 Uninstall options:
   --purge-data              Also remove ${STATE_DIR} and ${INIT_DIR}.
@@ -285,10 +286,10 @@ Uninstall options:
   --purge                   Remove runtime, Vault state, installed tools, metadata and audit logs.
 
 Vault options:
-  --addr URL                 Vault address, default: ${DEFAULT_VAULT_ADDR}
-  --ca-cert FILE             Vault CA certificate file
-  --namespace NAME           Vault Enterprise namespace
-  --token-file FILE          Read token from plain text or init JSON file
+  --addr <URL>               Vault address, default: ${DEFAULT_VAULT_ADDR}
+  --ca-cert <FILE>           Vault CA certificate file
+  --namespace <NAME>         Vault Enterprise namespace
+  --token-file <FILE>        Read token from plain text or init JSON file
 
 Common workflows:
   ${VAULT_MANAGER_CMD} install
@@ -359,13 +360,15 @@ Vault manager tutor
 Usage:
   ${VAULT_MANAGER_CMD} tutor [topic]
 
-Topics:
+Workflows:
+  secret         Enable KV v2 and store application secrets.
+  nomad-jwt      Prepare Vault JWT Auth for Nomad workload identity.
+
+References:
   install        Install a single-node Vault server.
   init           Initialize, unseal and use token files.
-  secret         Enable KV v2 and store application secrets.
   auth           Manage auth methods.
   policy         Manage policies.
-  nomad-jwt      Prepare Vault JWT Auth for Nomad workload identity.
   recovery       Recover common init, seal and token-file situations.
   uninstall      Choose the right uninstall level.
   troubleshoot   Common diagnostics.
@@ -378,6 +381,9 @@ EOF
     install)
       cat <<EOF
 Scenario: install Vault single node
+Type: reference
+Goal: Understand the install command and the expected post-install checks.
+Result: A single-node Vault service with local management metadata.
 
 1. Install latest Vault:
    ${VAULT_MANAGER_CMD} install
@@ -401,6 +407,9 @@ EOF
     init)
       cat <<EOF
 Scenario: initialize and unseal Vault
+Type: reference
+Goal: Initialize Vault, unseal it and reuse the saved init JSON safely.
+Result: An initialized and unsealed Vault instance with a token file for manager commands.
 
 1. Initialize Vault and save the init JSON:
    ${VAULT_MANAGER_CMD} init --key-shares 1 --key-threshold 1 --out ${INIT_DIR}/vault-init.json
@@ -422,6 +431,9 @@ EOF
     secret | kv-secret)
       cat <<EOF
 Scenario: store and read application secrets with KV v2
+Type: workflow
+Goal: Enable KV v2, write an application secret and prepare Nomad access to it.
+Result: A Vault secret at kv/app and a generated Nomad job example for kv/data/app.
 
 1. Make sure Vault is initialized and unsealed:
    ${VAULT_MANAGER_CMD} status
@@ -453,6 +465,9 @@ EOF
     auth)
       cat <<EOF
 Scenario: manage Vault auth methods
+Type: reference
+Goal: Enable, configure, list and disable Vault auth methods.
+Result: Auth methods managed through repeatable vault-manager commands.
 
 1. List enabled auth methods:
    ${VAULT_MANAGER_CMD} auth list --token-file ${INIT_DIR}/vault-init.json
@@ -473,6 +488,9 @@ EOF
     policy)
       cat <<EOF
 Scenario: manage Vault policies
+Type: reference
+Goal: Write, read and delete Vault policies from local HCL files.
+Result: A policy workflow you can adapt for application access rules.
 
 1. Create a policy file:
    cat > app-read.hcl <<'HCL'
@@ -498,6 +516,9 @@ EOF
     nomad-jwt)
       cat <<EOF
 Scenario: prepare Vault for Nomad workload identity
+Type: workflow
+Goal: Prepare Vault JWT Auth for Nomad workload identity.
+Result: Vault auth, policy and role linked through nomad-manager vault-jwt apply.
 
 Recommended path:
   Use nomad-manager vault-jwt apply because it configures both Nomad and Vault in one linked workflow.
@@ -521,6 +542,9 @@ EOF
     recovery)
       cat <<EOF
 Scenario: recover common Vault operational situations
+Type: reference
+Goal: Recover from common init, seal and token-file situations.
+Result: A decision checklist that avoids re-initializing an existing Vault.
 
 1. Check whether Vault is initialized, sealed or unavailable:
    ${VAULT_MANAGER_CMD} status
@@ -549,6 +573,9 @@ EOF
     uninstall)
       cat <<EOF
 Scenario: uninstall Vault safely
+Type: reference
+Goal: Choose the right uninstall level without removing state by accident.
+Result: A removal command that matches the intended cleanup scope.
 
 1. Remove service, binary and config. Keep Vault state, tools, metadata and audit logs:
    ${VAULT_MANAGER_CMD} uninstall
@@ -569,6 +596,9 @@ EOF
     troubleshoot)
       cat <<EOF
 Scenario: Vault troubleshooting
+Type: reference
+Goal: Check service, health, seal, auth, policy and audit signals.
+Result: A general diagnostics checklist for Vault itself.
 
 1. Check service logs:
    systemctl status vault
@@ -1672,38 +1702,38 @@ Vault auth method management
 
 Usage:
   ${VAULT_MANAGER_CMD} auth list [vault options]
-  ${VAULT_MANAGER_CMD} auth enable TYPE [--path PATH] [--description TEXT] [--default-lease-ttl DURATION] [--max-lease-ttl DURATION] [vault options]
-  ${VAULT_MANAGER_CMD} auth disable PATH [vault options]
-  ${VAULT_MANAGER_CMD} auth read PATH [vault options]
-  ${VAULT_MANAGER_CMD} auth write PATH KEY=VALUE... [vault options]
+  ${VAULT_MANAGER_CMD} auth enable <TYPE> [--path <PATH>] [--description <TEXT>] [--default-lease-ttl <DURATION>] [--max-lease-ttl <DURATION>] [vault options]
+  ${VAULT_MANAGER_CMD} auth disable <PATH> [vault options]
+  ${VAULT_MANAGER_CMD} auth read <PATH> [vault options]
+  ${VAULT_MANAGER_CMD} auth write <PATH> <KEY=VALUE>... [vault options]
 
 Auth commands:
   list                    Show enabled auth methods.
-  enable TYPE             Enable auth method TYPE at --path, default path is TYPE.
-  disable PATH            Disable auth method at PATH.
-  read PATH               Read auth/<PATH>.
-  write PATH KEY=VALUE    Write KEY=VALUE pairs to auth/<PATH>.
+  enable <TYPE>           Enable auth method <TYPE> at --path, default path is <TYPE>.
+  disable <PATH>          Disable auth method at <PATH>.
+  read <PATH>             Read auth/<PATH>.
+  write <PATH> <KEY=VALUE>  Write <KEY=VALUE> pairs to auth/<PATH>.
 
 Options for enable:
-  --path PATH                 Mount path, default: TYPE
-  --description TEXT          Auth method description
-  --default-lease-ttl DURATION
-  --max-lease-ttl DURATION
+  --path <PATH>               Mount path, default: <TYPE>
+  --description <TEXT>        Auth method description
+  --default-lease-ttl <DURATION>
+  --max-lease-ttl <DURATION>
 
 Vault options:
-  --addr URL                  Vault address, default: ${DEFAULT_VAULT_ADDR}
-  --ca-cert FILE              Vault CA certificate file
-  --namespace NAME            Vault Enterprise namespace
-  --token-file FILE           Read token from plain text or init JSON file
+  --addr <URL>                Vault address, default: ${DEFAULT_VAULT_ADDR}
+  --ca-cert <FILE>            Vault CA certificate file
+  --namespace <NAME>          Vault Enterprise namespace
+  --token-file <FILE>         Read token from plain text or init JSON file
 
 Behavior:
-  enable is idempotent when PATH already exists with the same TYPE.
-  enable fails when PATH already exists with a different TYPE.
-  disable is idempotent when PATH is already absent.
+  enable is idempotent when <PATH> already exists with the same <TYPE>.
+  enable fails when <PATH> already exists with a different <TYPE>.
+  disable is idempotent when <PATH> is already absent.
   read/write map directly to vault read/write under auth/<PATH>.
 
 Security:
-  auth write KEY=VALUE arguments may appear in shell history and audit logs.
+  auth write <KEY=VALUE> arguments may appear in shell history and audit logs.
   Avoid passing secret values directly on the command line.
 
 Examples:
@@ -1722,21 +1752,21 @@ Vault policy management
 
 Usage:
   ${VAULT_MANAGER_CMD} policy list [vault options]
-  ${VAULT_MANAGER_CMD} policy read NAME [vault options]
-  ${VAULT_MANAGER_CMD} policy write NAME FILE [vault options]
-  ${VAULT_MANAGER_CMD} policy delete NAME [vault options]
+  ${VAULT_MANAGER_CMD} policy read <NAME> [vault options]
+  ${VAULT_MANAGER_CMD} policy write <NAME> <FILE> [vault options]
+  ${VAULT_MANAGER_CMD} policy delete <NAME> [vault options]
 
 Policy commands:
   list              Show policy names.
-  read NAME         Print policy HCL.
-  write NAME FILE   Create or update policy NAME from FILE.
-  delete NAME       Delete policy NAME.
+  read <NAME>       Print policy HCL.
+  write <NAME> <FILE>  Create or update policy <NAME> from <FILE>.
+  delete <NAME>     Delete policy <NAME>.
 
 Vault options:
-  --addr URL        Vault address, default: ${DEFAULT_VAULT_ADDR}
-  --ca-cert FILE    Vault CA certificate file
-  --namespace NAME  Vault Enterprise namespace
-  --token-file FILE Read token from plain text or init JSON file
+  --addr <URL>      Vault address, default: ${DEFAULT_VAULT_ADDR}
+  --ca-cert <FILE>  Vault CA certificate file
+  --namespace <NAME>  Vault Enterprise namespace
+  --token-file <FILE> Read token from plain text or init JSON file
 
 Policy file example:
   path "kv/data/app/*" {
@@ -1750,7 +1780,7 @@ Policy file example:
 Behavior:
   write is idempotent for the same policy content.
   delete maps to "vault policy delete" and fails if Vault rejects the operation.
-  The manager checks that FILE exists before writing a policy.
+  The manager checks that <FILE> exists before writing a policy.
 
 Examples:
   ${VAULT_MANAGER_CMD} policy list --token-file /opt/vault/init/vault-init.json

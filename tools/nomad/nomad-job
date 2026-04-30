@@ -221,12 +221,12 @@ usage() {
   cat <<'EOF'
 Usage:
   nomad-job scaffold docker [options]
-  nomad-job compose convert COMPOSE_FILE [options]
-  nomad-job validate JOB_FILE
-  nomad-job plan JOB_FILE [-- NOMAD_JOB_PLAN_ARGS...]
-  nomad-job apply JOB_FILE [--auto-approve] [--detach] [--check-index INDEX]
+  nomad-job compose convert <COMPOSE_FILE> [options]
+  nomad-job validate <JOB_FILE>
+  nomad-job plan <JOB_FILE> [-- <NOMAD_JOB_PLAN_ARGS>...]
+  nomad-job apply <JOB_FILE> [--auto-approve] [--detach] [--check-index <INDEX>]
   nomad-job status [JOB]
-  nomad-job stop JOB [--purge]
+  nomad-job stop <JOB> [--purge]
   nomad-job tutor [topic]
   nomad-job help
 
@@ -236,65 +236,65 @@ Command names:
 
 Scaffold docker job:
   Required:
-    --job NAME
-    --image IMAGE
+    --job <NAME>
+    --image <IMAGE>
 
   Common options:
-    --out FILE                 Output file, use - for stdout
+    --out <FILE>               Output file, use - for stdout
     --force                    Overwrite output file
-    --type service|batch       Nomad job type, default: service
-    --datacenters dc1,dc2      Datacenter list, default: dc1
-    --namespace NAME           Nomad namespace
-    --region NAME              Nomad region
-    --group NAME               Group name, default: job name
-    --task NAME                Task name, default: group name
-    --count N                  Group count, default: 1
-    --cpu MHz                  CPU resource, default: 500
-    --memory MB                Memory resource, default: 256
-    --command CMD              Docker command
-    --arg ARG                  Docker arg, repeatable
-    --env KEY=VALUE            Environment variable, repeatable
-    --env-file FILE            Read KEY=VALUE env file, repeatable
-    --port SPEC                Port mapping, repeatable
-                               SPEC: name:to or name:static:to, e.g. http:8080:80
-    --mount SPEC               Docker mount, repeatable
-                               SPEC: bind:/host:/container[:ro|rw]
-                               SPEC: volume:name:/container[:ro|rw]
-                               SPEC: tmpfs:/container[:ro|rw]
-    --host-volume SPEC         Nomad host volume mount, repeatable
-                               SPEC: volume_name:/container[:ro|rw]
-    --service-name NAME        Register service name, default: job name
+    --type <service|batch>     Nomad job type, default: service
+    --datacenters <dc1,dc2>    Datacenter list, default: dc1
+    --namespace <NAME>         Nomad namespace
+    --region <NAME>            Nomad region
+    --group <NAME>             Group name, default: job name
+    --task <NAME>              Task name, default: group name
+    --count <N>                Group count, default: 1
+    --cpu <MHz>                CPU resource, default: 500
+    --memory <MB>              Memory resource, default: 256
+    --command <CMD>            Docker command
+    --arg <ARG>                Docker arg, repeatable
+    --env <KEY=VALUE>          Environment variable, repeatable
+    --env-file <FILE>          Read <KEY=VALUE> env file, repeatable
+    --port <SPEC>              Port mapping, repeatable
+                               <SPEC>: name:to or name:static:to, e.g. http:8080:80
+    --mount <SPEC>             Docker mount, repeatable
+                               <SPEC>: bind:/host:/container[:ro|rw]
+                               <SPEC>: volume:name:/container[:ro|rw]
+                               <SPEC>: tmpfs:/container[:ro|rw]
+    --host-volume <SPEC>       Nomad host volume mount, repeatable
+                               <SPEC>: volume_name:/container[:ro|rw]
+    --service-name <NAME>      Register service name, default: job name
     --no-service               Do not emit service block
-    --check-http PATH          HTTP health check path
+    --check-http <PATH>        HTTP health check path
     --check-tcp                TCP health check
-    --check-interval DURATION  Health check interval, default: 10s
-    --check-timeout DURATION   Health check timeout, default: 2s
-    --vault-role ROLE          Emit task vault block with role
-    --vault-cluster NAME       Vault cluster, default: default
-    --identity-aud CSV         Emit workload identity audiences
-    --identity-ttl DURATION    Workload identity TTL, default: 1h
-    --template-file SPEC       Template file, repeatable
-                               SPEC: source:destination[:env]
+    --check-interval <DURATION>  Health check interval, default: 10s
+    --check-timeout <DURATION> Health check timeout, default: 2s
+    --vault-role <ROLE>        Emit task vault block with role
+    --vault-cluster <NAME>     Vault cluster, default: default
+    --identity-aud <CSV>       Emit workload identity audiences
+    --identity-ttl <DURATION>  Workload identity TTL, default: 1h
+    --template-file <SPEC>     Template file, repeatable
+                               <SPEC>: source:destination[:env]
 
   Notes:
     --port uses Nomad port labels: name:to or name:static:to.
     bind mounts and template specs are colon-separated; paths containing ":" are not supported.
-    Avoid passing secrets with --env. Command-line KEY=VALUE arguments are written to the audit log.
+    Avoid passing secrets with --env. Command-line <KEY=VALUE> arguments are written to the audit log.
 
 Compose conversion:
   nomad-job compose convert docker-compose.yml --out jobs/app.nomad.hcl
 
   Options:
-    --out FILE                 Output file, use - for stdout
+    --out <FILE>               Output file, use - for stdout
     --force                    Overwrite output file
-    --job NAME                 Job name, default: compose project/name
-    --type service|batch       Job type, default: service
-    --datacenters dc1,dc2      Datacenter list, default: dc1
-    --namespace NAME           Nomad namespace
-    --region NAME              Nomad region
-    --volume-root PATH         Map named volumes to bind paths under PATH
-    --cpu-default MHz          CPU when Compose omits deploy resources, default: 500
-    --memory-default MB        Memory when Compose omits deploy resources, default: 256
+    --job <NAME>               Job name, default: compose project/name
+    --type <service|batch>     Job type, default: service
+    --datacenters <dc1,dc2>    Datacenter list, default: dc1
+    --namespace <NAME>         Nomad namespace
+    --region <NAME>            Nomad region
+    --volume-root <PATH>       Map named volumes to bind paths under <PATH>
+    --cpu-default <MHz>        CPU when Compose omits deploy resources, default: 500
+    --memory-default <MB>      Memory when Compose omits deploy resources, default: 256
 
   Notes:
     Converts common image, command, env, ports, volumes and resource settings.
@@ -306,7 +306,7 @@ Safety:
   apply asks for confirmation unless --auto-approve is provided.
   each execution writes an audit record to /opt/nomad/log/nomad-init-tools/job.audit.log when writable.
   token, key and password-like option values are redacted in audit logs.
-  arbitrary KEY=VALUE payloads may still appear in audit logs and shell history.
+  arbitrary <KEY=VALUE> payloads may still appear in audit logs and shell history.
 
 Tutor:
   nomad-job tutor
@@ -334,17 +334,19 @@ Nomad job tutor
 Usage:
   nomad-job tutor [topic]
 
-Topics:
+Workflows:
+  web-service     Deploy a Docker web service with port and health check.
+  private-image   Run a job from a private Docker registry.
+  service-update  Validate, plan and update a running service.
+  batch           Run a one-shot batch job.
+
+References:
   docker          Scaffold a Docker job HCL.
   compose         Convert docker-compose.yml to Nomad HCL.
   vault           Generate a job that uses Vault identity/template.
   volume          Understand Docker mounts and Nomad host volumes.
   lifecycle       Validate, plan, apply, inspect and stop jobs.
-  web-service     Deploy a Docker web service with port and health check.
-  private-image   Run a job from a private Docker registry.
-  service-update  Validate, plan and update a running service.
   troubleshoot    Inspect allocations, logs and common failures.
-  batch           Run a one-shot batch job.
 
 Example:
   nomad-job tutor web-service
@@ -354,6 +356,9 @@ EOF
     docker)
       cat <<'EOF'
 Scenario: scaffold a Docker job
+Type: reference
+Goal: Learn the Docker scaffold options for common Nomad job shapes.
+Result: A generated job file ready for validate, plan and apply.
 
 1. Generate a service job:
    nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --out jobs/web.nomad.hcl
@@ -369,13 +374,16 @@ Scenario: scaffold a Docker job
    nomad-job apply jobs/api.nomad.hcl --auto-approve
 
 Notes:
-  Avoid secrets in --env because command-line KEY=VALUE arguments are audited.
+  Avoid secrets in --env because command-line <KEY=VALUE> arguments are audited.
   Use Vault templates for secrets when possible.
 EOF
       ;;
     compose)
       cat <<'EOF'
 Scenario: convert Docker Compose to Nomad HCL
+Type: reference
+Goal: Convert an existing Compose file into a Nomad starting point.
+Result: A generated HCL file that you can review before running.
 
 1. Convert a compose file:
    nomad-job compose convert docker-compose.yml --out jobs/compose.nomad.hcl
@@ -398,6 +406,9 @@ EOF
     vault)
       cat <<'EOF'
 Scenario: create a job that uses Vault
+Type: reference
+Goal: Learn how a Nomad job references Vault identity and templates.
+Result: A Vault-aware job file, assuming Nomad and Vault are already linked.
 
 1. Prepare Nomad and Vault integration first:
    nomad-manager vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646 --secret-path kv/data/app
@@ -417,12 +428,15 @@ TPL
 
 Notes:
   Vault KV CLI writes to kv/app, but Nomad templates read KV v2 data from kv/data/app.
-  Avoid passing secret values with --env because KEY=VALUE arguments can appear in audit logs.
+  Avoid passing secret values with --env because <KEY=VALUE> arguments can appear in audit logs.
 EOF
       ;;
     volume)
       cat <<'EOF'
 Scenario: use volumes in jobs
+Type: reference
+Goal: Choose between Docker mounts and Nomad host volumes.
+Result: A job file using the selected mount style and any required host-volume setup.
 
 1. Docker bind mount:
    nomad-job scaffold docker --job app --image alpine:3.20 --mount bind:/host/path:/container/path:rw --out jobs/app.nomad.hcl
@@ -442,6 +456,9 @@ EOF
     lifecycle)
       cat <<'EOF'
 Scenario: job lifecycle
+Type: reference
+Goal: Follow the normal validate, plan, apply, inspect and stop loop.
+Result: A repeatable command sequence for operating an existing job file.
 
 1. Validate:
    nomad-job validate jobs/app.nomad.hcl
@@ -470,6 +487,9 @@ EOF
     web-service)
       cat <<'EOF'
 Scenario: deploy a Docker web service
+Type: workflow
+Goal: Create and run a reachable HTTP service from a Docker image.
+Result: A running Nomad service that you can inspect and test with curl.
 
 1. Scaffold a web service:
    nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --check-http / --cpu 200 --memory 128 --out jobs/web.nomad.hcl
@@ -494,6 +514,9 @@ EOF
     private-image)
       cat <<'EOF'
 Scenario: run a private Docker image
+Type: workflow
+Goal: Run a Nomad job that pulls from a private Docker registry.
+Result: Docker auth configured on the client and a running private-image job.
 
 1. Prepare Docker registry auth on the Nomad client:
    docker login registry.example.com
@@ -517,6 +540,9 @@ EOF
     service-update | update)
       cat <<'EOF'
 Scenario: update a running service
+Type: workflow
+Goal: Update an existing service through validate, plan and apply.
+Result: A new job version deployed with state and history checks.
 
 1. Generate the next job file with the same job name:
    nomad-job scaffold docker --job web --image registry.example.com/team/web:1.1 --port http:8080:8080 --check-http /health --out jobs/web.nomad.hcl --force
@@ -541,6 +567,9 @@ EOF
     troubleshoot)
       cat <<'EOF'
 Scenario: troubleshoot a job
+Type: reference
+Goal: Inspect allocation, scheduler and node signals for a failed job.
+Result: A focused checklist for finding the likely failure point.
 
 1. Check job and allocation state:
    nomad-job status app
@@ -569,6 +598,9 @@ EOF
     batch)
       cat <<'EOF'
 Scenario: run a one-shot batch job
+Type: workflow
+Goal: Create and run a one-shot maintenance or script job.
+Result: A completed batch allocation with inspectable logs.
 
 1. Scaffold a batch job without service registration:
    nomad-job scaffold docker --job cleanup --type batch --image alpine:3.20 --no-service --command sh --arg -c --arg "date && echo cleanup done" --cpu 100 --memory 128 --out jobs/cleanup.nomad.hcl
