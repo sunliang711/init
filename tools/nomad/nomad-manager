@@ -32,7 +32,8 @@ DATA_POINTER_FILE="${DATA_DIR}/.managed-by-nomad-init-tools"
 RELEASE_INDEX_URL="https://releases.hashicorp.com/nomad/"
 NOMAD_ADDR="http://127.0.0.1:4646"
 LOCAL_NO_PROXY="127.0.0.1,localhost,::1"
-MANAGED_MARKER="# Managed by tools/nomad/manager.sh"
+MANAGED_MARKER="# Managed by tools/nomad/nomad-manager"
+PRE_RENAME_MANAGED_MARKER="# Managed by tools/nomad/manager.sh"
 LEGACY_MANAGED_MARKER="# Managed by installNomad.sh"
 TLS_CONFIG="${CONFIG_DIR}/30-tls.hcl"
 UI_CONFIG="${CONFIG_DIR}/35-ui.hcl"
@@ -282,7 +283,7 @@ Usage:
 
 Command names:
   Installed command: ${NOMAD_MANAGER_CMD}
-  Source-tree fallback: bash nomad/manager.sh
+  Source-tree command: nomad/nomad-manager
 
 Command groups:
   Lifecycle:
@@ -351,8 +352,8 @@ Runtime layout:
 
 Installed tool snapshot:
   ${TOOL_DIR}
-  ${TOOL_PATH} -> ${TOOL_DIR}/manager.sh
-  ${JOB_PATH} -> ${TOOL_DIR}/job
+  ${TOOL_PATH} -> ${TOOL_DIR}/nomad-manager
+  ${JOB_PATH} -> ${TOOL_DIR}/nomad-job
   ${TOOL_ENTRY} -> ${TOOL_PATH}
   ${JOB_ENTRY} -> ${JOB_PATH}
   ${INSTALL_METADATA_FILE}
@@ -1407,7 +1408,7 @@ write_tool_manifest() {
   local name
 
   : >"$manifest_file"
-  for name in manager.sh job VERSION; do
+  for name in nomad-manager nomad-job VERSION; do
     path="${TOOL_DIR}/${name}"
     if [ -f "$path" ]; then
       printf '%s  %s\n' "$(checksum_file "$path")" "$name" >>"$manifest_file"
@@ -1482,13 +1483,13 @@ install_tool_snapshot() {
 
   script_dir="$(current_script_dir)"
   manager_src="$(current_script_path)"
-  job_src="${script_dir}/job"
+  job_src="${script_dir}/nomad-job"
 
   log_info "Installing Nomad init tools snapshot: ${TOOL_DIR}"
   install -d -m 0755 "$snapshot_dir"
-  install -m 0755 "$manager_src" "${snapshot_dir}/manager.sh"
+  install -m 0755 "$manager_src" "${snapshot_dir}/nomad-manager"
   if [ -f "$job_src" ]; then
-    install -m 0755 "$job_src" "${snapshot_dir}/job"
+    install -m 0755 "$job_src" "${snapshot_dir}/nomad-job"
   else
     log_warn "Nomad job helper not found, skip installing ${JOB_ENTRY}: ${job_src}"
   fi
@@ -1502,9 +1503,11 @@ install_tool_snapshot() {
 
   run_root install -d -m 0755 -o root -g root "$BIN_DIR"
   run_root install -d -m 0755 -o root -g root "$TOOL_DIR"
-  run_root install -m 0755 -o root -g root "${snapshot_dir}/manager.sh" "${TOOL_DIR}/manager.sh"
-  if [ -f "${snapshot_dir}/job" ]; then
-    run_root install -m 0755 -o root -g root "${snapshot_dir}/job" "${TOOL_DIR}/job"
+  safe_remove_path "${TOOL_DIR}/manager.sh"
+  safe_remove_path "${TOOL_DIR}/job"
+  run_root install -m 0755 -o root -g root "${snapshot_dir}/nomad-manager" "${TOOL_DIR}/nomad-manager"
+  if [ -f "${snapshot_dir}/nomad-job" ]; then
+    run_root install -m 0755 -o root -g root "${snapshot_dir}/nomad-job" "${TOOL_DIR}/nomad-job"
   fi
   run_root install -m 0644 -o root -g root "$version_file" "$TOOL_VERSION_FILE"
 
@@ -1512,11 +1515,11 @@ install_tool_snapshot() {
   write_install_metadata "$version" "$tmpdir"
   write_data_pointer "$tmpdir"
 
-  run_root ln -sfn "${TOOL_DIR}/manager.sh" "$TOOL_PATH"
+  run_root ln -sfn "${TOOL_DIR}/nomad-manager" "$TOOL_PATH"
   run_root install -d -m 0755 -o root -g root "$(dirname "$TOOL_ENTRY")"
   run_root ln -sfn "$TOOL_PATH" "$TOOL_ENTRY"
-  if [ -f "${TOOL_DIR}/job" ]; then
-    run_root ln -sfn "${TOOL_DIR}/job" "$JOB_PATH"
+  if [ -f "${TOOL_DIR}/nomad-job" ]; then
+    run_root ln -sfn "${TOOL_DIR}/nomad-job" "$JOB_PATH"
     run_root ln -sfn "$JOB_PATH" "$JOB_ENTRY"
   fi
   if [ -L "$LEGACY_TOOL_ENTRY" ]; then
@@ -1528,7 +1531,7 @@ install_tool_snapshot() {
 
   log_info "Nomad manager path installed: ${TOOL_PATH}"
   log_info "Nomad manager entry installed: ${TOOL_ENTRY}"
-  if [ -f "${TOOL_DIR}/job" ]; then
+  if [ -f "${TOOL_DIR}/nomad-job" ]; then
     log_info "Nomad job path installed: ${JOB_PATH}"
     log_info "Nomad job entry installed: ${JOB_ENTRY}"
   fi
@@ -1563,7 +1566,7 @@ is_managed_file() {
 
   [ -f "$path" ] || return 1
   first_line="$(sed -n '1p' "$path")"
-  [ "$first_line" = "$MANAGED_MARKER" ] || [ "$first_line" = "$LEGACY_MANAGED_MARKER" ]
+  [ "$first_line" = "$MANAGED_MARKER" ] || [ "$first_line" = "$PRE_RENAME_MANAGED_MARKER" ] || [ "$first_line" = "$LEGACY_MANAGED_MARKER" ]
 }
 
 ensure_managed_or_absent() {
@@ -3262,7 +3265,7 @@ vault_jwt_write_profile() {
   path="$(vault_jwt_profile_path "$VJ_PROFILE")"
   tmp="$(mktemp)"
   {
-    printf '# Managed by tools/nomad/manager.sh vault-jwt\n'
+    printf '# Managed by tools/nomad/nomad-manager vault-jwt\n'
     printf 'VAULT_ADDR=%q\n' "$VJ_VAULT_ADDR"
     printf 'VAULT_NAMESPACE=%q\n' "$VJ_VAULT_NAMESPACE"
     printf 'NOMAD_ADDR_PROFILE=%q\n' "$VJ_NOMAD_ADDR"

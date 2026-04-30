@@ -29,7 +29,8 @@ INSTALL_METADATA_FILE="${TOOL_STATE_DIR}/install.json"
 AUDIT_LOG_FILE="${TOOL_LOG_DIR}/manager.audit.log"
 STATE_POINTER_FILE="${STATE_DIR}/.managed-by-vault-init-tools"
 RELEASE_INDEX_URL="https://releases.hashicorp.com/vault/"
-MANAGED_MARKER="# Managed by tools/vault/manager.sh"
+MANAGED_MARKER="# Managed by tools/vault/vault-manager"
+PRE_RENAME_MANAGED_MARKER="# Managed by tools/vault/manager.sh"
 LEGACY_MANAGED_MARKER="# Managed by vault.sh"
 DEFAULT_VAULT_ADDR="http://127.0.0.1:8200"
 TMPDIR_TO_CLEAN=""
@@ -256,7 +257,7 @@ Usage:
 
 Command names:
   Installed command: ${VAULT_MANAGER_CMD}
-  Source-tree fallback: bash vault/manager.sh
+  Source-tree command: vault/vault-manager
 
 Command groups:
   Lifecycle:
@@ -310,7 +311,7 @@ Installed tool snapshot:
   ${VAULT_ROOT_DIR} is the Vault root directory managed by this script.
   ${BIN_PATH} stores the Vault binary. ${BIN_ENTRY} is a symlink to it.
   ${TOOL_DIR}
-  ${TOOL_PATH} -> ${TOOL_DIR}/manager.sh
+  ${TOOL_PATH} -> ${TOOL_DIR}/vault-manager
   ${TOOL_ENTRY} -> ${TOOL_PATH}
   ${INSTALL_METADATA_FILE}
   ${AUDIT_LOG_FILE}
@@ -781,7 +782,7 @@ is_managed_file() {
 
   [ -f "$path" ] || return 1
   first_line="$(sed -n '1p' "$path")"
-  [ "$first_line" = "$MANAGED_MARKER" ] || [ "$first_line" = "$LEGACY_MANAGED_MARKER" ]
+  [ "$first_line" = "$MANAGED_MARKER" ] || [ "$first_line" = "$PRE_RENAME_MANAGED_MARKER" ] || [ "$first_line" = "$LEGACY_MANAGED_MARKER" ]
 }
 
 ensure_managed_or_absent() {
@@ -833,7 +834,7 @@ write_tool_manifest() {
   local name
 
   : >"$manifest_file"
-  for name in manager.sh VERSION; do
+  for name in vault-manager VERSION; do
     path="${TOOL_DIR}/${name}"
     if [ -f "$path" ]; then
       printf '%s  %s\n' "$(checksum_file "$path")" "$name" >>"$manifest_file"
@@ -906,7 +907,7 @@ install_tool_snapshot() {
 
   log_info "Installing Vault init tools snapshot: ${TOOL_DIR}"
   install -d -m 0755 "$snapshot_dir"
-  install -m 0755 "$manager_src" "${snapshot_dir}/manager.sh"
+  install -m 0755 "$manager_src" "${snapshot_dir}/vault-manager"
 
   {
     printf 'tool=vault-manager\n'
@@ -917,14 +918,15 @@ install_tool_snapshot() {
 
   run_root install -d -m 0755 -o root -g root "$BIN_DIR"
   run_root install -d -m 0755 -o root -g root "$TOOL_DIR"
-  run_root install -m 0755 -o root -g root "${snapshot_dir}/manager.sh" "${TOOL_DIR}/manager.sh"
+  safe_remove_path "${TOOL_DIR}/manager.sh"
+  run_root install -m 0755 -o root -g root "${snapshot_dir}/vault-manager" "${TOOL_DIR}/vault-manager"
   run_root install -m 0644 -o root -g root "$version_file" "$TOOL_VERSION_FILE"
 
   write_tool_manifest "$tmpdir"
   write_install_metadata "$version" "$tmpdir"
   write_state_pointer "$tmpdir"
 
-  run_root ln -sfn "${TOOL_DIR}/manager.sh" "$TOOL_PATH"
+  run_root ln -sfn "${TOOL_DIR}/vault-manager" "$TOOL_PATH"
   run_root install -d -m 0755 -o root -g root "$(dirname "$TOOL_ENTRY")"
   run_root ln -sfn "$TOOL_PATH" "$TOOL_ENTRY"
   if [ -L "$LEGACY_TOOL_ENTRY" ]; then

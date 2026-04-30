@@ -232,7 +232,7 @@ Usage:
 
 Command names:
   Installed command: nomad-job
-  Source-tree fallback: bash nomad/job
+  Source-tree command: nomad/nomad-job
 
 Scaffold docker job:
   Required:
