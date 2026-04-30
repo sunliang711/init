@@ -30,7 +30,7 @@ Nomad:
 /var/lib/nomad-init-tools/install.json
 /var/log/nomad-init-tools/manager.audit.log
 /var/log/nomad-init-tools/job.audit.log
-/opt/nomad/.managed-by-nomad-init-tools
+/var/lib/nomad/.managed-by-nomad-init-tools
 ```
 
 Vault:

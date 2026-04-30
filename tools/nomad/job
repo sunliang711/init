@@ -226,6 +226,7 @@ Usage:
   nomad-job apply JOB_FILE [--auto-approve] [--detach] [--check-index INDEX]
   nomad-job status [JOB]
   nomad-job stop JOB [--purge]
+  nomad-job tutor [topic]
   nomad-job help
 
 Scaffold docker job:
@@ -290,7 +291,148 @@ Safety:
   apply asks for confirmation unless --auto-approve is provided.
   each execution writes an audit record to /var/log/nomad-init-tools/job.audit.log when writable.
   token, key and password-like arguments are redacted in audit logs.
+
+Tutor:
+  nomad-job tutor
+  nomad-job tutor docker
+  nomad-job tutor compose
+  nomad-job tutor vault
+  nomad-job tutor volume
+  nomad-job tutor lifecycle
 EOF
+}
+
+tutor_usage() {
+  local topic="${1:-overview}"
+
+  case "$topic" in
+    overview | help | -h | --help)
+      cat <<'EOF'
+Nomad job tutor
+
+Usage:
+  nomad-job tutor [topic]
+
+Topics:
+  docker      Scaffold a Docker job HCL.
+  compose     Convert docker-compose.yml to Nomad HCL.
+  vault       Generate a job that uses Vault identity/template.
+  volume      Understand Docker mounts and Nomad host volumes.
+  lifecycle   Validate, plan, apply, inspect and stop jobs.
+
+Example:
+  nomad-job tutor docker
+  nomad-job tutor lifecycle
+EOF
+      ;;
+    docker)
+      cat <<'EOF'
+Scenario: scaffold a Docker job
+
+1. Generate a service job:
+   nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --out jobs/web.nomad.hcl
+
+2. Add environment variables:
+   nomad-job scaffold docker --job api --image my-api:1.0 --env APP_ENV=prod --env LOG_LEVEL=info --out jobs/api.nomad.hcl
+
+3. Add resources and a health check:
+   nomad-job scaffold docker --job api --image my-api:1.0 --cpu 500 --memory 512 --port http:8080:8080 --check-http /health --out jobs/api.nomad.hcl
+
+4. Validate and apply:
+   nomad-job validate jobs/api.nomad.hcl
+   nomad-job apply jobs/api.nomad.hcl --auto-approve
+EOF
+      ;;
+    compose)
+      cat <<'EOF'
+Scenario: convert Docker Compose to Nomad HCL
+
+1. Convert a compose file:
+   nomad-job compose convert docker-compose.yml --out jobs/compose.nomad.hcl
+
+2. Override job metadata:
+   nomad-job compose convert docker-compose.yml --job app --datacenters dc1 --namespace default --out jobs/app.nomad.hcl
+
+3. Map named volumes to bind paths:
+   nomad-job compose convert docker-compose.yml --volume-root /data/compose-volumes --out jobs/app.nomad.hcl
+
+4. Review the generated HCL before apply:
+   nomad-job validate jobs/app.nomad.hcl
+   nomad-job plan jobs/app.nomad.hcl
+
+Notes:
+  Compose conversion is a starting point. Review ports, volumes, resources and service checks before production use.
+EOF
+      ;;
+    vault)
+      cat <<'EOF'
+Scenario: create a job that uses Vault
+
+1. Prepare Nomad and Vault integration first:
+   nomad-manager vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646 --secret-path kv/data/app
+
+2. Generate a Vault-aware example:
+   nomad-manager vault-jwt job-example --profile default --job app --secret kv/data/app --out jobs/app-vault.nomad.hcl
+
+3. Or scaffold directly with identity options:
+   nomad-job scaffold docker --job app --image alpine:3.20 --vault-role nomad-workloads --identity-aud vault.io --identity-ttl 1h --out jobs/app.nomad.hcl
+
+4. Validate and run:
+   nomad-job validate jobs/app-vault.nomad.hcl
+   nomad-job apply jobs/app-vault.nomad.hcl --auto-approve
+EOF
+      ;;
+    volume)
+      cat <<'EOF'
+Scenario: use volumes in jobs
+
+1. Docker bind mount:
+   nomad-job scaffold docker --job app --image alpine:3.20 --mount bind:/host/path:/container/path:rw --out jobs/app.nomad.hcl
+
+2. Docker named volume:
+   nomad-job scaffold docker --job app --image alpine:3.20 --mount volume:app-data:/data:rw --out jobs/app.nomad.hcl
+
+3. Nomad host volume:
+   nomad-manager host-volume add app-data --path /data/app --read-write --create
+   nomad-job scaffold docker --job app --image alpine:3.20 --host-volume app-data:/data:rw --out jobs/app.nomad.hcl
+
+Notes:
+  Docker bind/volume mounts are Docker driver config.
+  Nomad host volumes must first be declared on the Nomad client with nomad-manager host-volume add.
+EOF
+      ;;
+    lifecycle)
+      cat <<'EOF'
+Scenario: job lifecycle
+
+1. Validate:
+   nomad-job validate jobs/app.nomad.hcl
+
+2. Plan:
+   nomad-job plan jobs/app.nomad.hcl
+
+3. Apply with confirmation:
+   nomad-job apply jobs/app.nomad.hcl
+
+4. Apply non-interactively:
+   nomad-job apply jobs/app.nomad.hcl --auto-approve
+
+5. Inspect:
+   nomad-job status
+   nomad-job status app
+   nomad alloc status
+
+6. Stop:
+   nomad-job stop app
+
+7. Stop and purge job history:
+   nomad-job stop app --purge
+EOF
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 scaffold_docker() {
@@ -1164,6 +1306,16 @@ dispatch_compose() {
   esac
 }
 
+dispatch_tutor() {
+  local topic="${1:-overview}"
+
+  [ "$#" -le 1 ] || fatal "tutor accepts at most one topic"
+  if ! tutor_usage "$topic"; then
+    tutor_usage >&2
+    fatal "Unknown tutor topic: ${topic}"
+  fi
+}
+
 main() {
   local command="${1:-help}"
 
@@ -1189,6 +1341,9 @@ main() {
       ;;
     stop)
       stop_job "$@"
+      ;;
+    tutor)
+      dispatch_tutor "$@"
       ;;
     help | -h | --help)
       usage

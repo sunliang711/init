@@ -245,6 +245,7 @@ Usage:
   $(basename "$0") policy read NAME [vault options]
   $(basename "$0") policy write NAME FILE [vault options]
   $(basename "$0") policy delete NAME [vault options]
+  $(basename "$0") tutor [topic]
   $(basename "$0") help
 
 Command groups:
@@ -254,6 +255,8 @@ Command groups:
     init, unseal
   Vault administration:
     auth, policy
+  Scenario tutorials:
+    tutor
 
 Install options:
   --version VERSION          Vault version, default resolves latest then falls back to ${DEFAULT_VAULT_VERSION}
@@ -325,9 +328,199 @@ Safety:
   Token, key and password-like arguments are redacted in audit logs.
 
 More help:
+  $(basename "$0") tutor
   $(basename "$0") auth --help
   $(basename "$0") policy --help
 EOF
+}
+
+tutor_usage() {
+  local topic="${1:-overview}"
+
+  case "$topic" in
+    overview | help | -h | --help)
+      cat <<EOF
+Vault manager tutor
+
+Usage:
+  $(basename "$0") tutor [topic]
+
+Topics:
+  install        Install a single-node Vault server.
+  init           Initialize, unseal and use token files.
+  auth           Manage auth methods.
+  policy         Manage policies.
+  nomad-jwt      Prepare Vault JWT Auth for Nomad workload identity.
+  uninstall      Choose the right uninstall level.
+  troubleshoot   Common diagnostics.
+
+Example:
+  $(basename "$0") tutor install
+  $(basename "$0") tutor nomad-jwt
+EOF
+      ;;
+    install)
+      cat <<EOF
+Scenario: install Vault single node
+
+1. Install latest Vault:
+   $(basename "$0") install
+
+2. Install through an HTTP proxy:
+   http_proxy=http://10.2.1.107:7190 https_proxy=http://10.2.1.107:7190 $(basename "$0") install
+
+3. Install with an address reachable by other nodes:
+   $(basename "$0") install --api-addr http://10.2.37.64:8200 --cluster-addr http://10.2.37.64:8201
+
+4. Check service and metadata:
+   systemctl status vault
+   $(basename "$0") status
+   cat ${INSTALL_METADATA_FILE}
+
+Notes:
+  The install command configures single-node raft storage under ${DATA_DIR}.
+  Future management can use ${TOOL_ENTRY}, which points to the installed script snapshot.
+EOF
+      ;;
+    init)
+      cat <<EOF
+Scenario: initialize and unseal Vault
+
+1. Initialize Vault and save the init JSON:
+   $(basename "$0") init --key-shares 1 --key-threshold 1 --out ${INIT_DIR}/vault-init.json
+
+2. Unseal Vault from the init JSON:
+   $(basename "$0") unseal --keys-file ${INIT_DIR}/vault-init.json
+
+3. Use the init JSON as a token file:
+   $(basename "$0") status --token-file ${INIT_DIR}/vault-init.json
+
+4. Check health:
+   $(basename "$0") doctor --addr ${DEFAULT_VAULT_ADDR}
+
+Safety:
+  The init JSON contains unseal keys and the root token.
+  Keep it readable only by trusted administrators.
+EOF
+      ;;
+    auth)
+      cat <<EOF
+Scenario: manage Vault auth methods
+
+1. List enabled auth methods:
+   $(basename "$0") auth list --token-file ${INIT_DIR}/vault-init.json
+
+2. Enable userpass auth:
+   $(basename "$0") auth enable userpass --token-file ${INIT_DIR}/vault-init.json
+
+3. Enable JWT auth at a custom path:
+   $(basename "$0") auth enable jwt --path jwt-nomad --description "Nomad workload identity" --token-file ${INIT_DIR}/vault-init.json
+
+4. Write an auth config:
+   $(basename "$0") auth write jwt-nomad/config jwks_url=http://127.0.0.1:4646/.well-known/jwks.json default_role=nomad-workloads --token-file ${INIT_DIR}/vault-init.json
+
+5. Disable an auth method:
+   $(basename "$0") auth disable userpass --token-file ${INIT_DIR}/vault-init.json
+EOF
+      ;;
+    policy)
+      cat <<EOF
+Scenario: manage Vault policies
+
+1. Create a policy file:
+   cat > app-read.hcl <<'HCL'
+   path "kv/data/app/*" {
+     capabilities = ["read"]
+   }
+
+   path "kv/metadata/app/*" {
+     capabilities = ["read", "list"]
+   }
+HCL
+
+2. Write the policy:
+   $(basename "$0") policy write app-read ./app-read.hcl --token-file ${INIT_DIR}/vault-init.json
+
+3. Read the policy:
+   $(basename "$0") policy read app-read --token-file ${INIT_DIR}/vault-init.json
+
+4. Delete the policy:
+   $(basename "$0") policy delete app-read --token-file ${INIT_DIR}/vault-init.json
+EOF
+      ;;
+    nomad-jwt)
+      cat <<EOF
+Scenario: prepare Vault for Nomad workload identity
+
+Recommended path:
+  Use nomad-manager vault-jwt apply because it configures both Nomad and Vault in one linked workflow.
+
+1. Initialize and unseal Vault first:
+   $(basename "$0") tutor init
+
+2. Export a Vault token or use --token-file:
+   export VAULT_TOKEN=<redacted>
+
+3. Run the linked Nomad workflow:
+   nomad-manager vault-jwt plan --profile default --vault-addr ${DEFAULT_VAULT_ADDR} --nomad-addr http://10.2.37.64:4646
+   nomad-manager vault-jwt apply --profile default --vault-addr ${DEFAULT_VAULT_ADDR} --nomad-addr http://10.2.37.64:4646 --secret-path kv/data/app
+
+4. Check Vault pieces manually when needed:
+   $(basename "$0") auth read jwt-nomad/config --token-file ${INIT_DIR}/vault-init.json
+   $(basename "$0") policy read nomad-workloads --token-file ${INIT_DIR}/vault-init.json
+   VAULT_ADDR=${DEFAULT_VAULT_ADDR} vault read auth/jwt-nomad/role/nomad-workloads
+EOF
+      ;;
+    uninstall)
+      cat <<EOF
+Scenario: uninstall Vault safely
+
+1. Remove service, binary and config. Keep Vault state, tools, metadata and audit logs:
+   $(basename "$0") uninstall
+
+2. Also remove Vault state under ${STATE_DIR}:
+   $(basename "$0") uninstall --purge-data
+
+3. Remove runtime and installed management scripts. Keep metadata and audit logs:
+   $(basename "$0") uninstall --remove-tools
+
+4. Remove runtime, Vault state, tools, metadata and audit logs:
+   $(basename "$0") uninstall --purge
+
+Notes:
+  Default uninstall keeps ${STATE_DIR} because it can contain raft data and init output.
+EOF
+      ;;
+    troubleshoot)
+      cat <<EOF
+Scenario: Vault troubleshooting
+
+1. Check service logs:
+   systemctl status vault
+   journalctl -u vault -n 100 --no-pager
+
+2. Check Vault status and health:
+   $(basename "$0") status
+   $(basename "$0") doctor --addr ${DEFAULT_VAULT_ADDR}
+   curl --noproxy '*' ${DEFAULT_VAULT_ADDR}/v1/sys/health
+
+3. Check seal state and unseal when needed:
+   $(basename "$0") status
+   $(basename "$0") unseal --keys-file ${INIT_DIR}/vault-init.json
+
+4. Check auth and policy state:
+   $(basename "$0") auth list --token-file ${INIT_DIR}/vault-init.json
+   $(basename "$0") policy list --token-file ${INIT_DIR}/vault-init.json
+
+5. Check management metadata and audit history:
+   cat ${INSTALL_METADATA_FILE}
+   tail -n 50 ${AUDIT_LOG_FILE}
+EOF
+      ;;
+    *)
+      return 1
+      ;;
+  esac
 }
 
 command_exists() {
@@ -1709,6 +1902,16 @@ dispatch_policy() {
   esac
 }
 
+dispatch_tutor() {
+  local topic="${1:-overview}"
+
+  [ "$#" -le 1 ] || fatal "tutor accepts at most one topic"
+  if ! tutor_usage "$topic"; then
+    tutor_usage >&2
+    fatal "Unknown tutor topic: ${topic}"
+  fi
+}
+
 main() {
   local command="${1:-help}"
 
@@ -1740,6 +1943,9 @@ main() {
       ;;
     policy)
       dispatch_policy "$@"
+      ;;
+    tutor)
+      dispatch_tutor "$@"
       ;;
     help | -h | --help)
       usage
