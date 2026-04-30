@@ -707,7 +707,10 @@ Before you start:
 
 3. Enable KV v2 once and write an application secret:
    vault secrets enable -path=kv kv-v2
-   vault kv put kv/app value='my-secret-value'
+   vault kv put kv/app \\
+     username='app-user' \\
+     password='app-password' \\
+     api_key='my-api-key'
 
 4. Install Nomad and load the bootstrap ACL token:
    ${NOMAD_MANAGER_CMD} install
@@ -728,8 +731,9 @@ Before you start:
 
 Verify:
   vault kv get kv/app returns the secret through the Vault CLI.
+  vault kv get -field=username kv/app returns app-user.
   ${NOMAD_MANAGER_CMD} vault-jwt doctor --profile default succeeds.
-  nomad alloc logs <alloc-id> app shows the job could read the template output.
+  nomad alloc logs <alloc-id> app shows APP_USERNAME, APP_PASSWORD and APP_API_KEY.
 
 Common failures:
   Vault is sealed after install or restart.
@@ -737,8 +741,10 @@ Common failures:
   Vault cannot reach Nomad JWKS when Nomad is bound only to localhost on another node.
 
 Notes:
-  vault kv put uses the KV CLI path kv/app.
+  vault kv put accepts one or more KEY=VALUE pairs and uses the KV CLI path kv/app.
   Nomad templates and Vault policies use the KV v2 API path kv/data/app.
+  The generated job maps username, password and api_key to APP_USERNAME,
+  APP_PASSWORD and APP_API_KEY.
   If kv/ is already enabled, skip the vault secrets enable command.
   If Vault and Nomad are on different nodes, set --nomad-addr to an address reachable from Vault.
 EOF
@@ -4041,7 +4047,12 @@ job ${job_hcl} {
         destination = "secrets/vault.env"
         env         = true
         data = <<EOH
-SECRET_VALUE={{ with secret ${secret_hcl} }}{{ .Data.data.value }}{{ end }}
+{{ with secret ${secret_hcl} }}
+{{ with index .Data.data "value" }}SECRET_VALUE={{ . }}
+{{ end }}{{ with index .Data.data "username" }}APP_USERNAME={{ . }}
+{{ end }}{{ with index .Data.data "password" }}APP_PASSWORD={{ . }}
+{{ end }}{{ with index .Data.data "api_key" }}APP_API_KEY={{ . }}
+{{ end }}{{ end }}
 EOH
       }
 
