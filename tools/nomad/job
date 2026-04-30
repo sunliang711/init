@@ -3,7 +3,8 @@ set -euo pipefail
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
-TOOL_LOG_DIR="/var/log/nomad-init-tools"
+NOMAD_ROOT_DIR="/opt/nomad"
+TOOL_LOG_DIR="${NOMAD_ROOT_DIR}/log/nomad-init-tools"
 AUDIT_LOG_FILE="${TOOL_LOG_DIR}/job.audit.log"
 AUDIT_ACTIVE=0
 AUDIT_FINALIZED=0
@@ -289,7 +290,7 @@ Compose conversion:
 Safety:
   apply always runs "nomad job validate" and "nomad job plan" first.
   apply asks for confirmation unless --auto-approve is provided.
-  each execution writes an audit record to /var/log/nomad-init-tools/job.audit.log when writable.
+  each execution writes an audit record to /opt/nomad/log/nomad-init-tools/job.audit.log when writable.
   token, key and password-like arguments are redacted in audit logs.
 
 Tutor:

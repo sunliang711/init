@@ -6,17 +6,22 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH
 DEFAULT_VAULT_VERSION="2.0.0"
 VAULT_USER="vault"
 VAULT_GROUP="vault"
-BIN_PATH="/usr/local/bin/vault"
-CONFIG_DIR="/etc/vault.d"
+VAULT_ROOT_DIR="/opt/vault"
+BIN_DIR="${VAULT_ROOT_DIR}/bin"
+BIN_PATH="${BIN_DIR}/vault"
+BIN_ENTRY="/usr/local/bin/vault"
+CONFIG_DIR="${VAULT_ROOT_DIR}/etc/vault.d"
 CONFIG_FILE="${CONFIG_DIR}/config.hcl"
-DATA_DIR="/opt/vault/data"
-STATE_DIR="/opt/vault"
-INIT_DIR="${STATE_DIR}/init"
+STATE_DIR="${VAULT_ROOT_DIR}/data/vault"
+DATA_DIR="${STATE_DIR}/raft"
+INIT_DIR="${VAULT_ROOT_DIR}/init"
 SYSTEMD_SERVICE="/etc/systemd/system/vault.service"
-TOOL_DIR="/usr/local/lib/vault-init-tools"
-TOOL_STATE_DIR="/var/lib/vault-init-tools"
-TOOL_LOG_DIR="/var/log/vault-init-tools"
-TOOL_ENTRY="/usr/local/sbin/vault-manager"
+TOOL_DIR="${VAULT_ROOT_DIR}/lib/vault-init-tools"
+TOOL_STATE_DIR="${VAULT_ROOT_DIR}/data/vault-init-tools"
+TOOL_LOG_DIR="${VAULT_ROOT_DIR}/log/vault-init-tools"
+TOOL_PATH="${BIN_DIR}/vault-manager"
+TOOL_ENTRY="/usr/local/bin/vault-manager"
+LEGACY_TOOL_ENTRY="/usr/local/sbin/vault-manager"
 TOOL_VERSION_FILE="${TOOL_DIR}/VERSION"
 TOOL_MANIFEST_FILE="${TOOL_DIR}/MANIFEST.sha256"
 INSTALL_METADATA_FILE="${TOOL_STATE_DIR}/install.json"
@@ -269,8 +274,8 @@ Install options:
   --tls-key-file FILE        Listener TLS key file
 
 Uninstall options:
-  --purge-data              Also remove ${STATE_DIR}, including raft data and init output.
-  --remove-tools            Also remove ${TOOL_ENTRY} and ${TOOL_DIR}.
+  --purge-data              Also remove ${STATE_DIR} and ${INIT_DIR}.
+  --remove-tools            Also remove ${TOOL_ENTRY}, ${TOOL_PATH} and ${TOOL_DIR}.
   --purge                   Remove runtime, Vault state, installed tools, metadata and audit logs.
 
 Vault options:
@@ -297,8 +302,11 @@ Common workflows:
   $(basename "$0") policy read app-read --token-file /opt/vault/init/vault-init.json
 
 Installed tool snapshot:
+  ${VAULT_ROOT_DIR} is the Vault root directory managed by this script.
+  ${BIN_PATH} stores the Vault binary. ${BIN_ENTRY} is a symlink to it.
   ${TOOL_DIR}
-  ${TOOL_ENTRY} -> ${TOOL_DIR}/manager.sh
+  ${TOOL_PATH} -> ${TOOL_DIR}/manager.sh
+  ${TOOL_ENTRY} -> ${TOOL_PATH}
   ${INSTALL_METADATA_FILE}
   ${AUDIT_LOG_FILE}
 
@@ -319,7 +327,7 @@ Safety:
   install copies this Vault manager to ${TOOL_DIR} so future management can use
   the script version that was installed with this node.
   uninstall removes service, binary and ${CONFIG_DIR}.
-  uninstall preserves ${STATE_DIR}, installed tools, metadata and audit logs by default.
+  uninstall preserves ${STATE_DIR}, ${INIT_DIR}, installed tools, metadata and audit logs by default.
   uninstall --remove-tools removes installed tools but preserves metadata and audit logs.
   uninstall --purge removes Vault state, installed tools, metadata and audit logs.
   init output contains unseal keys and root token and is written with mode 0600.
@@ -478,7 +486,7 @@ Scenario: uninstall Vault safely
 1. Remove service, binary and config. Keep Vault state, tools, metadata and audit logs:
    $(basename "$0") uninstall
 
-2. Also remove Vault state under ${STATE_DIR}:
+2. Also remove Vault state under ${STATE_DIR} and init output under ${INIT_DIR}:
    $(basename "$0") uninstall --purge-data
 
 3. Remove runtime and installed management scripts. Keep metadata and audit logs:
@@ -488,7 +496,7 @@ Scenario: uninstall Vault safely
    $(basename "$0") uninstall --purge
 
 Notes:
-  Default uninstall keeps ${STATE_DIR} because it can contain raft data and init output.
+  Default uninstall keeps ${STATE_DIR} and ${INIT_DIR} because they can contain raft data and init output.
 EOF
       ;;
     troubleshoot)
@@ -784,9 +792,12 @@ write_install_metadata() {
   {
     printf '{\n'
     printf '  "tool": "vault-manager",\n'
+    printf '  "root_dir": %s,\n' "$(json_string "$VAULT_ROOT_DIR")"
     printf '  "tool_dir": %s,\n' "$(json_string "$TOOL_DIR")"
+    printf '  "manager_path": %s,\n' "$(json_string "$TOOL_PATH")"
     printf '  "manager_entry": %s,\n' "$(json_string "$TOOL_ENTRY")"
     printf '  "vault_binary": %s,\n' "$(json_string "$BIN_PATH")"
+    printf '  "vault_entry": %s,\n' "$(json_string "$BIN_ENTRY")"
     printf '  "config_file": %s,\n' "$(json_string "$CONFIG_FILE")"
     printf '  "data_dir": %s,\n' "$(json_string "$DATA_DIR")"
     printf '  "state_dir": %s,\n' "$(json_string "$STATE_DIR")"
@@ -838,6 +849,7 @@ install_tool_snapshot() {
     printf 'source=%s\n' "$manager_src"
   } >"$version_file"
 
+  run_root install -d -m 0755 -o root -g root "$BIN_DIR"
   run_root install -d -m 0755 -o root -g root "$TOOL_DIR"
   run_root install -m 0755 -o root -g root "${snapshot_dir}/manager.sh" "${TOOL_DIR}/manager.sh"
   run_root install -m 0644 -o root -g root "$version_file" "$TOOL_VERSION_FILE"
@@ -846,9 +858,14 @@ install_tool_snapshot() {
   write_install_metadata "$version" "$tmpdir"
   write_state_pointer "$tmpdir"
 
+  run_root ln -sfn "${TOOL_DIR}/manager.sh" "$TOOL_PATH"
   run_root install -d -m 0755 -o root -g root "$(dirname "$TOOL_ENTRY")"
-  run_root ln -sfn "${TOOL_DIR}/manager.sh" "$TOOL_ENTRY"
+  run_root ln -sfn "$TOOL_PATH" "$TOOL_ENTRY"
+  if [ -L "$LEGACY_TOOL_ENTRY" ]; then
+    safe_remove_path "$LEGACY_TOOL_ENTRY"
+  fi
 
+  log_info "Vault manager path installed: ${TOOL_PATH}"
   log_info "Vault manager entry installed: ${TOOL_ENTRY}"
   log_info "Vault install metadata written: ${INSTALL_METADATA_FILE}"
 }
@@ -856,6 +873,10 @@ install_tool_snapshot() {
 remove_tool_snapshot() {
   log_info "Removing Vault init tools"
   safe_remove_path "$TOOL_ENTRY"
+  if [ -L "$LEGACY_TOOL_ENTRY" ]; then
+    safe_remove_path "$LEGACY_TOOL_ENTRY"
+  fi
+  safe_remove_path "$TOOL_PATH"
   safe_remove_path "$TOOL_DIR"
 }
 
@@ -888,6 +909,12 @@ ensure_vault_user() {
 
 install_directories() {
   log_info "Creating Vault directories"
+  run_root install -d -m 0755 -o root -g root "$VAULT_ROOT_DIR"
+  run_root install -d -m 0755 -o root -g root "$BIN_DIR"
+  run_root install -d -m 0755 -o root -g root "${VAULT_ROOT_DIR}/etc"
+  run_root install -d -m 0755 -o root -g root "${VAULT_ROOT_DIR}/data"
+  run_root install -d -m 0755 -o root -g root "${VAULT_ROOT_DIR}/lib"
+  run_root install -d -m 0750 -o root -g root "${VAULT_ROOT_DIR}/log"
   run_root install -d -m 0755 -o root -g root "$CONFIG_DIR"
   run_root install -d -m 0750 -o "$VAULT_USER" -g "$VAULT_GROUP" "$STATE_DIR"
   run_root install -d -m 0750 -o "$VAULT_USER" -g "$VAULT_GROUP" "$DATA_DIR"
@@ -919,7 +946,11 @@ install_binary() {
   local tmpdir="$1"
 
   log_info "Installing binary: ${BIN_PATH}"
+  run_root install -d -m 0755 -o root -g root "$BIN_DIR"
   run_root install -m 0755 -o root -g root "${tmpdir}/extract/vault" "$BIN_PATH"
+  run_root install -d -m 0755 -o root -g root "$(dirname "$BIN_ENTRY")"
+  run_root ln -sfn "$BIN_PATH" "$BIN_ENTRY"
+  log_info "Vault binary entry installed: ${BIN_ENTRY}"
   "$BIN_PATH" version
 }
 
@@ -1186,12 +1217,15 @@ uninstall_vault() {
 
   log_info "Removing Vault service, binary and config"
   safe_remove_path "$SYSTEMD_SERVICE"
+  safe_remove_path "$BIN_ENTRY"
   safe_remove_path "$BIN_PATH"
   safe_remove_path "$CONFIG_DIR"
 
   if [ "$purge_data" -eq 1 ]; then
     log_warn "Purging Vault state directory: ${STATE_DIR}"
     safe_remove_path "$STATE_DIR"
+    log_warn "Purging Vault init directory: ${INIT_DIR}"
+    safe_remove_path "$INIT_DIR"
     if id "$VAULT_USER" >/dev/null 2>&1; then
       log_info "Removing system user: ${VAULT_USER}"
       run_root userdel "$VAULT_USER" || log_warn "Failed to remove user: ${VAULT_USER}"
@@ -1202,6 +1236,7 @@ uninstall_vault() {
     fi
   else
     log_warn "Vault state preserved: ${STATE_DIR}. Use --purge-data to remove it"
+    log_warn "Vault init output preserved: ${INIT_DIR}. Use --purge-data to remove it"
   fi
 
   if [ "$remove_tools" -eq 1 ]; then
