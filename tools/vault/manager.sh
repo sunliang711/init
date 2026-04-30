@@ -13,11 +13,25 @@ DATA_DIR="/opt/vault/data"
 STATE_DIR="/opt/vault"
 INIT_DIR="${STATE_DIR}/init"
 SYSTEMD_SERVICE="/etc/systemd/system/vault.service"
+TOOL_DIR="/usr/local/lib/vault-init-tools"
+TOOL_STATE_DIR="/var/lib/vault-init-tools"
+TOOL_LOG_DIR="/var/log/vault-init-tools"
+TOOL_ENTRY="/usr/local/sbin/vault-manager"
+TOOL_VERSION_FILE="${TOOL_DIR}/VERSION"
+TOOL_MANIFEST_FILE="${TOOL_DIR}/MANIFEST.sha256"
+INSTALL_METADATA_FILE="${TOOL_STATE_DIR}/install.json"
+AUDIT_LOG_FILE="${TOOL_LOG_DIR}/manager.audit.log"
+STATE_POINTER_FILE="${STATE_DIR}/.managed-by-vault-init-tools"
 RELEASE_INDEX_URL="https://releases.hashicorp.com/vault/"
 MANAGED_MARKER="# Managed by tools/vault/manager.sh"
 LEGACY_MANAGED_MARKER="# Managed by vault.sh"
 DEFAULT_VAULT_ADDR="http://127.0.0.1:8200"
 TMPDIR_TO_CLEAN=""
+AUDIT_ACTIVE=0
+AUDIT_FINALIZED=0
+AUDIT_ERROR=""
+AUDIT_DISABLE_AFTER_PURGE=0
+AUDIT_ARGS=()
 
 VC_ADDR="$DEFAULT_VAULT_ADDR"
 VC_CACERT=""
@@ -31,7 +45,7 @@ cleanup() {
 }
 
 log_info() {
-  printf '[INFO] %s\n' "$*"
+  printf '[INFO] %s\n' "$*" >&2
 }
 
 log_warn() {
@@ -44,7 +58,171 @@ log_error() {
 
 fatal() {
   log_error "$*"
+  AUDIT_ERROR="$*"
+  audit_failure_from_fatal
   exit 1
+}
+
+json_escape() {
+  local value="$1"
+
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '%s' "$value"
+}
+
+json_string() {
+  printf '"%s"' "$(json_escape "$1")"
+}
+
+is_sensitive_option() {
+  case "$1" in
+    --token | --token-file | --key-file | --keys-file | --tls-key-file | --password | --client-secret)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+redacted_args_json() {
+  local first=1
+  local redact_next=0
+  local arg
+  local item
+
+  printf '['
+  for arg in "$@"; do
+    if [ "$redact_next" -eq 1 ]; then
+      item="<redacted>"
+      redact_next=0
+    else
+      case "$arg" in
+        --token=* | --token-file=* | --key-file=* | --keys-file=* | --tls-key-file=* | --password=* | --client-secret=*)
+          item="${arg%%=*}=<redacted>"
+          ;;
+        *)
+          item="$arg"
+          if is_sensitive_option "$arg"; then
+            redact_next=1
+          fi
+          ;;
+      esac
+    fi
+
+    if [ "$first" -eq 0 ]; then
+      printf ','
+    fi
+    json_string "$item"
+    first=0
+  done
+  printf ']'
+}
+
+redacted_command_line() {
+  local arg
+  local item
+  local output=""
+  local redact_next=0
+
+  for arg in "$@"; do
+    if [ "$redact_next" -eq 1 ]; then
+      item="<redacted>"
+      redact_next=0
+    else
+      case "$arg" in
+        --token=* | --token-file=* | --key-file=* | --keys-file=* | --tls-key-file=* | --password=* | --client-secret=*)
+          item="${arg%%=*}=<redacted>"
+          ;;
+        *)
+          item="$arg"
+          if is_sensitive_option "$arg"; then
+            redact_next=1
+          fi
+          ;;
+      esac
+    fi
+
+    if [ -n "$output" ]; then
+      output="${output} ${item}"
+    else
+      output="$item"
+    fi
+  done
+
+  printf '%s\n' "${output:-help}"
+}
+
+append_audit_line() {
+  local line="$1"
+
+  if [ "$AUDIT_DISABLE_AFTER_PURGE" -eq 1 ]; then
+    return 0
+  fi
+
+  if [ "$(id -u)" -eq 0 ]; then
+    install -d -m 0750 -o root -g root "$TOOL_LOG_DIR" 2>/dev/null || return 0
+    if [ ! -e "$AUDIT_LOG_FILE" ]; then
+      install -m 0640 -o root -g root /dev/null "$AUDIT_LOG_FILE" 2>/dev/null || return 0
+    fi
+    printf '%s\n' "$line" >>"$AUDIT_LOG_FILE" 2>/dev/null || true
+  elif command_exists sudo && sudo -n true 2>/dev/null; then
+    sudo -n install -d -m 0750 -o root -g root "$TOOL_LOG_DIR" 2>/dev/null || return 0
+    if ! sudo -n test -e "$AUDIT_LOG_FILE" 2>/dev/null; then
+      sudo -n install -m 0640 -o root -g root /dev/null "$AUDIT_LOG_FILE" 2>/dev/null || return 0
+    fi
+    printf '%s\n' "$line" | sudo -n tee -a "$AUDIT_LOG_FILE" >/dev/null 2>&1 || true
+  fi
+}
+
+audit_record() {
+  local result="$1"
+  local exit_code="$2"
+  shift 2
+  local now
+  local user_name
+  local host_name
+  local cwd
+  local script_path
+  local command_line
+  local args_json
+  local error_json="null"
+
+  now="$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date)"
+  user_name="$(id -un 2>/dev/null || printf 'unknown')"
+  host_name="$(hostname 2>/dev/null || printf 'unknown')"
+  cwd="$(pwd 2>/dev/null || printf 'unknown')"
+  script_path="$(current_script_path 2>/dev/null || printf '%s' "$0")"
+  command_line="$(redacted_command_line "$@")"
+  args_json="$(redacted_args_json "$@")"
+  if [ -n "$AUDIT_ERROR" ]; then
+    error_json="$(json_string "$AUDIT_ERROR")"
+  fi
+
+  append_audit_line "$(printf '{"time":%s,"tool":"vault-manager","result":%s,"exit_code":%s,"user":%s,"sudo_user":%s,"host":%s,"cwd":%s,"script":%s,"tool_dir":%s,"command":%s,"args":%s,"error":%s}' \
+    "$(json_string "$now")" \
+    "$(json_string "$result")" \
+    "$exit_code" \
+    "$(json_string "$user_name")" \
+    "$(json_string "${SUDO_USER:-}")" \
+    "$(json_string "$host_name")" \
+    "$(json_string "$cwd")" \
+    "$(json_string "$script_path")" \
+    "$(json_string "$TOOL_DIR")" \
+    "$(json_string "$command_line")" \
+    "$args_json" \
+    "$error_json")"
+}
+
+audit_failure_from_fatal() {
+  if [ "${AUDIT_ACTIVE:-0}" -eq 1 ] && [ "${AUDIT_FINALIZED:-0}" -eq 0 ]; then
+    audit_record "failed" 1 "${AUDIT_ARGS[@]}"
+    AUDIT_FINALIZED=1
+  fi
 }
 
 usage() {
@@ -53,7 +231,7 @@ Vault manager
 
 Usage:
   $(basename "$0") install [--version VERSION|VERSION] [options]
-  $(basename "$0") uninstall [--purge-data]
+  $(basename "$0") uninstall [--purge-data] [--remove-tools|--purge]
   $(basename "$0") status [vault options]
   $(basename "$0") doctor [vault options]
   $(basename "$0") init [--key-shares N --key-threshold N --out FILE] [--force] [vault options]
@@ -87,6 +265,11 @@ Install options:
   --tls-cert-file FILE       Listener TLS certificate file
   --tls-key-file FILE        Listener TLS key file
 
+Uninstall options:
+  --purge-data              Also remove ${STATE_DIR}, including raft data and init output.
+  --remove-tools            Also remove ${TOOL_ENTRY} and ${TOOL_DIR}.
+  --purge                   Remove runtime, Vault state, installed tools, metadata and audit logs.
+
 Vault options:
   --addr URL                 Vault address, default: ${DEFAULT_VAULT_ADDR}
   --ca-cert FILE             Vault CA certificate file
@@ -110,6 +293,12 @@ Common workflows:
   $(basename "$0") policy write app-read ./policy.hcl --token-file /opt/vault/init/vault-init.json
   $(basename "$0") policy read app-read --token-file /opt/vault/init/vault-init.json
 
+Installed tool snapshot:
+  ${TOOL_DIR}
+  ${TOOL_ENTRY} -> ${TOOL_DIR}/manager.sh
+  ${INSTALL_METADATA_FILE}
+  ${AUDIT_LOG_FILE}
+
 Token handling:
   Commands can use VAULT_TOKEN from the environment, or --token-file.
   --token-file accepts either a plain token file or the JSON written by init.
@@ -124,9 +313,16 @@ Safety:
   install manages ${CONFIG_FILE} only when it is absent or starts with:
     ${MANAGED_MARKER}
   install configures single-node raft storage under ${DATA_DIR}.
+  install copies this Vault manager to ${TOOL_DIR} so future management can use
+  the script version that was installed with this node.
   uninstall removes service, binary and ${CONFIG_DIR}.
+  uninstall preserves ${STATE_DIR}, installed tools, metadata and audit logs by default.
+  uninstall --remove-tools removes installed tools but preserves metadata and audit logs.
+  uninstall --purge removes Vault state, installed tools, metadata and audit logs.
   init output contains unseal keys and root token and is written with mode 0600.
-  uninstall preserves ${STATE_DIR} unless --purge-data is provided.
+  Every manager execution writes an audit record to:
+    ${AUDIT_LOG_FILE}
+  Token, key and password-like arguments are redacted in audit logs.
 
 More help:
   $(basename "$0") auth --help
@@ -341,6 +537,140 @@ safe_remove_path() {
   if [ -e "$path" ] || [ -L "$path" ]; then
     run_root rm -rf -- "$path"
   fi
+}
+
+current_script_path() {
+  local source="${BASH_SOURCE[0]}"
+  local dir
+
+  while [ -L "$source" ]; do
+    dir="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
+    source="$(readlink "$source")"
+    case "$source" in
+      /*)
+        ;;
+      *)
+        source="${dir}/${source}"
+        ;;
+    esac
+  done
+
+  dir="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
+  printf '%s/%s\n' "$dir" "$(basename "$source")"
+}
+
+write_tool_manifest() {
+  local tmpdir="$1"
+  local manifest_file="${tmpdir}/MANIFEST.sha256"
+  local path
+  local name
+
+  : >"$manifest_file"
+  for name in manager.sh VERSION; do
+    path="${TOOL_DIR}/${name}"
+    if [ -f "$path" ]; then
+      printf '%s  %s\n' "$(checksum_file "$path")" "$name" >>"$manifest_file"
+    fi
+  done
+
+  run_root install -m 0644 -o root -g root "$manifest_file" "$TOOL_MANIFEST_FILE"
+}
+
+write_install_metadata() {
+  local version="$1"
+  local tmpdir="$2"
+  local metadata_file="${tmpdir}/install.json"
+  local installed_at
+  local manifest_sha=""
+
+  installed_at="$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date)"
+  if [ -f "$TOOL_MANIFEST_FILE" ]; then
+    manifest_sha="$(checksum_file "$TOOL_MANIFEST_FILE")"
+  fi
+
+  {
+    printf '{\n'
+    printf '  "tool": "vault-manager",\n'
+    printf '  "tool_dir": %s,\n' "$(json_string "$TOOL_DIR")"
+    printf '  "manager_entry": %s,\n' "$(json_string "$TOOL_ENTRY")"
+    printf '  "vault_binary": %s,\n' "$(json_string "$BIN_PATH")"
+    printf '  "config_file": %s,\n' "$(json_string "$CONFIG_FILE")"
+    printf '  "data_dir": %s,\n' "$(json_string "$DATA_DIR")"
+    printf '  "state_dir": %s,\n' "$(json_string "$STATE_DIR")"
+    printf '  "service": %s,\n' "$(json_string "$SYSTEMD_SERVICE")"
+    printf '  "vault_version": %s,\n' "$(json_string "$version")"
+    printf '  "installed_at": %s,\n' "$(json_string "$installed_at")"
+    printf '  "manifest_file": %s,\n' "$(json_string "$TOOL_MANIFEST_FILE")"
+    printf '  "manifest_sha256": %s,\n' "$(json_string "$manifest_sha")"
+    printf '  "audit_log": %s\n' "$(json_string "$AUDIT_LOG_FILE")"
+    printf '}\n'
+  } >"$metadata_file"
+
+  run_root install -d -m 0750 -o root -g root "$TOOL_STATE_DIR"
+  run_root install -m 0644 -o root -g root "$metadata_file" "$INSTALL_METADATA_FILE"
+}
+
+write_state_pointer() {
+  local tmpdir="$1"
+  local pointer_file="${tmpdir}/managed-by-vault-init-tools"
+
+  {
+    printf 'Managed by vault-manager\n'
+    printf 'Install metadata: %s\n' "$INSTALL_METADATA_FILE"
+    printf 'Tool dir: %s\n' "$TOOL_DIR"
+    printf 'Config file: %s\n' "$CONFIG_FILE"
+    printf 'Audit log: %s\n' "$AUDIT_LOG_FILE"
+  } >"$pointer_file"
+
+  run_root install -m 0644 -o root -g root "$pointer_file" "$STATE_POINTER_FILE"
+}
+
+install_tool_snapshot() {
+  local version="$1"
+  local tmpdir="$2"
+  local manager_src
+  local snapshot_dir="${tmpdir}/tool-snapshot"
+  local version_file="${snapshot_dir}/VERSION"
+
+  manager_src="$(current_script_path)"
+
+  log_info "Installing Vault init tools snapshot: ${TOOL_DIR}"
+  install -d -m 0755 "$snapshot_dir"
+  install -m 0755 "$manager_src" "${snapshot_dir}/manager.sh"
+
+  {
+    printf 'tool=vault-manager\n'
+    printf 'vault_version=%s\n' "$version"
+    printf 'installed_at=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date)"
+    printf 'source=%s\n' "$manager_src"
+  } >"$version_file"
+
+  run_root install -d -m 0755 -o root -g root "$TOOL_DIR"
+  run_root install -m 0755 -o root -g root "${snapshot_dir}/manager.sh" "${TOOL_DIR}/manager.sh"
+  run_root install -m 0644 -o root -g root "$version_file" "$TOOL_VERSION_FILE"
+
+  write_tool_manifest "$tmpdir"
+  write_install_metadata "$version" "$tmpdir"
+  write_state_pointer "$tmpdir"
+
+  run_root install -d -m 0755 -o root -g root "$(dirname "$TOOL_ENTRY")"
+  run_root ln -sfn "${TOOL_DIR}/manager.sh" "$TOOL_ENTRY"
+
+  log_info "Vault manager entry installed: ${TOOL_ENTRY}"
+  log_info "Vault install metadata written: ${INSTALL_METADATA_FILE}"
+}
+
+remove_tool_snapshot() {
+  log_info "Removing Vault init tools"
+  safe_remove_path "$TOOL_ENTRY"
+  safe_remove_path "$TOOL_DIR"
+}
+
+purge_tool_state() {
+  log_warn "Purging Vault init tool metadata and audit logs"
+  safe_remove_path "$TOOL_STATE_DIR"
+  safe_remove_path "$TOOL_LOG_DIR"
+  AUDIT_DISABLE_AFTER_PURGE=1
 }
 
 ensure_vault_user() {
@@ -594,6 +924,7 @@ install_vault() {
   require_command head
   require_command mktemp
   require_command install
+  require_command readlink
   require_command systemctl
   require_command useradd
   require_command groupadd
@@ -612,6 +943,7 @@ install_vault() {
   install_directories
   write_vault_config "$tmpdir" "$listen_address" "$cluster_address" "$api_addr" "$cluster_addr" "$tls_disable" "$tls_cert_file" "$tls_key_file"
   write_systemd_service "$tmpdir"
+  install_tool_snapshot "$version" "$tmpdir"
 
   log_info "Enabling Vault service"
   run_root systemctl daemon-reload
@@ -624,11 +956,21 @@ install_vault() {
 
 uninstall_vault() {
   local purge_data=0
+  local remove_tools=0
+  local purge=0
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --purge-data)
         purge_data=1
+        ;;
+      --remove-tools)
+        remove_tools=1
+        ;;
+      --purge)
+        purge_data=1
+        remove_tools=1
+        purge=1
         ;;
       -h | --help)
         usage
@@ -667,6 +1009,19 @@ uninstall_vault() {
     fi
   else
     log_warn "Vault state preserved: ${STATE_DIR}. Use --purge-data to remove it"
+  fi
+
+  if [ "$remove_tools" -eq 1 ]; then
+    remove_tool_snapshot
+  else
+    log_warn "Vault init tools preserved: ${TOOL_DIR}. Use --remove-tools to remove them"
+  fi
+
+  if [ "$purge" -eq 1 ]; then
+    purge_tool_state
+  else
+    log_warn "Vault init tool metadata preserved: ${TOOL_STATE_DIR}"
+    log_warn "Vault init tool audit logs preserved: ${TOOL_LOG_DIR}"
   fi
 
   run_root systemctl daemon-reload
@@ -1396,4 +1751,30 @@ main() {
   esac
 }
 
-main "$@"
+run_with_audit() {
+  local exit_code=0
+  local command_line
+
+  AUDIT_ACTIVE=1
+  AUDIT_FINALIZED=0
+  AUDIT_ERROR=""
+  AUDIT_ARGS=("$@")
+  command_line="$(redacted_command_line "$@")"
+  log_info "Starting vault-manager command: ${command_line}"
+  audit_record "started" 0 "$@"
+
+  if main "$@"; then
+    log_info "Completed vault-manager command: ${command_line}"
+    audit_record "success" 0 "$@"
+    AUDIT_FINALIZED=1
+    return 0
+  fi
+
+  exit_code=$?
+  log_error "Failed vault-manager command (${exit_code}): ${command_line}"
+  audit_record "failed" "$exit_code" "$@"
+  AUDIT_FINALIZED=1
+  return "$exit_code"
+}
+
+run_with_audit "$@"

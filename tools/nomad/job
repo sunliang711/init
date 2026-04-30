@@ -3,6 +3,13 @@ set -euo pipefail
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
+TOOL_LOG_DIR="/var/log/nomad-init-tools"
+AUDIT_LOG_FILE="${TOOL_LOG_DIR}/job.audit.log"
+AUDIT_ACTIVE=0
+AUDIT_FINALIZED=0
+AUDIT_ERROR=""
+AUDIT_ARGS=()
+
 log_info() {
   printf '[INFO] %s\n' "$*" >&2
 }
@@ -17,6 +24,8 @@ log_error() {
 
 fatal() {
   log_error "$*"
+  AUDIT_ERROR="$*"
+  audit_failure_from_fatal
   exit 1
 }
 
@@ -27,6 +36,183 @@ command_exists() {
 require_command() {
   if ! command_exists "$1"; then
     fatal "Required command not found: $1"
+  fi
+}
+
+json_escape() {
+  local value="$1"
+
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '%s' "$value"
+}
+
+json_string() {
+  printf '"%s"' "$(json_escape "$1")"
+}
+
+is_sensitive_option() {
+  case "$1" in
+    --token | --token-file | --key-file | --keys-file | --tls-key-file | --auth-config | --password | --client-secret)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+redacted_args_json() {
+  local first=1
+  local redact_next=0
+  local arg
+  local item
+
+  printf '['
+  for arg in "$@"; do
+    if [ "$redact_next" -eq 1 ]; then
+      item="<redacted>"
+      redact_next=0
+    else
+      case "$arg" in
+        --token=* | --token-file=* | --key-file=* | --keys-file=* | --tls-key-file=* | --auth-config=* | --password=* | --client-secret=*)
+          item="${arg%%=*}=<redacted>"
+          ;;
+        *)
+          item="$arg"
+          if is_sensitive_option "$arg"; then
+            redact_next=1
+          fi
+          ;;
+      esac
+    fi
+
+    if [ "$first" -eq 0 ]; then
+      printf ','
+    fi
+    json_string "$item"
+    first=0
+  done
+  printf ']'
+}
+
+redacted_command_line() {
+  local arg
+  local item
+  local output=""
+  local redact_next=0
+
+  for arg in "$@"; do
+    if [ "$redact_next" -eq 1 ]; then
+      item="<redacted>"
+      redact_next=0
+    else
+      case "$arg" in
+        --token=* | --token-file=* | --key-file=* | --keys-file=* | --tls-key-file=* | --auth-config=* | --password=* | --client-secret=*)
+          item="${arg%%=*}=<redacted>"
+          ;;
+        *)
+          item="$arg"
+          if is_sensitive_option "$arg"; then
+            redact_next=1
+          fi
+          ;;
+      esac
+    fi
+
+    if [ -n "$output" ]; then
+      output="${output} ${item}"
+    else
+      output="$item"
+    fi
+  done
+
+  printf '%s\n' "${output:-help}"
+}
+
+current_script_path() {
+  local source="${BASH_SOURCE[0]}"
+  local dir
+
+  while [ -L "$source" ]; do
+    dir="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
+    source="$(readlink "$source")"
+    case "$source" in
+      /*)
+        ;;
+      *)
+        source="${dir}/${source}"
+        ;;
+    esac
+  done
+
+  dir="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
+  printf '%s/%s\n' "$dir" "$(basename "$source")"
+}
+
+append_audit_line() {
+  local line="$1"
+
+  if [ "$(id -u)" -eq 0 ]; then
+    install -d -m 0750 -o root -g root "$TOOL_LOG_DIR" 2>/dev/null || return 0
+    if [ ! -e "$AUDIT_LOG_FILE" ]; then
+      install -m 0640 -o root -g root /dev/null "$AUDIT_LOG_FILE" 2>/dev/null || return 0
+    fi
+    printf '%s\n' "$line" >>"$AUDIT_LOG_FILE" 2>/dev/null || true
+  elif command_exists sudo && sudo -n true 2>/dev/null; then
+    sudo -n install -d -m 0750 -o root -g root "$TOOL_LOG_DIR" 2>/dev/null || return 0
+    if ! sudo -n test -e "$AUDIT_LOG_FILE" 2>/dev/null; then
+      sudo -n install -m 0640 -o root -g root /dev/null "$AUDIT_LOG_FILE" 2>/dev/null || return 0
+    fi
+    printf '%s\n' "$line" | sudo -n tee -a "$AUDIT_LOG_FILE" >/dev/null 2>&1 || true
+  fi
+}
+
+audit_record() {
+  local result="$1"
+  local exit_code="$2"
+  shift 2
+  local now
+  local user_name
+  local host_name
+  local cwd
+  local script_path
+  local command_line
+  local args_json
+  local error_json="null"
+
+  now="$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date)"
+  user_name="$(id -un 2>/dev/null || printf 'unknown')"
+  host_name="$(hostname 2>/dev/null || printf 'unknown')"
+  cwd="$(pwd 2>/dev/null || printf 'unknown')"
+  script_path="$(current_script_path 2>/dev/null || printf '%s' "$0")"
+  command_line="$(redacted_command_line "$@")"
+  args_json="$(redacted_args_json "$@")"
+  if [ -n "$AUDIT_ERROR" ]; then
+    error_json="$(json_string "$AUDIT_ERROR")"
+  fi
+
+  append_audit_line "$(printf '{"time":%s,"tool":"nomad-job","result":%s,"exit_code":%s,"user":%s,"sudo_user":%s,"host":%s,"cwd":%s,"script":%s,"command":%s,"args":%s,"error":%s}' \
+    "$(json_string "$now")" \
+    "$(json_string "$result")" \
+    "$exit_code" \
+    "$(json_string "$user_name")" \
+    "$(json_string "${SUDO_USER:-}")" \
+    "$(json_string "$host_name")" \
+    "$(json_string "$cwd")" \
+    "$(json_string "$script_path")" \
+    "$(json_string "$command_line")" \
+    "$args_json" \
+    "$error_json")"
+}
+
+audit_failure_from_fatal() {
+  if [ "${AUDIT_ACTIVE:-0}" -eq 1 ] && [ "${AUDIT_FINALIZED:-0}" -eq 0 ]; then
+    audit_record "failed" 1 "${AUDIT_ARGS[@]}"
+    AUDIT_FINALIZED=1
   fi
 }
 
@@ -102,6 +288,8 @@ Compose conversion:
 Safety:
   apply always runs "nomad job validate" and "nomad job plan" first.
   apply asks for confirmation unless --auto-approve is provided.
+  each execution writes an audit record to /var/log/nomad-init-tools/job.audit.log when writable.
+  token, key and password-like arguments are redacted in audit logs.
 EOF
 }
 
@@ -833,6 +1021,7 @@ validate_job_file() {
   [ -n "$file" ] || fatal "Missing JOB_FILE"
   [ -f "$file" ] || fatal "JOB_FILE not found: $file"
   require_command nomad
+  log_info "Validating Nomad job file: ${file}"
   nomad job validate "$file"
 }
 
@@ -846,6 +1035,7 @@ plan_job_file() {
     shift
   fi
   require_command nomad
+  log_info "Planning Nomad job file: ${file}"
   nomad job plan "$@" "$file"
 }
 
@@ -897,14 +1087,17 @@ apply_job_file() {
   fi
   [ "$detach" -eq 0 ] || run_args+=("-detach")
   [ -z "$check_index" ] || run_args+=("-check-index=${check_index}")
+  log_info "Running Nomad job file: ${file}"
   nomad job run "${run_args[@]}" "$file"
 }
 
 status_job() {
   require_command nomad
   if [ "$#" -eq 0 ]; then
+    log_info "Showing Nomad job status list"
     nomad job status
   else
+    log_info "Showing Nomad job status: $1"
     nomad job status "$1"
   fi
 }
@@ -931,6 +1124,7 @@ stop_job() {
   [ -n "$job" ] || fatal "Missing JOB"
   require_command nomad
   [ "$purge" -eq 0 ] || args+=("-purge")
+  log_info "Stopping Nomad job: ${job}"
   nomad job stop "${args[@]}" "$job"
 }
 
@@ -1006,4 +1200,30 @@ main() {
   esac
 }
 
-main "$@"
+run_with_audit() {
+  local exit_code=0
+  local command_line
+
+  AUDIT_ACTIVE=1
+  AUDIT_FINALIZED=0
+  AUDIT_ERROR=""
+  AUDIT_ARGS=("$@")
+  command_line="$(redacted_command_line "$@")"
+  log_info "Starting nomad-job command: ${command_line}"
+  audit_record "started" 0 "$@"
+
+  if main "$@"; then
+    log_info "Completed nomad-job command: ${command_line}"
+    audit_record "success" 0 "$@"
+    AUDIT_FINALIZED=1
+    return 0
+  fi
+
+  exit_code=$?
+  log_error "Failed nomad-job command (${exit_code}): ${command_line}"
+  audit_record "failed" "$exit_code" "$@"
+  AUDIT_FINALIZED=1
+  return "$exit_code"
+}
+
+run_with_audit "$@"

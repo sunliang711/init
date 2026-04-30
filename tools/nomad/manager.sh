@@ -10,6 +10,16 @@ BIN_PATH="/usr/local/bin/nomad"
 CONFIG_DIR="/etc/nomad.d"
 DATA_DIR="/opt/nomad"
 SYSTEMD_SERVICE="/etc/systemd/system/nomad.service"
+TOOL_DIR="/usr/local/lib/nomad-init-tools"
+TOOL_STATE_DIR="/var/lib/nomad-init-tools"
+TOOL_LOG_DIR="/var/log/nomad-init-tools"
+TOOL_ENTRY="/usr/local/sbin/nomad-manager"
+JOB_ENTRY="/usr/local/sbin/nomad-job"
+TOOL_VERSION_FILE="${TOOL_DIR}/VERSION"
+TOOL_MANIFEST_FILE="${TOOL_DIR}/MANIFEST.sha256"
+INSTALL_METADATA_FILE="${TOOL_STATE_DIR}/install.json"
+AUDIT_LOG_FILE="${TOOL_LOG_DIR}/manager.audit.log"
+DATA_POINTER_FILE="${DATA_DIR}/.managed-by-nomad-init-tools"
 RELEASE_INDEX_URL="https://releases.hashicorp.com/nomad/"
 NOMAD_ADDR="http://127.0.0.1:4646"
 LOCAL_NO_PROXY="127.0.0.1,localhost,::1"
@@ -27,6 +37,11 @@ DRIVER_DENYLIST_CONFIG="${CONFIG_DIR}/82-driver-denylist.hcl"
 VAULT_JWT_PROFILE_DIR="${VAULT_JWT_PROFILE_DIR:-/var/lib/installNomad/vault-jwt}"
 BOOTSTRAP_ACL=1
 TMPDIR_TO_CLEAN=""
+AUDIT_ACTIVE=0
+AUDIT_FINALIZED=0
+AUDIT_ERROR=""
+AUDIT_DISABLE_AFTER_PURGE=0
+AUDIT_ARGS=()
 
 cleanup() {
   if [ -n "${TMPDIR_TO_CLEAN:-}" ] && [ -d "$TMPDIR_TO_CLEAN" ]; then
@@ -35,7 +50,7 @@ cleanup() {
 }
 
 log_info() {
-  printf '[INFO] %s\n' "$*"
+  printf '[INFO] %s\n' "$*" >&2
 }
 
 log_warn() {
@@ -48,7 +63,171 @@ log_error() {
 
 fatal() {
   log_error "$*"
+  AUDIT_ERROR="$*"
+  audit_failure_from_fatal
   exit 1
+}
+
+json_escape() {
+  local value="$1"
+
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '%s' "$value"
+}
+
+json_string() {
+  printf '"%s"' "$(json_escape "$1")"
+}
+
+is_sensitive_option() {
+  case "$1" in
+    --token | --token-file | --key-file | --keys-file | --tls-key-file | --auth-config | --password | --client-secret)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+redacted_args_json() {
+  local first=1
+  local redact_next=0
+  local arg
+  local item
+
+  printf '['
+  for arg in "$@"; do
+    if [ "$redact_next" -eq 1 ]; then
+      item="<redacted>"
+      redact_next=0
+    else
+      case "$arg" in
+        --token=* | --token-file=* | --key-file=* | --keys-file=* | --tls-key-file=* | --auth-config=* | --password=* | --client-secret=*)
+          item="${arg%%=*}=<redacted>"
+          ;;
+        *)
+          item="$arg"
+          if is_sensitive_option "$arg"; then
+            redact_next=1
+          fi
+          ;;
+      esac
+    fi
+
+    if [ "$first" -eq 0 ]; then
+      printf ','
+    fi
+    json_string "$item"
+    first=0
+  done
+  printf ']'
+}
+
+redacted_command_line() {
+  local arg
+  local item
+  local output=""
+  local redact_next=0
+
+  for arg in "$@"; do
+    if [ "$redact_next" -eq 1 ]; then
+      item="<redacted>"
+      redact_next=0
+    else
+      case "$arg" in
+        --token=* | --token-file=* | --key-file=* | --keys-file=* | --tls-key-file=* | --auth-config=* | --password=* | --client-secret=*)
+          item="${arg%%=*}=<redacted>"
+          ;;
+        *)
+          item="$arg"
+          if is_sensitive_option "$arg"; then
+            redact_next=1
+          fi
+          ;;
+      esac
+    fi
+
+    if [ -n "$output" ]; then
+      output="${output} ${item}"
+    else
+      output="$item"
+    fi
+  done
+
+  printf '%s\n' "${output:-help}"
+}
+
+append_audit_line() {
+  local line="$1"
+
+  if [ "$AUDIT_DISABLE_AFTER_PURGE" -eq 1 ]; then
+    return 0
+  fi
+
+  if [ "$(id -u)" -eq 0 ]; then
+    install -d -m 0750 -o root -g root "$TOOL_LOG_DIR" 2>/dev/null || return 0
+    if [ ! -e "$AUDIT_LOG_FILE" ]; then
+      install -m 0640 -o root -g root /dev/null "$AUDIT_LOG_FILE" 2>/dev/null || return 0
+    fi
+    printf '%s\n' "$line" >>"$AUDIT_LOG_FILE" 2>/dev/null || true
+  elif command_exists sudo && sudo -n true 2>/dev/null; then
+    sudo -n install -d -m 0750 -o root -g root "$TOOL_LOG_DIR" 2>/dev/null || return 0
+    if ! sudo -n test -e "$AUDIT_LOG_FILE" 2>/dev/null; then
+      sudo -n install -m 0640 -o root -g root /dev/null "$AUDIT_LOG_FILE" 2>/dev/null || return 0
+    fi
+    printf '%s\n' "$line" | sudo -n tee -a "$AUDIT_LOG_FILE" >/dev/null 2>&1 || true
+  fi
+}
+
+audit_record() {
+  local result="$1"
+  local exit_code="$2"
+  shift 2
+  local now
+  local user_name
+  local host_name
+  local cwd
+  local script_path
+  local command_line
+  local args_json
+  local error_json="null"
+
+  now="$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date)"
+  user_name="$(id -un 2>/dev/null || printf 'unknown')"
+  host_name="$(hostname 2>/dev/null || printf 'unknown')"
+  cwd="$(pwd 2>/dev/null || printf 'unknown')"
+  script_path="$(current_script_path 2>/dev/null || printf '%s' "$0")"
+  command_line="$(redacted_command_line "$@")"
+  args_json="$(redacted_args_json "$@")"
+  if [ -n "$AUDIT_ERROR" ]; then
+    error_json="$(json_string "$AUDIT_ERROR")"
+  fi
+
+  append_audit_line "$(printf '{"time":%s,"tool":"nomad-manager","result":%s,"exit_code":%s,"user":%s,"sudo_user":%s,"host":%s,"cwd":%s,"script":%s,"tool_dir":%s,"command":%s,"args":%s,"error":%s}' \
+    "$(json_string "$now")" \
+    "$(json_string "$result")" \
+    "$exit_code" \
+    "$(json_string "$user_name")" \
+    "$(json_string "${SUDO_USER:-}")" \
+    "$(json_string "$host_name")" \
+    "$(json_string "$cwd")" \
+    "$(json_string "$script_path")" \
+    "$(json_string "$TOOL_DIR")" \
+    "$(json_string "$command_line")" \
+    "$args_json" \
+    "$error_json")"
+}
+
+audit_failure_from_fatal() {
+  if [ "${AUDIT_ACTIVE:-0}" -eq 1 ] && [ "${AUDIT_FINALIZED:-0}" -eq 0 ]; then
+    audit_record "failed" 1 "${AUDIT_ARGS[@]}"
+    AUDIT_FINALIZED=1
+  fi
 }
 
 usage() {
@@ -57,7 +236,7 @@ Nomad manager
 
 Usage:
   $(basename "$0") install [--version VERSION|VERSION] [--no-acl-bootstrap]
-  $(basename "$0") uninstall
+  $(basename "$0") uninstall [--remove-tools|--purge]
   $(basename "$0") vault enable --address URL [options]
   $(basename "$0") vault disable
   $(basename "$0") vault doctor [--address URL]
@@ -70,6 +249,7 @@ Usage:
   $(basename "$0") tls disable
   $(basename "$0") ui enable [options]
   $(basename "$0") ui disable
+  $(basename "$0") ui reset
   $(basename "$0") docker enable [options]
   $(basename "$0") docker disable
   $(basename "$0") docker disable-driver
@@ -103,6 +283,10 @@ Command groups:
 Install options:
   --version VERSION        Install an explicit Nomad version. "latest" also resolves latest OSS release.
   --no-acl-bootstrap      Install and start Nomad without running "nomad acl bootstrap".
+
+Uninstall options:
+  --remove-tools          Also remove ${TOOL_ENTRY}, ${JOB_ENTRY} and ${TOOL_DIR}.
+  --purge                 Remove runtime, installed tools, metadata and audit logs.
 
 Common workflows:
   $(basename "$0") install
@@ -142,10 +326,25 @@ Managed config files:
   ${CONFIG_DIR}/70-host-volume-<NAME>.hcl
   ${VAULT_JWT_PROFILE_DIR}/<PROFILE>.env
 
+Installed tool snapshot:
+  ${TOOL_DIR}
+  ${TOOL_ENTRY} -> ${TOOL_DIR}/manager.sh
+  ${JOB_ENTRY} -> ${TOOL_DIR}/job
+  ${INSTALL_METADATA_FILE}
+  ${AUDIT_LOG_FILE}
+
 Safety:
   install/uninstall require Linux and root privilege.
+  install copies this Nomad tool directory to ${TOOL_DIR} so future management can use
+  the script version that was installed with this node.
+  uninstall removes Nomad runtime files and preserves installed tools, metadata and audit logs.
+  uninstall --remove-tools removes installed tools but preserves metadata and audit logs.
+  uninstall --purge removes installed tools, metadata and audit logs.
   Config subcommands only overwrite or remove files whose first line is:
     ${MANAGED_MARKER}
+  Every manager execution writes an audit record to:
+    ${AUDIT_LOG_FILE}
+  Token, key and password-like arguments are redacted in audit logs.
   Legacy managed files are still accepted for migration compatibility.
   Each change is validated with:
     nomad config validate ${CONFIG_DIR}
@@ -478,6 +677,7 @@ Nomad UI config
 Usage:
   $(basename "$0") ui enable [options]
   $(basename "$0") ui disable
+  $(basename "$0") ui reset
 
 Options:
   --consul-url URL           Consul UI URL
@@ -489,7 +689,10 @@ Options:
 
 Behavior:
   enable writes ${UI_CONFIG}, validates Nomad config and restarts nomad.service.
-  disable removes only the managed UI config.
+  disable writes ${UI_CONFIG} with ui.enabled=false, validates Nomad config
+  and restarts nomad.service.
+  reset removes only the managed UI config and restores Nomad default behavior.
+  Nomad defaults ui.enabled to true, so reset is not the same as disable.
   consul-url and vault-url only affect links shown in the Nomad web UI.
 
 Examples:
@@ -497,6 +700,7 @@ Examples:
   $(basename "$0") ui enable --vault-url https://vault.example.com:8200 --consul-url https://consul.example.com:8501
   $(basename "$0") ui enable --label prod --label-background '#b91c1c' --label-color '#ffffff'
   $(basename "$0") ui disable
+  $(basename "$0") ui reset
 EOF
 }
 
@@ -761,6 +965,163 @@ safe_remove_path() {
   fi
 }
 
+current_script_path() {
+  local source="${BASH_SOURCE[0]}"
+  local dir
+
+  while [ -L "$source" ]; do
+    dir="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
+    source="$(readlink "$source")"
+    case "$source" in
+      /*)
+        ;;
+      *)
+        source="${dir}/${source}"
+        ;;
+    esac
+  done
+
+  dir="$(cd -P "$(dirname "$source")" >/dev/null 2>&1 && pwd)"
+  printf '%s/%s\n' "$dir" "$(basename "$source")"
+}
+
+current_script_dir() {
+  dirname "$(current_script_path)"
+}
+
+write_tool_manifest() {
+  local tmpdir="$1"
+  local manifest_file="${tmpdir}/MANIFEST.sha256"
+  local path
+  local name
+
+  : >"$manifest_file"
+  for name in manager.sh job VERSION; do
+    path="${TOOL_DIR}/${name}"
+    if [ -f "$path" ]; then
+      printf '%s  %s\n' "$(checksum_file "$path")" "$name" >>"$manifest_file"
+    fi
+  done
+
+  run_root install -m 0644 -o root -g root "$manifest_file" "$TOOL_MANIFEST_FILE"
+}
+
+write_install_metadata() {
+  local version="$1"
+  local tmpdir="$2"
+  local metadata_file="${tmpdir}/install.json"
+  local installed_at
+  local manifest_sha=""
+
+  installed_at="$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date)"
+  if [ -f "$TOOL_MANIFEST_FILE" ]; then
+    manifest_sha="$(checksum_file "$TOOL_MANIFEST_FILE")"
+  fi
+
+  {
+    printf '{\n'
+    printf '  "tool": "nomad-manager",\n'
+    printf '  "tool_dir": %s,\n' "$(json_string "$TOOL_DIR")"
+    printf '  "manager_entry": %s,\n' "$(json_string "$TOOL_ENTRY")"
+    printf '  "job_entry": %s,\n' "$(json_string "$JOB_ENTRY")"
+    printf '  "nomad_binary": %s,\n' "$(json_string "$BIN_PATH")"
+    printf '  "config_dir": %s,\n' "$(json_string "$CONFIG_DIR")"
+    printf '  "data_dir": %s,\n' "$(json_string "$DATA_DIR")"
+    printf '  "service": %s,\n' "$(json_string "$SYSTEMD_SERVICE")"
+    printf '  "nomad_version": %s,\n' "$(json_string "$version")"
+    printf '  "installed_at": %s,\n' "$(json_string "$installed_at")"
+    printf '  "manifest_file": %s,\n' "$(json_string "$TOOL_MANIFEST_FILE")"
+    printf '  "manifest_sha256": %s,\n' "$(json_string "$manifest_sha")"
+    printf '  "audit_log": %s\n' "$(json_string "$AUDIT_LOG_FILE")"
+    printf '}\n'
+  } >"$metadata_file"
+
+  run_root install -d -m 0750 -o root -g root "$TOOL_STATE_DIR"
+  run_root install -m 0644 -o root -g root "$metadata_file" "$INSTALL_METADATA_FILE"
+}
+
+write_data_pointer() {
+  local tmpdir="$1"
+  local pointer_file="${tmpdir}/managed-by-nomad-init-tools"
+
+  {
+    printf 'Managed by nomad-manager\n'
+    printf 'Install metadata: %s\n' "$INSTALL_METADATA_FILE"
+    printf 'Tool dir: %s\n' "$TOOL_DIR"
+    printf 'Config dir: %s\n' "$CONFIG_DIR"
+    printf 'Audit log: %s\n' "$AUDIT_LOG_FILE"
+  } >"$pointer_file"
+
+  run_root install -m 0644 -o root -g root "$pointer_file" "$DATA_POINTER_FILE"
+}
+
+install_tool_snapshot() {
+  local version="$1"
+  local tmpdir="$2"
+  local script_dir
+  local manager_src
+  local job_src
+  local snapshot_dir="${tmpdir}/tool-snapshot"
+  local version_file="${snapshot_dir}/VERSION"
+
+  script_dir="$(current_script_dir)"
+  manager_src="$(current_script_path)"
+  job_src="${script_dir}/job"
+
+  log_info "Installing Nomad init tools snapshot: ${TOOL_DIR}"
+  install -d -m 0755 "$snapshot_dir"
+  install -m 0755 "$manager_src" "${snapshot_dir}/manager.sh"
+  if [ -f "$job_src" ]; then
+    install -m 0755 "$job_src" "${snapshot_dir}/job"
+  else
+    log_warn "Nomad job helper not found, skip installing ${JOB_ENTRY}: ${job_src}"
+  fi
+
+  {
+    printf 'tool=nomad-manager\n'
+    printf 'nomad_version=%s\n' "$version"
+    printf 'installed_at=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date)"
+    printf 'source_dir=%s\n' "$script_dir"
+  } >"$version_file"
+
+  run_root install -d -m 0755 -o root -g root "$TOOL_DIR"
+  run_root install -m 0755 -o root -g root "${snapshot_dir}/manager.sh" "${TOOL_DIR}/manager.sh"
+  if [ -f "${snapshot_dir}/job" ]; then
+    run_root install -m 0755 -o root -g root "${snapshot_dir}/job" "${TOOL_DIR}/job"
+  fi
+  run_root install -m 0644 -o root -g root "$version_file" "$TOOL_VERSION_FILE"
+
+  write_tool_manifest "$tmpdir"
+  write_install_metadata "$version" "$tmpdir"
+  write_data_pointer "$tmpdir"
+
+  run_root install -d -m 0755 -o root -g root "$(dirname "$TOOL_ENTRY")"
+  run_root ln -sfn "${TOOL_DIR}/manager.sh" "$TOOL_ENTRY"
+  if [ -f "${TOOL_DIR}/job" ]; then
+    run_root ln -sfn "${TOOL_DIR}/job" "$JOB_ENTRY"
+  fi
+
+  log_info "Nomad manager entry installed: ${TOOL_ENTRY}"
+  if [ -f "${TOOL_DIR}/job" ]; then
+    log_info "Nomad job entry installed: ${JOB_ENTRY}"
+  fi
+  log_info "Nomad install metadata written: ${INSTALL_METADATA_FILE}"
+}
+
+remove_tool_snapshot() {
+  log_info "Removing Nomad init tools"
+  safe_remove_path "$TOOL_ENTRY"
+  safe_remove_path "$JOB_ENTRY"
+  safe_remove_path "$TOOL_DIR"
+}
+
+purge_tool_state() {
+  log_warn "Purging Nomad init tool metadata and audit logs"
+  safe_remove_path "$TOOL_STATE_DIR"
+  safe_remove_path "$TOOL_LOG_DIR"
+  AUDIT_DISABLE_AFTER_PURGE=1
+}
+
 is_managed_file() {
   local path="$1"
   local first_line
@@ -1021,9 +1382,14 @@ plugin "docker" {
 }
 EOF
 
+  log_info "Installing script-managed default configs. These files are not generated by Nomad itself."
   log_info "Installing default managed config: ${TELEMETRY_CONFIG}"
+  log_info "Telemetry default: Prometheus, allocation and node metrics are enabled for observability."
   run_root install -m 0644 "$telemetry_file" "$TELEMETRY_CONFIG"
   log_info "Installing default managed config: ${DOCKER_CONFIG}"
+  log_warn "Docker default: privileged tasks and host volume mounts are enabled for single-node convenience."
+  log_info "Docker default: image/container garbage collection and Nomad labels are enabled."
+  log_info "Docker defaults can be changed later with: $(basename "$0") docker enable --allow-privileged false --volumes false"
   run_root install -m 0644 "$docker_file" "$DOCKER_CONFIG"
 }
 
@@ -1597,6 +1963,21 @@ configure_ui_enable() {
       [ -z "$label_color" ] || printf '    text_color = %s\n' "$(hcl_string "$label_color")"
       printf '  }\n'
     fi
+    printf '}\n'
+  } >"$tmp"
+
+  commit_managed_file "$UI_CONFIG" "$tmp"
+  rm -f "$tmp"
+}
+
+configure_ui_disable() {
+  local tmp
+
+  tmp="$(mktemp)"
+  {
+    printf '%s\n' "$MANAGED_MARKER"
+    printf 'ui {\n'
+    printf '  enabled = false\n'
     printf '}\n'
   } >"$tmp"
 
@@ -2898,6 +3279,7 @@ install_nomad() {
   require_command head
   require_command mktemp
   require_command install
+  require_command readlink
   require_command systemctl
   require_command useradd
   require_any_checksum_command
@@ -2916,6 +3298,7 @@ install_nomad() {
   write_systemd_service "$tmpdir"
   write_nomad_config "$tmpdir"
   write_default_managed_configs "$tmpdir"
+  install_tool_snapshot "$version" "$tmpdir"
 
   log_info "Enabling Nomad service"
   run_root systemctl daemon-reload
@@ -2928,8 +3311,18 @@ install_nomad() {
 }
 
 uninstall_nomad() {
+  local remove_tools=0
+  local purge=0
+
   while [ "$#" -gt 0 ]; do
     case "$1" in
+      --remove-tools)
+        remove_tools=1
+        ;;
+      --purge)
+        remove_tools=1
+        purge=1
+        ;;
       -h | --help)
         usage
         exit 0
@@ -2953,6 +3346,19 @@ uninstall_nomad() {
   safe_remove_path "$CONFIG_DIR"
   safe_remove_path "$DATA_DIR"
   remove_acl_token_file
+
+  if [ "$remove_tools" -eq 1 ]; then
+    remove_tool_snapshot
+  else
+    log_warn "Nomad init tools preserved: ${TOOL_DIR}. Use --remove-tools to remove them"
+  fi
+
+  if [ "$purge" -eq 1 ]; then
+    purge_tool_state
+  else
+    log_warn "Nomad init tool metadata preserved: ${TOOL_STATE_DIR}"
+    log_warn "Nomad init tool audit logs preserved: ${TOOL_LOG_DIR}"
+  fi
 
   run_root systemctl daemon-reload
   run_root systemctl reset-failed nomad 2>/dev/null || true
@@ -3099,6 +3505,10 @@ dispatch_ui() {
       ;;
     disable)
       [ "$#" -eq 0 ] || fatal "ui disable does not accept arguments"
+      configure_ui_disable
+      ;;
+    reset)
+      [ "$#" -eq 0 ] || fatal "ui reset does not accept arguments"
       remove_managed_file "$UI_CONFIG"
       ;;
     help | -h | --help)
@@ -3292,4 +3702,30 @@ main() {
   esac
 }
 
-main "$@"
+run_with_audit() {
+  local exit_code=0
+  local command_line
+
+  AUDIT_ACTIVE=1
+  AUDIT_FINALIZED=0
+  AUDIT_ERROR=""
+  AUDIT_ARGS=("$@")
+  command_line="$(redacted_command_line "$@")"
+  log_info "Starting nomad-manager command: ${command_line}"
+  audit_record "started" 0 "$@"
+
+  if main "$@"; then
+    log_info "Completed nomad-manager command: ${command_line}"
+    audit_record "success" 0 "$@"
+    AUDIT_FINALIZED=1
+    return 0
+  fi
+
+  exit_code=$?
+  log_error "Failed nomad-manager command (${exit_code}): ${command_line}"
+  audit_record "failed" "$exit_code" "$@"
+  AUDIT_FINALIZED=1
+  return "$exit_code"
+}
+
+run_with_audit "$@"
