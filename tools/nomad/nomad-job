@@ -219,6 +219,8 @@ audit_failure_from_fatal() {
 
 usage() {
   cat <<'EOF'
+Nomad job helper
+
 Usage:
   nomad-job scaffold docker [options]
   nomad-job compose convert <COMPOSE_FILE> [options]
@@ -234,7 +236,20 @@ Command names:
   Installed command: nomad-job
   Source-tree command: nomad/nomad-job
 
-Scaffold docker job:
+Command groups:
+  Generate:
+    scaffold docker, compose convert
+  Operate:
+    validate, plan, apply, status, stop
+  Learn:
+    tutor
+
+New user path:
+  1. Use nomad-job tutor web-service to deploy a first Docker service.
+  2. Use nomad-job tutor lifecycle to learn validate, plan, apply and stop.
+  3. Use nomad-job tutor troubleshoot when a job is pending or failing.
+
+Docker scaffold:
   Required:
     --job <NAME>
     --image <IMAGE>
@@ -278,12 +293,11 @@ Scaffold docker job:
 
   Notes:
     --port uses Nomad port labels: name:to or name:static:to.
-    bind mounts and template specs are colon-separated; paths containing ":" are not supported.
-    Avoid passing secrets with --env. Command-line <KEY=VALUE> arguments are written to the audit log.
+    --mount accepts Docker bind, named volume and tmpfs mounts.
+    --host-volume refers to a Nomad client host_volume that must already exist.
+    Colon-separated specs do not support paths containing ":".
 
 Compose conversion:
-  nomad-job compose convert docker-compose.yml --out jobs/app.nomad.hcl
-
   Options:
     --out <FILE>               Output file, use - for stdout
     --force                    Overwrite output file
@@ -297,29 +311,45 @@ Compose conversion:
     --memory-default <MB>      Memory when Compose omits deploy resources, default: 256
 
   Notes:
-    Converts common image, command, env, ports, volumes and resource settings.
-    Host IP bindings in Compose ports, for example 127.0.0.1:8080:80, are not preserved.
-    build, depends_on and healthcheck are reported as warnings and need manual review.
+    The converter handles common image, command, env, port, volume and resource fields.
+    Unsupported Compose settings are reported as warnings for manual review.
+    Host IP bindings such as 127.0.0.1:8080:80 are not preserved.
+
+Job operations:
+  nomad-job validate jobs/app.nomad.hcl
+  nomad-job plan jobs/app.nomad.hcl
+  nomad-job apply jobs/app.nomad.hcl
+  nomad-job apply jobs/app.nomad.hcl --auto-approve
+  nomad-job status app
+  nomad-job stop app
 
 Safety:
   apply always runs "nomad job validate" and "nomad job plan" first.
   apply asks for confirmation unless --auto-approve is provided.
-  each execution writes an audit record to /opt/nomad/log/nomad-init-tools/job.audit.log when writable.
-  token, key and password-like option values are redacted in audit logs.
-  arbitrary <KEY=VALUE> payloads may still appear in audit logs and shell history.
+  Each execution writes an audit record when this path is writable:
+    /opt/nomad/log/nomad-init-tools/job.audit.log
+  Token, key and password-like option values are redacted in audit logs.
+  Arbitrary <KEY=VALUE> payloads may still appear in audit logs and shell history.
+  Prefer Vault templates over --env for secret material.
 
-Tutor:
+Tutor topics:
+  Workflows:
+    nomad-job tutor web-service
+    nomad-job tutor private-image
+    nomad-job tutor service-update
+    nomad-job tutor batch
+  References:
+    nomad-job tutor docker
+    nomad-job tutor compose
+    nomad-job tutor vault
+    nomad-job tutor volume
+    nomad-job tutor lifecycle
+  Troubleshooting:
+    nomad-job tutor troubleshoot
+
+Start here:
   nomad-job tutor
-  nomad-job tutor docker
-  nomad-job tutor compose
-  nomad-job tutor vault
-  nomad-job tutor volume
-  nomad-job tutor lifecycle
   nomad-job tutor web-service
-  nomad-job tutor private-image
-  nomad-job tutor service-update
-  nomad-job tutor troubleshoot
-  nomad-job tutor batch
 EOF
 }
 
@@ -334,19 +364,28 @@ Nomad job tutor
 Usage:
   nomad-job tutor [topic]
 
+Mental model:
+  nomad-job works at the job-file layer.
+  scaffold and compose create HCL files.
+  validate, plan and apply submit reviewed HCL to Nomad.
+  status and stop inspect or stop jobs.
+  Use nomad-manager for node setup, drivers, host volumes and Vault/Consul integration.
+
 Workflows:
-  web-service     Deploy a Docker web service with port and health check.
-  private-image   Run a job from a private Docker registry.
-  service-update  Validate, plan and update a running service.
-  batch           Run a one-shot batch job.
+  web-service     Build, validate and run a Docker HTTP service.
+  private-image   Configure image pull auth and run a private image.
+  service-update  Review a plan and roll out a new job version.
+  batch           Run a one-shot maintenance or migration task.
 
 References:
-  docker          Scaffold a Docker job HCL.
-  compose         Convert docker-compose.yml to Nomad HCL.
-  vault           Generate a job that uses Vault identity/template.
-  volume          Understand Docker mounts and Nomad host volumes.
-  lifecycle       Validate, plan, apply, inspect and stop jobs.
-  troubleshoot    Inspect allocations, logs and common failures.
+  docker          Understand scaffold options for Docker jobs.
+  compose         Convert docker-compose.yml into a reviewable Nomad job.
+  vault           Add Vault identity and template blocks to a job.
+  volume          Choose Docker mounts or Nomad host volumes.
+  lifecycle       Follow the validate, plan, apply, inspect and stop loop.
+
+Troubleshooting:
+  troubleshoot    Read job, allocation, scheduler and node signals.
 
 Example:
   nomad-job tutor web-service
@@ -356,9 +395,13 @@ EOF
     docker)
       cat <<'EOF'
 Scenario: scaffold a Docker job
-Type: reference
-Goal: Learn the Docker scaffold options for common Nomad job shapes.
-Result: A generated job file ready for validate, plan and apply.
+Use when: You need a clean Nomad HCL file for a Docker task.
+Outcome: A generated job file ready for validate, plan and apply.
+
+Before you start:
+  Nomad should be installed and reachable with the nomad CLI.
+  Docker jobs need a Nomad client with the Docker driver enabled.
+  Run mkdir -p jobs if the jobs directory does not exist.
 
 1. Generate a service job:
    nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --out jobs/web.nomad.hcl
@@ -373,17 +416,30 @@ Result: A generated job file ready for validate, plan and apply.
    nomad-job validate jobs/api.nomad.hcl
    nomad-job apply jobs/api.nomad.hcl --auto-approve
 
+Verify:
+  nomad-job status api
+  nomad alloc status
+
+Common failures:
+  Docker driver disabled or Docker daemon unavailable.
+  Static port already in use on the client.
+  Image pull fails because the image name or registry auth is wrong.
+
 Notes:
-  Avoid secrets in --env because command-line <KEY=VALUE> arguments are audited.
-  Use Vault templates for secrets when possible.
+  Use --env for non-secret configuration only.
+  Command-line <KEY=VALUE> arguments may be recorded in audit logs and shell history.
+  Use Vault templates for secrets.
 EOF
       ;;
     compose)
       cat <<'EOF'
 Scenario: convert Docker Compose to Nomad HCL
-Type: reference
-Goal: Convert an existing Compose file into a Nomad starting point.
-Result: A generated HCL file that you can review before running.
+Use when: You already have docker-compose.yml and want a Nomad starting point.
+Outcome: A generated HCL file that must be reviewed before it is run.
+
+Before you start:
+  Keep the Compose file close to the generated Nomad job for review.
+  Create the output directory first, for example mkdir -p jobs.
 
 1. Convert a compose file:
    nomad-job compose convert docker-compose.yml --out jobs/compose.nomad.hcl
@@ -398,17 +454,31 @@ Result: A generated HCL file that you can review before running.
    nomad-job validate jobs/app.nomad.hcl
    nomad-job plan jobs/app.nomad.hcl
 
+Verify:
+  Read the generated ports, volumes and resources before running apply.
+  nomad-job validate jobs/app.nomad.hcl should finish without errors.
+
+Common failures:
+  Unsupported Compose fields require manual edits after conversion.
+  Host IP bindings are dropped, so exposed ports may need review.
+  Named volumes need an explicit --volume-root when they should map to host paths.
+
 Notes:
-  Compose conversion is a starting point. Review ports, volumes, resources and service checks before production use.
+  Compose conversion is a starting point, not a production guarantee.
+  Review ports, volumes, resources and service checks before running the job.
   Host IP bindings in Compose ports are not preserved in the generated Nomad job.
 EOF
       ;;
     vault)
       cat <<'EOF'
 Scenario: create a job that uses Vault
-Type: reference
-Goal: Learn how a Nomad job references Vault identity and templates.
-Result: A Vault-aware job file, assuming Nomad and Vault are already linked.
+Use when: A task should read secrets through Nomad workload identity.
+Outcome: A Vault-aware job file, assuming Nomad and Vault are already linked.
+
+Before you start:
+  Vault must be initialized, unsealed and reachable.
+  Nomad must be configured for Vault workload identity.
+  Use nomad-manager vault-jwt doctor --profile default before running the job.
 
 1. Prepare Nomad and Vault integration first:
    nomad-manager vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646 --secret-path kv/data/app
@@ -426,17 +496,30 @@ TPL
    nomad-job validate jobs/app-vault.nomad.hcl
    nomad-job apply jobs/app-vault.nomad.hcl --auto-approve
 
+Verify:
+  nomad-job status app
+  nomad alloc logs <alloc-id> app
+  nomad-manager vault-jwt doctor --profile default
+
+Common failures:
+  Vault is sealed or VAULT_TOKEN is missing during setup.
+  Vault cannot reach the Nomad JWKS URL.
+  The policy allows kv/data/app but the job template reads a different path.
+
 Notes:
   Vault KV CLI writes to kv/app, but Nomad templates read KV v2 data from kv/data/app.
-  Avoid passing secret values with --env because <KEY=VALUE> arguments can appear in audit logs.
+  Do not pass secret values with --env. Use templates and Vault policies instead.
 EOF
       ;;
     volume)
       cat <<'EOF'
 Scenario: use volumes in jobs
-Type: reference
-Goal: Choose between Docker mounts and Nomad host volumes.
-Result: A job file using the selected mount style and any required host-volume setup.
+Use when: A task needs files or persistent data from outside the container image.
+Outcome: A job file using the selected mount style and any required host-volume setup.
+
+Before you start:
+  Decide who should control the host path: Docker config or Nomad client config.
+  For host volumes, create or verify the host directory on each target Nomad client.
 
 1. Docker bind mount:
    nomad-job scaffold docker --job app --image alpine:3.20 --mount bind:/host/path:/container/path:rw --out jobs/app.nomad.hcl
@@ -448,17 +531,31 @@ Result: A job file using the selected mount style and any required host-volume s
    nomad-manager host-volume add app-data --path /data/app --read-write --create
    nomad-job scaffold docker --job app --image alpine:3.20 --host-volume app-data:/data:rw --out jobs/app.nomad.hcl
 
+Verify:
+  nomad-job validate jobs/app.nomad.hcl
+  nomad-manager host-volume --help
+  nomad node status -self
+
+Common failures:
+  Host path does not exist and --create was not used.
+  Job references a host volume name that the client has not declared.
+  File permissions prevent the task from reading or writing the mounted path.
+
 Notes:
-  Docker bind/volume mounts are Docker driver config.
+  Docker bind and named volume mounts are Docker driver settings inside the job.
   Nomad host volumes must first be declared on the Nomad client with nomad-manager host-volume add.
+  Prefer host volumes when operators need central control over allowed host paths.
 EOF
       ;;
     lifecycle)
       cat <<'EOF'
 Scenario: job lifecycle
-Type: reference
-Goal: Follow the normal validate, plan, apply, inspect and stop loop.
-Result: A repeatable command sequence for operating an existing job file.
+Use when: You already have a Nomad job file and need the normal operation loop.
+Outcome: A repeatable command sequence for validate, plan, apply, inspect and stop.
+
+Before you start:
+  Make sure the job file has the intended job name, datacenter and namespace.
+  Load the Nomad ACL token if ACLs are enabled, for example source ~/nomad.acl.
 
 1. Validate:
    nomad-job validate jobs/app.nomad.hcl
@@ -482,14 +579,31 @@ Result: A repeatable command sequence for operating an existing job file.
 
 7. Stop and purge job history:
    nomad-job stop app --purge
+
+Verify:
+  nomad-job status app shows running allocations after apply.
+  nomad job history app shows the submitted versions.
+
+Common failures:
+  Missing ACL token causes permission errors.
+  Plan shows unexpected updates because the job name or group changed.
+  Stop uses the job name, not the HCL file path.
+
+Notes:
+  apply runs validate and plan first.
+  Use --auto-approve only when the planned change is already reviewed by automation.
 EOF
       ;;
     web-service)
       cat <<'EOF'
 Scenario: deploy a Docker web service
-Type: workflow
-Goal: Create and run a reachable HTTP service from a Docker image.
-Result: A running Nomad service that you can inspect and test with curl.
+Use when: You want a reachable HTTP service from a Docker image.
+Outcome: A running Nomad service that you can inspect and test with curl.
+
+Before you start:
+  Nomad should be running and the Docker driver should be healthy.
+  Load the Nomad ACL token if ACLs are enabled.
+  Run mkdir -p jobs if needed.
 
 1. Scaffold a web service:
    nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --check-http / --cpu 200 --memory 128 --out jobs/web.nomad.hcl
@@ -506,6 +620,15 @@ Result: A running Nomad service that you can inspect and test with curl.
 4. Test the static host port:
    curl http://127.0.0.1:8080/
 
+Verify:
+  nomad-job status web shows a running allocation.
+  curl returns the service response from the static host port.
+
+Common failures:
+  Port 8080 is already in use.
+  Docker is unavailable on the Nomad client.
+  The health check path does not return success.
+
 Notes:
   The port format is name:static:to. In this example, host 8080 maps to container 80.
   For multiple instances, prefer dynamic ports and service discovery instead of one fixed host port.
@@ -514,9 +637,13 @@ EOF
     private-image)
       cat <<'EOF'
 Scenario: run a private Docker image
-Type: workflow
-Goal: Run a Nomad job that pulls from a private Docker registry.
-Result: Docker auth configured on the client and a running private-image job.
+Use when: The Nomad client must pull images from a private registry.
+Outcome: Docker auth configured on the client and a job that can pull the image.
+
+Before you start:
+  Confirm the image already exists in the registry.
+  Run Docker login on the Nomad client that will pull the image.
+  Keep Docker auth files readable only by trusted administrators.
 
 1. Prepare Docker registry auth on the Nomad client:
    docker login registry.example.com
@@ -532,22 +659,35 @@ Result: Docker auth configured on the client and a running private-image job.
    nomad-job apply jobs/api.nomad.hcl --auto-approve
    nomad alloc status <alloc-id>
 
+Verify:
+  nomad alloc status <alloc-id> does not show image pull errors.
+  nomad alloc logs <alloc-id> <task> shows the task started.
+
+Common failures:
+  Docker auth config path is wrong or unreadable.
+  Registry hostname in the image does not match the login config.
+  Image tag was not pushed before the Nomad job was applied.
+
 Notes:
   Keep registry auth files readable only by trusted administrators.
   If the image has build steps, build and push it before creating the Nomad job.
+  Image pull failures usually appear in allocation events and Nomad client logs.
 EOF
       ;;
     service-update | update)
       cat <<'EOF'
 Scenario: update a running service
-Type: workflow
-Goal: Update an existing service through validate, plan and apply.
-Result: A new job version deployed with state and history checks.
+Use when: You need to roll out a new job definition for an existing service.
+Outcome: A new job version deployed after validation and plan review.
+
+Before you start:
+  Keep the same job name when updating an existing service.
+  Review the previous job file or nomad job history before changing production.
 
 1. Generate the next job file with the same job name:
    nomad-job scaffold docker --job web --image registry.example.com/team/web:1.1 --port http:8080:8080 --check-http /health --out jobs/web.nomad.hcl --force
 
-2. Validate and review the plan:
+2. Validate and review the scheduler plan:
    nomad-job validate jobs/web.nomad.hcl
    nomad-job plan jobs/web.nomad.hcl
 
@@ -559,6 +699,15 @@ Result: A new job version deployed with state and history checks.
    nomad job history web
    nomad alloc status
 
+Verify:
+  nomad-job status web shows the expected version and healthy allocations.
+  nomad job history web includes the new submission.
+
+Common failures:
+  Changing the job name creates a new job instead of updating the old one.
+  Static port conflicts appear during rolling updates.
+  Health checks fail and auto_revert may roll back the deployment.
+
 Notes:
   Generated service jobs include an update block with auto_revert=true.
   Keep the previous job file or use nomad job history when you need a rollback reference.
@@ -567,9 +716,12 @@ EOF
     troubleshoot)
       cat <<'EOF'
 Scenario: troubleshoot a job
-Type: reference
-Goal: Inspect allocation, scheduler and node signals for a failed job.
-Result: A focused checklist for finding the likely failure point.
+Use when: A job is pending, failing, restarting or not reachable.
+Outcome: A focused checklist for locating the likely failure point.
+
+Before you start:
+  Know the job name and, if possible, one allocation ID.
+  Start with Nomad state before reading service logs.
 
 1. Check job and allocation state:
    nomad-job status app
@@ -590,7 +742,11 @@ Result: A focused checklist for finding the likely failure point.
    nomad node status -self
    journalctl -u nomad -n 100 --no-pager
 
-Common causes:
+Verify:
+  The allocation event stream should point to scheduling, image, port, health or Vault errors.
+  Task logs should show whether the process started and then failed.
+
+Common failures:
   Image pull auth, occupied static ports, missing bind paths or host volumes,
   failed health checks, insufficient resources, or Vault policy/auth mismatch.
 EOF
@@ -598,9 +754,12 @@ EOF
     batch)
       cat <<'EOF'
 Scenario: run a one-shot batch job
-Type: workflow
-Goal: Create and run a one-shot maintenance or script job.
-Result: A completed batch allocation with inspectable logs.
+Use when: You need a one-time maintenance, migration or script task.
+Outcome: A completed batch allocation with inspectable logs.
+
+Before you start:
+  Batch jobs should be safe to run once and safe to retry if they fail.
+  Put credentials in Vault templates instead of command arguments.
 
 1. Scaffold a batch job without service registration:
    nomad-job scaffold docker --job cleanup --type batch --image alpine:3.20 --no-service --command sh --arg -c --arg "date && echo cleanup done" --cpu 100 --memory 128 --out jobs/cleanup.nomad.hcl
@@ -613,6 +772,15 @@ Result: A completed batch allocation with inspectable logs.
    nomad-job status cleanup
    nomad alloc status
    nomad alloc logs <alloc-id> cleanup
+
+Verify:
+  nomad-job status cleanup shows the batch job completed.
+  nomad alloc logs <alloc-id> cleanup contains the expected script output.
+
+Common failures:
+  The command exits non-zero and the allocation is marked failed.
+  The task needs credentials that were passed as command arguments instead of Vault templates.
+  The job is created as a service job by mistake and remains running.
 
 Notes:
   Batch jobs are useful for migrations, maintenance tasks and one-shot scripts.

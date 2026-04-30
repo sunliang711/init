@@ -244,6 +244,9 @@ usage() {
   cat <<EOF
 Nomad manager
 
+Manage a single-node Nomad installation, generated Nomad config files,
+client driver settings and Nomad integrations used by these tools.
+
 Usage:
   ${NOMAD_MANAGER_CMD} install [VERSION] [--no-acl-bootstrap]
   ${NOMAD_MANAGER_CMD} install [--version <VERSION>] [--no-acl-bootstrap]
@@ -291,42 +294,53 @@ Command groups:
     install, uninstall
   Nomad integrations:
     vault, vault-jwt, consul
-  Agent features:
+  Agent config:
     telemetry, tls, ui, docker, raw-exec
-  Client scheduling controls:
+  Scheduling controls:
     driver, host-volume, meta
-  Scenario tutorials:
+  Learning:
     tutor
 
+New user path:
+  1. Run ${NOMAD_MANAGER_CMD} tutor install to install and verify Nomad.
+  2. Run ${NOMAD_MANAGER_CMD} tutor docker before scheduling Docker jobs.
+  3. Run nomad-job tutor web-service to deploy a first service.
+  4. Run ${NOMAD_MANAGER_CMD} tutor troubleshoot when the node or integrations look unhealthy.
+
 Install options:
-  --version <VERSION>      Install an explicit Nomad version. "latest" also resolves latest OSS release.
-  --no-acl-bootstrap      Install and start Nomad without running "nomad acl bootstrap".
+  --version <VERSION>      Install an explicit Nomad version.
+                           "latest" resolves the latest OSS release.
+  --no-acl-bootstrap      Start Nomad without running "nomad acl bootstrap".
 
 Uninstall options:
-  --remove-tools          Also remove ${TOOL_ENTRY}, ${JOB_ENTRY}, ${TOOL_PATH}, ${JOB_PATH} and ${TOOL_DIR}.
-  --purge                 Remove runtime, installed tools, metadata and audit logs.
+  --remove-tools          Remove installed manager/job helper scripts as well.
+  --purge                 Remove runtime files, installed tools, metadata and audit logs.
 
 Common workflows:
-  ${NOMAD_MANAGER_CMD} install
-  ${NOMAD_MANAGER_CMD} install --version 2.0.0
-  ${NOMAD_MANAGER_CMD} install 2.0.0
-  http_proxy=http://10.2.1.107:7190 https_proxy=http://10.2.1.107:7190 ${NOMAD_MANAGER_CMD} install
+  Install and check the node:
+    ${NOMAD_MANAGER_CMD} install
+    ${NOMAD_MANAGER_CMD} install --version 2.0.0
+    ${NOMAD_MANAGER_CMD} install 2.0.0
+    http_proxy=http://10.2.1.107:7190 https_proxy=http://10.2.1.107:7190 ${NOMAD_MANAGER_CMD} install
 
-  ${NOMAD_MANAGER_CMD} docker enable --allow-privileged true --volumes true
-  ${NOMAD_MANAGER_CMD} docker doctor
-  ${NOMAD_MANAGER_CMD} host-volume add data --path /data --read-write --create
-  ${NOMAD_MANAGER_CMD} meta set role edge
+  Enable common client capabilities:
+    ${NOMAD_MANAGER_CMD} docker enable --allow-privileged true --volumes true
+    ${NOMAD_MANAGER_CMD} docker doctor
+    ${NOMAD_MANAGER_CMD} host-volume add data --path /data --read-write --create
+    ${NOMAD_MANAGER_CMD} meta set role edge
 
-  ${NOMAD_MANAGER_CMD} vault enable --address https://vault.service.consul:8200 --aud vault.io
-  ${NOMAD_MANAGER_CMD} vault doctor --address https://vault.service.consul:8200
-  ${NOMAD_MANAGER_CMD} consul enable --address 127.0.0.1:8500
-  ${NOMAD_MANAGER_CMD} consul doctor --address 127.0.0.1:8500
+  Connect integrations:
+    ${NOMAD_MANAGER_CMD} vault enable --address https://vault.service.consul:8200 --aud vault.io
+    ${NOMAD_MANAGER_CMD} vault doctor --address https://vault.service.consul:8200
+    ${NOMAD_MANAGER_CMD} consul enable --address 127.0.0.1:8500
+    ${NOMAD_MANAGER_CMD} consul doctor --address 127.0.0.1:8500
 
-  ${NOMAD_MANAGER_CMD} vault-jwt plan --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646
-  ${NOMAD_MANAGER_CMD} vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646
-  ${NOMAD_MANAGER_CMD} vault-jwt job-example --profile default --job app --secret kv/data/app --out jobs/app-vault.nomad.hcl
+  Configure Nomad workload identity for Vault:
+    ${NOMAD_MANAGER_CMD} vault-jwt plan --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646
+    ${NOMAD_MANAGER_CMD} vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646
+    ${NOMAD_MANAGER_CMD} vault-jwt job-example --profile default --job app --secret kv/data/app --out jobs/app-vault.nomad.hcl
 
-Notes:
+Version resolution:
   If no version is specified, the latest OSS version is resolved from:
     ${RELEASE_INDEX_URL}
   If the latest version cannot be resolved, ${DEFAULT_NOMAD_VERSION} is used.
@@ -360,23 +374,26 @@ Installed tool snapshot:
   ${INSTALL_METADATA_FILE}
   ${AUDIT_LOG_FILE}
 
-Safety:
+Operational model:
   install/uninstall require Linux and root privilege.
-  install copies this Nomad tool directory to ${TOOL_DIR} so future management can use
-  the script version that was installed with this node.
+  install copies this Nomad tool directory to ${TOOL_DIR} so future management
+  uses the script version installed with this node.
   uninstall removes Nomad runtime files and preserves installed tools, metadata and audit logs.
   uninstall --remove-tools removes installed tools but preserves metadata and audit logs.
   uninstall --purge removes installed tools, metadata and audit logs.
   Config subcommands only overwrite or remove files whose first line is:
     ${MANAGED_MARKER}
-  Every manager execution writes an audit record to:
-    ${AUDIT_LOG_FILE}
-  Token, key and password-like arguments are redacted in audit logs.
   Legacy managed files are still accepted for migration compatibility.
   Each change is validated with:
     nomad config validate ${CONFIG_DIR}
   After validation, nomad.service is restarted.
   Failed validation or restart rolls back the managed config file.
+
+Audit and secrets:
+  Every manager execution writes an audit record to:
+    ${AUDIT_LOG_FILE}
+  Token, key and password-like arguments are redacted in audit logs.
+  Avoid passing arbitrary secret payloads as command-line arguments.
 
 More help:
   ${NOMAD_MANAGER_CMD} tutor
@@ -405,23 +422,36 @@ Nomad manager tutor
 Usage:
   ${NOMAD_MANAGER_CMD} tutor [topic]
 
+Mental model:
+  nomad-manager works at the node and integration layer.
+  It installs Nomad, writes managed config files, restarts nomad.service,
+  and validates local config before keeping changes.
+  Use nomad-job when you are ready to create, validate and run job files.
+
 Workflows:
-  vault-secret-job  Install Vault/Nomad, store a secret and run a job that reads it.
-  web-service       Deploy a Docker web service with port and health check.
-  private-image     Configure Docker registry auth for private images.
-  service-update    Validate, plan and update a running service.
+  vault-secret-job  Install Vault and Nomad, then run a job that reads a secret.
+  web-service       Prepare Docker and run an HTTP service job.
+  private-image     Configure registry auth and run a private image.
+  service-update    Review a plan and roll out a new job version.
 
 References:
-  install           Install a single-node Nomad server/client.
-  docker            Configure and check Docker driver behavior.
-  vault             Configure Nomad Vault integration only.
-  vault-jwt         Configure Nomad workload identity with Vault JWT Auth.
-  troubleshoot-job  Inspect allocations, logs and common job failures.
-  consul            Configure Nomad Consul integration.
-  ui                Understand UI enable, disable and reset.
-  job               Generate, validate and run jobs with nomad-job.
-  uninstall         Choose the right uninstall level.
-  troubleshoot      Common diagnostics.
+  install           Install and verify a single-node Nomad server/client.
+  docker            Configure Docker driver behavior and image pull auth.
+  vault             Point Nomad at Vault without creating Vault-side objects.
+  vault-jwt         Link Nomad workload identity to Vault JWT Auth.
+  consul            Point Nomad at Consul and verify reachability.
+  ui                Manage Nomad Web UI config.
+  job               Use nomad-job to generate, validate and run jobs.
+  uninstall         Choose a conservative or destructive removal level.
+
+Troubleshooting:
+  troubleshoot-job  Inspect job allocations, logs and scheduler decisions.
+  troubleshoot      Check Nomad service, config, cluster and integrations.
+
+Command help:
+  ${NOMAD_MANAGER_CMD} docker --help
+  ${NOMAD_MANAGER_CMD} vault-jwt --help
+  ${NOMAD_MANAGER_CMD} host-volume --help
 
 Example:
   ${NOMAD_MANAGER_CMD} tutor install
@@ -431,9 +461,13 @@ EOF
     install)
       cat <<EOF
 Scenario: install Nomad single node
-Type: reference
-Goal: Understand the install command and the expected post-install checks.
-Result: A single-node Nomad server/client with local management metadata.
+Use when: You need a local Nomad server/client managed by this tool.
+Outcome: A running single-node Nomad service with management metadata.
+
+Before you start:
+  Run on Linux with root privilege or sudo.
+  Confirm outbound access to HashiCorp releases, or configure http_proxy/https_proxy.
+  Choose whether ACL bootstrap should run during install.
 
 1. Install latest Nomad:
    ${NOMAD_MANAGER_CMD} install
@@ -454,9 +488,19 @@ Result: A single-node Nomad server/client with local management metadata.
    cat ${INSTALL_METADATA_FILE}
    tail -n 20 ${AUDIT_LOG_FILE}
 
+Verify:
+  systemctl status nomad shows active.
+  nomad server members lists this node.
+  nomad node status lists a ready client.
+
+Common failures:
+  Release download blocked by network or proxy settings.
+  Missing root privilege prevents service and file installation.
+  ACL bootstrap token was not loaded before running nomad CLI commands.
+
 Notes:
-  The install command writes default managed telemetry and Docker config files.
-  These files are script-managed defaults, not files generated by Nomad itself.
+  install writes default managed telemetry and Docker config files.
+  These files are managed by this tool, not generated by Nomad itself.
   Config files are stored in ${CONFIG_DIR}.
   Runtime data is stored in ${DATA_DIR}; the Nomad agent data_dir is ${NOMAD_AGENT_DATA_DIR}.
 EOF
@@ -464,9 +508,13 @@ EOF
     docker)
       cat <<EOF
 Scenario: Docker driver management
-Type: reference
-Goal: Configure and inspect the Nomad Docker driver behavior.
-Result: Docker driver settings that match your scheduling and security needs.
+Use when: Nomad clients should run Docker tasks or pull private images.
+Outcome: Docker driver settings that match your scheduling and security needs.
+
+Before you start:
+  Docker must be installed on the Nomad client.
+  Decide whether privileged tasks and host volume mounts are allowed.
+  Prepare a Docker auth config if private images are required.
 
 1. Check Docker and Nomad driver state:
    ${NOMAD_MANAGER_CMD} docker doctor
@@ -484,17 +532,31 @@ Result: Docker driver settings that match your scheduling and security needs.
 5. Allow Docker scheduling again:
    ${NOMAD_MANAGER_CMD} docker enable-driver
 
+Verify:
+  ${NOMAD_MANAGER_CMD} docker doctor reports Docker CLI, daemon and socket checks.
+  nomad node status -self shows docker in the driver list.
+
+Common failures:
+  Docker daemon is not running.
+  /var/run/docker.sock is not reachable by the Nomad agent.
+  docker is still denied by the client driver denylist.
+
 Notes:
   docker disable removes only the managed Docker plugin config.
   docker disable-driver changes the Nomad client driver denylist.
+  Use --auth-config when tasks must pull from a private registry.
 EOF
       ;;
     vault)
       cat <<EOF
 Scenario: Nomad Vault integration config
-Type: reference
-Goal: Point Nomad at Vault and understand what this config does not create.
-Result: Managed Nomad Vault config, ready to pair with Vault auth and policy setup.
+Use when: Nomad jobs need workload identity tokens for Vault.
+Outcome: Managed Nomad Vault config, ready to pair with Vault auth and policies.
+
+Before you start:
+  Vault should be reachable from the Nomad node.
+  Decide the Vault address, namespace, audience and token exposure method.
+  Use vault-jwt when you also need Vault auth, policy and role setup.
 
 1. Configure Nomad to know where Vault is:
    ${NOMAD_MANAGER_CMD} vault enable --address http://127.0.0.1:8200 --aud vault.io --ttl 1h
@@ -508,17 +570,32 @@ Result: Managed Nomad Vault config, ready to pair with Vault auth and policy set
 4. Remove only the managed Nomad Vault config:
    ${NOMAD_MANAGER_CMD} vault disable
 
+Verify:
+  ${NOMAD_MANAGER_CMD} vault doctor --address http://127.0.0.1:8200
+  nomad config validate ${CONFIG_DIR}
+
+Common failures:
+  Vault is sealed or not reachable from the Nomad node.
+  TLS CA, cert or namespace options do not match Vault.
+  Vault-side auth method, role or policy has not been created yet.
+
 Notes:
   This config only connects Nomad to Vault.
   Vault auth methods, policies and roles still need to exist in Vault.
+  Use ${NOMAD_MANAGER_CMD} vault-jwt apply when you want this tool to create the linked Vault objects.
 EOF
       ;;
     vault-jwt)
       cat <<EOF
 Scenario: Nomad workload identity with Vault JWT Auth
-Type: reference
-Goal: Configure the linked Nomad and Vault pieces for workload identity.
-Result: A saved JWT profile and a generated example job that can read allowed secrets.
+Use when: Nomad jobs should authenticate to Vault without static Vault tokens.
+Outcome: A saved JWT profile and an example job that can read allowed secrets.
+
+Before you start:
+  Nomad and Vault should both be running.
+  Vault must be initialized and unsealed.
+  VAULT_TOKEN must allow auth method, policy and role changes.
+  The --nomad-addr value must be reachable from Vault for JWKS discovery.
 
 1. Plan the full Nomad + Vault JWT configuration:
    ${NOMAD_MANAGER_CMD} vault-jwt plan --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646
@@ -537,17 +614,32 @@ Result: A saved JWT profile and a generated example job that can read allowed se
    nomad-job validate jobs/app-vault.nomad.hcl
    nomad-job apply jobs/app-vault.nomad.hcl --auto-approve
 
+Verify:
+  ${NOMAD_MANAGER_CMD} vault-jwt doctor --profile default
+  vault read auth/jwt-nomad/role/nomad-workloads
+  nomad-job status app
+
+Common failures:
+  Vault cannot fetch Nomad JWKS from --nomad-addr.
+  VAULT_TOKEN lacks permission to write auth, policy or role objects.
+  Secret path passed to the job is not allowed by the generated policy.
+
 Notes:
   apply writes Nomad Vault config, enables or reuses Vault JWT Auth, writes policy and role,
   then saves the profile under ${VAULT_JWT_PROFILE_DIR}.
+  For production, pass concrete --secret-path values instead of relying on broad defaults.
 EOF
       ;;
     vault-secret-job)
       cat <<EOF
 Scenario: install Vault and Nomad, then run a job that reads a Vault secret
-Type: workflow
-Goal: Install both services, store a secret in Vault and consume it from a Nomad job.
-Result: A running Nomad allocation that reads kv/data/app through Vault.
+Use when: You want an end-to-end local proof of Nomad reading a Vault KV secret.
+Outcome: A running Nomad allocation that reads kv/data/app through Vault.
+
+Before you start:
+  Run this on a test node first.
+  Use placeholder secret values when learning the flow.
+  Keep the Vault init JSON readable only by trusted administrators.
 
 1. Install, initialize and unseal Vault:
    vault-manager install
@@ -579,6 +671,16 @@ Result: A running Nomad allocation that reads kv/data/app through Vault.
    nomad alloc status
    nomad alloc logs <alloc-id> app
 
+Verify:
+  vault kv get kv/app returns the secret through the Vault CLI.
+  ${NOMAD_MANAGER_CMD} vault-jwt doctor --profile default succeeds.
+  nomad alloc logs <alloc-id> app shows the job could read the template output.
+
+Common failures:
+  Vault is sealed after install or restart.
+  KV v2 CLI path kv/app is confused with API/template path kv/data/app.
+  Vault cannot reach Nomad JWKS when Nomad is bound only to localhost on another node.
+
 Notes:
   vault kv put uses the KV CLI path kv/app.
   Nomad templates and Vault policies use the KV v2 API path kv/data/app.
@@ -589,9 +691,13 @@ EOF
     web-service)
       cat <<EOF
 Scenario: deploy a Docker web service
-Type: workflow
-Goal: Create and run a reachable HTTP service from a Docker image.
-Result: A running Nomad service that you can inspect and test with curl.
+Use when: You want a reachable HTTP service from a Docker image.
+Outcome: A running Nomad service that you can inspect and test with curl.
+
+Before you start:
+  Nomad should be installed and healthy.
+  Docker driver should pass ${NOMAD_MANAGER_CMD} docker doctor.
+  Load the ACL token with source ~/nomad.acl if ACLs are enabled.
 
 1. Make sure Nomad can run Docker tasks:
    ${NOMAD_MANAGER_CMD} docker doctor
@@ -610,6 +716,15 @@ Result: A running Nomad service that you can inspect and test with curl.
    nomad alloc status
    curl http://127.0.0.1:8080/
 
+Verify:
+  nomad-job status web shows a running allocation.
+  curl http://127.0.0.1:8080/ returns the web service response.
+
+Common failures:
+  Docker driver is disabled or Docker daemon is down.
+  Static port 8080 is already occupied.
+  ACL token was not loaded before planning or applying the job.
+
 Notes:
   Use a static host port only when you need a predictable address.
   For multiple instances, prefer dynamic ports and service discovery.
@@ -618,9 +733,13 @@ EOF
     private-image)
       cat <<EOF
 Scenario: run jobs from a private Docker registry
-Type: workflow
-Goal: Configure registry credentials and run a private-image job.
-Result: A Nomad client with Docker auth and a job that pulls a private image.
+Use when: Nomad tasks must pull images from a private registry.
+Outcome: A Nomad client with Docker auth and a job that pulls a private image.
+
+Before you start:
+  Push the target image before creating the Nomad job.
+  Run docker login on each Nomad client that may pull the image.
+  Store the copied Docker config with restrictive permissions.
 
 1. Create a Docker auth config on the Nomad client:
    docker login registry.example.com
@@ -635,6 +754,15 @@ Result: A Nomad client with Docker auth and a job that pulls a private image.
    nomad-job scaffold docker --job api --image registry.example.com/team/api:1.0 --port http:8080:8080 --check-http /health --out jobs/api.nomad.hcl
    nomad-job apply jobs/api.nomad.hcl --auto-approve
 
+Verify:
+  ${NOMAD_MANAGER_CMD} docker doctor succeeds after enabling --auth-config.
+  nomad alloc status <alloc-id> does not show image pull errors.
+
+Common failures:
+  Docker auth config is unreadable by the Nomad process.
+  The registry hostname differs between docker login and the image name.
+  The image tag has not been pushed.
+
 Notes:
   Keep the Docker auth config readable only by trusted administrators.
   Image pull failures usually show up in allocation events and client logs.
@@ -643,9 +771,13 @@ EOF
     service-update)
       cat <<EOF
 Scenario: validate, plan and update a running service
-Type: workflow
-Goal: Update an existing service through validate, plan and apply.
-Result: A new job version deployed with deployment and history checks.
+Use when: You need to roll out a new job definition for an existing service.
+Outcome: A new job version deployed after validation and plan review.
+
+Before you start:
+  Keep the existing job name.
+  Know where to find the previous job version or nomad job history.
+  Confirm the new image tag exists before applying.
 
 1. Generate or edit the next job version:
    nomad-job scaffold docker --job web --image registry.example.com/team/web:1.1 --port http:8080:8080 --check-http /health --out jobs/web.nomad.hcl --force
@@ -662,6 +794,15 @@ Result: A new job version deployed with deployment and history checks.
    nomad job history web
    nomad alloc status
 
+Verify:
+  nomad-job status web shows healthy allocations after the update.
+  nomad job history web includes the new version.
+
+Common failures:
+  The plan shows a replacement that was not expected.
+  Health checks fail and the deployment rolls back.
+  Static ports block parallel old/new allocations.
+
 Notes:
   Generated jobs include update settings with auto_revert=true.
   Keep old job files or use nomad job history when you need a rollback reference.
@@ -670,9 +811,12 @@ EOF
     troubleshoot-job)
       cat <<EOF
 Scenario: troubleshoot Nomad job failures
-Type: reference
-Goal: Inspect allocation, scheduler and node signals for a failed job.
-Result: A focused checklist for finding the likely failure point.
+Use when: A job is pending, failing, restarting or not reachable.
+Outcome: A focused checklist for locating the likely failure point.
+
+Before you start:
+  Get the job name and an allocation ID if one exists.
+  Check Nomad state before changing config.
 
 1. Start with job and allocation state:
    nomad-job status app
@@ -693,7 +837,11 @@ Result: A focused checklist for finding the likely failure point.
    nomad node status -self
    journalctl -u nomad -n 100 --no-pager
 
-Common causes:
+Verify:
+  Allocation events should narrow the issue to scheduling, image pull, ports, health checks or Vault.
+  Task logs should show whether the process starts successfully.
+
+Common failures:
   Image pull auth, occupied static ports, missing host paths, failed health checks,
   insufficient resources, Vault policy mismatch, or Vault auth/JWKS reachability.
 EOF
@@ -701,9 +849,12 @@ EOF
     consul)
       cat <<EOF
 Scenario: Nomad Consul integration config
-Type: reference
-Goal: Point Nomad at Consul and verify the generated integration config.
-Result: Managed Consul config with reachability checks.
+Use when: Nomad should integrate with a local or remote Consul agent.
+Outcome: Managed Consul config with reachability checks.
+
+Before you start:
+  Confirm the Consul HTTP address and whether it uses TLS.
+  Prepare CA, cert and key files if Consul requires client TLS.
 
 1. Enable Consul integration for a local Consul agent:
    ${NOMAD_MANAGER_CMD} consul enable --address 127.0.0.1:8500
@@ -716,14 +867,30 @@ Result: Managed Consul config with reachability checks.
 
 4. Remove only the managed Consul config:
    ${NOMAD_MANAGER_CMD} consul disable
+
+Verify:
+  ${NOMAD_MANAGER_CMD} consul doctor --address 127.0.0.1:8500
+  nomad config validate ${CONFIG_DIR}
+
+Common failures:
+  Using HTTP options against a HTTPS Consul listener.
+  TLS verification fails because CA or cert files are missing.
+  Consul is reachable locally but not from the Nomad node.
+
+Notes:
+  enable writes only this tool's managed Consul config file.
+  doctor checks local config validation and Consul leader endpoint reachability.
 EOF
       ;;
     ui)
       cat <<EOF
 Scenario: Nomad Web UI management
-Type: reference
-Goal: Understand enable, disable and reset behavior for Nomad UI config.
-Result: Managed UI config that matches the desired exposure state.
+Use when: You need to enable, disable or customize Nomad UI settings.
+Outcome: Managed UI config that matches the desired exposure state.
+
+Before you start:
+  Decide whether the UI should be available, disabled, or left to Nomad defaults.
+  Prepare Vault or Consul URLs only if you want UI navigation links.
 
 1. Enable UI customization and optional links:
    ${NOMAD_MANAGER_CMD} ui enable --vault-url https://vault.example.com:8200 --consul-url https://consul.example.com:8501
@@ -734,6 +901,14 @@ Result: Managed UI config that matches the desired exposure state.
 3. Restore Nomad default UI behavior:
    ${NOMAD_MANAGER_CMD} ui reset
 
+Verify:
+  nomad config validate ${CONFIG_DIR}
+  systemctl status nomad
+
+Common failures:
+  ui reset removes managed config and may re-enable the UI because Nomad defaults to enabled.
+  Invalid color or URL values produce unexpected UI display.
+
 Notes:
   ui disable writes ui.enabled=false.
   ui reset removes the managed UI config. Nomad defaults ui.enabled to true, so reset can make UI available again.
@@ -742,9 +917,12 @@ EOF
     job)
       cat <<EOF
 Scenario: create and run a Nomad job
-Type: reference
-Goal: Use nomad-job for the basic generate, validate, apply and stop loop.
-Result: A concise job-management command sequence.
+Use when: You want the companion nomad-job helper for job file operations.
+Outcome: A concise generate, validate, apply and stop command sequence.
+
+Before you start:
+  Install Nomad first and load ACL credentials if needed.
+  Enable Docker before running Docker jobs.
 
 1. Generate a Docker job HCL:
    nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --out jobs/web.nomad.hcl
@@ -762,14 +940,26 @@ Result: A concise job-management command sequence.
 
 5. Convert from Docker Compose:
    nomad-job compose convert docker-compose.yml --out jobs/compose.nomad.hcl
+
+Verify:
+  nomad-job status web shows the job after apply.
+  nomad alloc status shows allocations and task states.
+
+Common failures:
+  Running nomad-job before Nomad is installed.
+  Applying a job without reviewing the plan.
+  Docker jobs fail because the Docker driver is not healthy.
 EOF
       ;;
     uninstall)
       cat <<EOF
 Scenario: uninstall Nomad safely
-Type: reference
-Goal: Choose the right uninstall level without losing audit data by accident.
-Result: A removal command that matches the intended cleanup scope.
+Use when: You need to remove Nomad runtime, tools or audit metadata.
+Outcome: A removal command that matches the intended cleanup scope.
+
+Before you start:
+  Decide whether audit logs and installed tool snapshots must be kept.
+  Back up any data or config you may need later.
 
 1. Remove Nomad runtime only. Keep installed management tools, metadata and audit logs:
    ${NOMAD_MANAGER_CMD} uninstall
@@ -780,6 +970,14 @@ Result: A removal command that matches the intended cleanup scope.
 3. Remove runtime, tools, metadata and audit logs:
    ${NOMAD_MANAGER_CMD} uninstall --purge
 
+Verify:
+  systemctl status nomad should no longer show a running service after uninstall.
+  Check ${NOMAD_ROOT_DIR} only after deciding whether data should remain.
+
+Common failures:
+  Using --purge when audit logs or metadata were still needed.
+  Expecting uninstall to remove all tool snapshots without --remove-tools or --purge.
+
 Notes:
   The default uninstall is intentionally conservative so audit history remains available.
 EOF
@@ -787,9 +985,11 @@ EOF
     troubleshoot)
       cat <<EOF
 Scenario: Nomad troubleshooting
-Type: reference
-Goal: Check service, config, cluster and integration health signals.
-Result: A general diagnostics checklist for Nomad itself.
+Use when: Nomad service, config validation or integrations look unhealthy.
+Outcome: A general diagnostics checklist for Nomad itself.
+
+Before you start:
+  Avoid changing config until you know whether the problem is service, config, cluster or integration state.
 
 1. Check service logs:
    systemctl status nomad
@@ -811,6 +1011,15 @@ Result: A general diagnostics checklist for Nomad itself.
 5. Check management metadata and audit history:
    cat ${INSTALL_METADATA_FILE}
    tail -n 50 ${AUDIT_LOG_FILE}
+
+Verify:
+  nomad config validate ${CONFIG_DIR} succeeds.
+  nomad server members and nomad node status show the expected node.
+
+Common failures:
+  A managed config file was changed outside the tool.
+  Nomad cannot restart after a config validation or service failure.
+  Integration doctor commands point to Vault, Consul or Docker instead of Nomad itself.
 EOF
       ;;
     *)
@@ -823,12 +1032,22 @@ vault_jwt_usage() {
   cat <<EOF
 Nomad + Vault JWT workload identity
 
+Link Nomad workload identity to Vault JWT Auth, save the profile, and generate
+job examples that read allowed Vault secrets.
+
 Usage:
   ${NOMAD_MANAGER_CMD} vault-jwt plan --profile <NAME> [options]
   ${NOMAD_MANAGER_CMD} vault-jwt apply --profile <NAME> [options]
   ${NOMAD_MANAGER_CMD} vault-jwt status --profile <NAME>
   ${NOMAD_MANAGER_CMD} vault-jwt doctor --profile <NAME>
   ${NOMAD_MANAGER_CMD} vault-jwt job-example --profile <NAME> --job <NAME> --secret <PATH> --out <FILE> [--force]
+
+Commands:
+  plan          Show the Nomad and Vault changes that would be made.
+  apply         Write Nomad config, Vault JWT Auth config, policy and role.
+  status        Print the saved profile and linked object names.
+  doctor        Check the saved profile, Nomad JWKS reachability and Vault objects.
+  job-example   Generate a Nomad job file that uses the saved profile.
 
 Options for plan/apply:
   --profile <NAME>            Required profile name
@@ -847,7 +1066,8 @@ Options for plan/apply:
   --force                     Allow replacing an existing profile with different values
 
 Environment:
-  VAULT_TOKEN must be available for apply/status/doctor when Vault requires auth.
+  VAULT_TOKEN must be available for apply/status/doctor when Vault requires auth,
+  unless the Vault CLI can authenticate through another configured method.
 
 What apply does:
   1. Write Nomad vault config: ${VAULT_CONFIG}
@@ -864,6 +1084,7 @@ Vault role:
 Policy notes:
   The default generated policy allows kv/data/*.
   For production, pass one or more concrete --secret-path values.
+  Use --policy-file when generated policy rules are not strict enough.
 
 Profile file:
   ${VAULT_JWT_PROFILE_DIR}/<PROFILE>.env
@@ -879,6 +1100,9 @@ EOF
 vault_usage() {
   cat <<EOF
 Nomad Vault integration config
+
+Write or remove the Nomad-side Vault integration config. This does not create
+Vault auth methods, policies or roles.
 
 Usage:
   ${NOMAD_MANAGER_CMD} vault enable --address <URL> [options]
@@ -903,6 +1127,7 @@ Behavior:
   disable removes only the managed Vault config file.
   doctor is read-only. It checks managed config, Nomad config validation, vault CLI
   availability and Vault health endpoint reachability.
+  Use vault-jwt apply when Vault-side JWT auth, policy and role should be created too.
 
 Examples:
   ${NOMAD_MANAGER_CMD} vault enable --address https://vault.service.consul:8200 --aud vault.io --ttl 1h
@@ -914,6 +1139,9 @@ EOF
 consul_usage() {
   cat <<EOF
 Nomad Consul integration config
+
+Write or remove the Nomad-side Consul integration config and verify Consul
+reachability from the Nomad node.
 
 Usage:
   ${NOMAD_MANAGER_CMD} consul enable --address <URL> [options]
@@ -936,6 +1164,7 @@ Behavior:
   disable removes only the managed Consul config file.
   doctor is read-only. It checks managed config, Nomad config validation, consul CLI
   availability and Consul leader endpoint reachability.
+  Use --ssl true with a Consul HTTPS listener.
 
 Examples:
   ${NOMAD_MANAGER_CMD} consul enable --address 127.0.0.1:8500
@@ -947,6 +1176,8 @@ EOF
 telemetry_usage() {
   cat <<EOF
 Nomad telemetry config
+
+Manage Prometheus-friendly Nomad telemetry settings.
 
 Usage:
   ${NOMAD_MANAGER_CMD} telemetry enable [options]
@@ -976,6 +1207,9 @@ tls_usage() {
   cat <<EOF
 Nomad TLS config
 
+Manage the Nomad agent TLS config file. Certificate files must already exist on
+the target host.
+
 Usage:
   ${NOMAD_MANAGER_CMD} tls enable --ca-file <FILE> --cert-file <FILE> --key-file <FILE> [options]
   ${NOMAD_MANAGER_CMD} tls disable
@@ -993,6 +1227,7 @@ Behavior:
   enable writes ${TLS_CONFIG}, validates Nomad config and restarts nomad.service.
   disable removes only the managed TLS config.
   Certificate files must already exist on the target host and be readable by Nomad.
+  Review client trust requirements before enabling --verify-https-client true.
 
 Examples:
   ${NOMAD_MANAGER_CMD} tls enable --ca-file ${CONFIG_DIR}/certs/ca.pem --cert-file ${CONFIG_DIR}/certs/server.pem --key-file ${CONFIG_DIR}/certs/server-key.pem
@@ -1004,6 +1239,9 @@ EOF
 docker_usage() {
   cat <<EOF
 Nomad Docker driver config
+
+Manage Docker plugin settings and whether the Nomad client may schedule Docker
+tasks.
 
 Usage:
   ${NOMAD_MANAGER_CMD} docker enable [options]
@@ -1026,9 +1264,11 @@ Behavior:
   enable-driver removes docker from Nomad client driver denylist.
   doctor is read-only. It checks Docker config, Nomad config validation, denylist,
   docker CLI, Docker daemon and /var/run/docker.sock.
+  --auth-config should point to a Docker config.json readable by trusted admins only.
 
 Examples:
   ${NOMAD_MANAGER_CMD} docker enable --allow-privileged true --volumes true
+  ${NOMAD_MANAGER_CMD} docker enable --auth-config /etc/nomad.d/docker-auth/config.json --allow-privileged false --volumes false
   ${NOMAD_MANAGER_CMD} docker disable-driver
   ${NOMAD_MANAGER_CMD} docker enable-driver
   ${NOMAD_MANAGER_CMD} docker doctor
@@ -1039,6 +1279,8 @@ driver_usage() {
   cat <<EOF
 Nomad client driver denylist
 
+Allow or deny Nomad task drivers without changing each driver's plugin config.
+
 Usage:
   ${NOMAD_MANAGER_CMD} driver deny <DRIVER>
   ${NOMAD_MANAGER_CMD} driver allow <DRIVER>
@@ -1047,7 +1289,7 @@ Behavior:
   deny adds <DRIVER> to Nomad client option "driver.denylist".
   allow removes <DRIVER> from the denylist.
   The denylist is stored in ${DRIVER_DENYLIST_CONFIG}.
-  This is useful when you want to disable a built-in driver without removing its plugin config.
+  This is useful when you need a scheduling guardrail for built-in drivers.
 
 Driver names:
   docker, exec, raw_exec, java, qemu and other installed Nomad task drivers.
@@ -1062,6 +1304,9 @@ EOF
 host_volume_usage() {
   cat <<EOF
 Nomad client host volume config
+
+Expose approved host directories to Nomad jobs through managed host_volume
+config files.
 
 Usage:
   ${NOMAD_MANAGER_CMD} host-volume add <NAME> --path <PATH> [--read-only|--read-write] [--create]
@@ -1078,6 +1323,7 @@ Behavior:
   and restarts nomad.service.
   remove deletes only that managed host volume config file.
   <PATH> must be absolute. Without --create, <PATH> must already be an existing directory.
+  Jobs can mount a host volume only after the client exposes it.
 
 Job HCL example:
   volume "data" {
@@ -1105,11 +1351,13 @@ meta_usage() {
   cat <<EOF
 Nomad client metadata config
 
+Write managed client meta values for placement constraints and operator labels.
+
 Usage:
   ${NOMAD_MANAGER_CMD} meta set <KEY> <VALUE>
   ${NOMAD_MANAGER_CMD} meta unset <KEY>
 
-Notes:
+Rules:
   <KEY> must be a HCL identifier: letters, numbers and underscore, starting with a letter or underscore.
   Values are written as HCL strings.
   Metadata is stored in ${META_CONFIG} and appears under the Nomad client meta map.
@@ -1131,6 +1379,8 @@ ui_usage() {
   cat <<EOF
 Nomad UI config
 
+Enable, disable or reset Nomad Web UI settings managed by this tool.
+
 Usage:
   ${NOMAD_MANAGER_CMD} ui enable [options]
   ${NOMAD_MANAGER_CMD} ui disable
@@ -1151,6 +1401,7 @@ Behavior:
   reset removes only the managed UI config and restores Nomad default behavior.
   Nomad defaults ui.enabled to true, so reset is not the same as disable.
   consul-url and vault-url only affect links shown in the Nomad web UI.
+  Use disable when the UI must stay unavailable.
 
 Examples:
   ${NOMAD_MANAGER_CMD} ui enable
@@ -1165,6 +1416,8 @@ raw_exec_usage() {
   cat <<EOF
 Nomad raw_exec driver config
 
+Manage the raw_exec plugin config. raw_exec runs commands directly on the host.
+
 Usage:
   ${NOMAD_MANAGER_CMD} raw-exec enable
   ${NOMAD_MANAGER_CMD} raw-exec disable
@@ -1173,6 +1426,7 @@ Behavior:
   enable writes ${RAW_EXEC_CONFIG}, validates Nomad config and restarts nomad.service.
   disable removes only the managed raw_exec plugin config.
   raw_exec runs commands directly on the host. Enable it only for trusted jobs.
+  Use driver deny raw_exec when you need a client-side scheduling block.
 
 Related commands:
   ${NOMAD_MANAGER_CMD} driver deny raw_exec
