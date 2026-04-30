@@ -1969,18 +1969,15 @@ run_with_audit() {
   log_info "Starting vault-manager command: ${command_line}"
   audit_record "started" 0 "$@"
 
-  if main "$@"; then
-    log_info "Completed vault-manager command: ${command_line}"
-    audit_record "success" 0 "$@"
-    AUDIT_FINALIZED=1
-    return 0
-  fi
+  set -E
+  trap 'exit_code=$?; if [ "${AUDIT_FINALIZED:-0}" -eq 0 ]; then log_error "Failed vault-manager command (${exit_code}): ${command_line}"; audit_record "failed" "$exit_code" "${AUDIT_ARGS[@]}"; AUDIT_FINALIZED=1; fi; exit "$exit_code"' ERR
+  main "$@"
+  trap - ERR
 
-  exit_code=$?
-  log_error "Failed vault-manager command (${exit_code}): ${command_line}"
-  audit_record "failed" "$exit_code" "$@"
+  log_info "Completed vault-manager command: ${command_line}"
+  audit_record "success" 0 "$@"
   AUDIT_FINALIZED=1
-  return "$exit_code"
+  return 0
 }
 
 run_with_audit "$@"

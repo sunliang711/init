@@ -1169,6 +1169,7 @@ validate_job_file() {
 
 plan_job_file() {
   local file="${1:-}"
+  local rc
 
   [ -n "$file" ] || fatal "Missing JOB_FILE"
   [ -f "$file" ] || fatal "JOB_FILE not found: $file"
@@ -1178,7 +1179,19 @@ plan_job_file() {
   fi
   require_command nomad
   log_info "Planning Nomad job file: ${file}"
-  nomad job plan "$@" "$file"
+  if nomad job plan "$@" "$file"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  case "$rc" in
+    0 | 1)
+      return 0
+      ;;
+    *)
+      return "$rc"
+      ;;
+  esac
 }
 
 apply_job_file() {
@@ -1367,18 +1380,15 @@ run_with_audit() {
   log_info "Starting nomad-job command: ${command_line}"
   audit_record "started" 0 "$@"
 
-  if main "$@"; then
-    log_info "Completed nomad-job command: ${command_line}"
-    audit_record "success" 0 "$@"
-    AUDIT_FINALIZED=1
-    return 0
-  fi
+  set -E
+  trap 'exit_code=$?; if [ "${AUDIT_FINALIZED:-0}" -eq 0 ]; then log_error "Failed nomad-job command (${exit_code}): ${command_line}"; audit_record "failed" "$exit_code" "${AUDIT_ARGS[@]}"; AUDIT_FINALIZED=1; fi; exit "$exit_code"' ERR
+  main "$@"
+  trap - ERR
 
-  exit_code=$?
-  log_error "Failed nomad-job command (${exit_code}): ${command_line}"
-  audit_record "failed" "$exit_code" "$@"
+  log_info "Completed nomad-job command: ${command_line}"
+  audit_record "success" 0 "$@"
   AUDIT_FINALIZED=1
-  return "$exit_code"
+  return 0
 }
 
 run_with_audit "$@"

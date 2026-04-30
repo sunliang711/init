@@ -1409,6 +1409,8 @@ restart_nomad_service() {
     fi
     return 1
   fi
+
+  wait_for_nomad_api
 }
 
 restore_managed_file() {
@@ -1667,6 +1669,12 @@ install_binary() {
 }
 
 wait_for_nomad() {
+  if ! wait_for_nomad_api; then
+    fatal "Timed out waiting for Nomad HTTP API"
+  fi
+}
+
+wait_for_nomad_api() {
   local attempt=1
 
   log_info "Waiting for Nomad HTTP API"
@@ -1680,7 +1688,7 @@ wait_for_nomad() {
       if command_exists journalctl; then
         run_root journalctl -u nomad -n 80 --no-pager || true
       fi
-      exit 1
+      return 1
     fi
 
     sleep 2
@@ -1690,7 +1698,7 @@ wait_for_nomad() {
   if command_exists journalctl; then
     run_root journalctl -u nomad -n 80 --no-pager || true
   fi
-  fatal "Timed out waiting for Nomad HTTP API"
+  return 1
 }
 
 target_token_file() {
@@ -3971,18 +3979,15 @@ run_with_audit() {
   log_info "Starting nomad-manager command: ${command_line}"
   audit_record "started" 0 "$@"
 
-  if main "$@"; then
-    log_info "Completed nomad-manager command: ${command_line}"
-    audit_record "success" 0 "$@"
-    AUDIT_FINALIZED=1
-    return 0
-  fi
+  set -E
+  trap 'exit_code=$?; if [ "${AUDIT_FINALIZED:-0}" -eq 0 ]; then log_error "Failed nomad-manager command (${exit_code}): ${command_line}"; audit_record "failed" "$exit_code" "${AUDIT_ARGS[@]}"; AUDIT_FINALIZED=1; fi; exit "$exit_code"' ERR
+  main "$@"
+  trap - ERR
 
-  exit_code=$?
-  log_error "Failed nomad-manager command (${exit_code}): ${command_line}"
-  audit_record "failed" "$exit_code" "$@"
+  log_info "Completed nomad-manager command: ${command_line}"
+  audit_record "success" 0 "$@"
   AUDIT_FINALIZED=1
-  return "$exit_code"
+  return 0
 }
 
 run_with_audit "$@"
