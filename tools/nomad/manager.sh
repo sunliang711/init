@@ -3,6 +3,7 @@ set -euo pipefail
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
+NOMAD_MANAGER_CMD="${NOMAD_MANAGER_CMD:-nomad-manager}"
 DEFAULT_NOMAD_VERSION="2.0.0"
 NOMAD_USER="nomad"
 NOMAD_GROUP="nomad"
@@ -243,41 +244,45 @@ usage() {
 Nomad manager
 
 Usage:
-  $(basename "$0") install [--version VERSION|VERSION] [--no-acl-bootstrap]
-  $(basename "$0") uninstall [--remove-tools|--purge]
-  $(basename "$0") vault enable --address URL [options]
-  $(basename "$0") vault disable
-  $(basename "$0") vault doctor [--address URL]
-  $(basename "$0") consul enable --address URL [options]
-  $(basename "$0") consul disable
-  $(basename "$0") consul doctor [--address URL]
-  $(basename "$0") telemetry enable [options]
-  $(basename "$0") telemetry disable
-  $(basename "$0") tls enable --ca-file FILE --cert-file FILE --key-file FILE [options]
-  $(basename "$0") tls disable
-  $(basename "$0") ui enable [options]
-  $(basename "$0") ui disable
-  $(basename "$0") ui reset
-  $(basename "$0") docker enable [options]
-  $(basename "$0") docker disable
-  $(basename "$0") docker disable-driver
-  $(basename "$0") docker enable-driver
-  $(basename "$0") docker doctor
-  $(basename "$0") raw-exec enable
-  $(basename "$0") raw-exec disable
-  $(basename "$0") driver deny DRIVER
-  $(basename "$0") driver allow DRIVER
-  $(basename "$0") host-volume add NAME --path PATH [--read-only|--read-write] [--create]
-  $(basename "$0") host-volume remove NAME
-  $(basename "$0") meta set KEY VALUE
-  $(basename "$0") meta unset KEY
-  $(basename "$0") vault-jwt plan --profile NAME [options]
-  $(basename "$0") vault-jwt apply --profile NAME [options]
-  $(basename "$0") vault-jwt status --profile NAME
-  $(basename "$0") vault-jwt doctor --profile NAME
-  $(basename "$0") vault-jwt job-example --profile NAME --job NAME --secret PATH --out FILE
-  $(basename "$0") tutor [topic]
-  $(basename "$0") help
+  ${NOMAD_MANAGER_CMD} install [--version VERSION|VERSION] [--no-acl-bootstrap]
+  ${NOMAD_MANAGER_CMD} uninstall [--remove-tools|--purge]
+  ${NOMAD_MANAGER_CMD} vault enable --address URL [options]
+  ${NOMAD_MANAGER_CMD} vault disable
+  ${NOMAD_MANAGER_CMD} vault doctor [--address URL]
+  ${NOMAD_MANAGER_CMD} consul enable --address URL [options]
+  ${NOMAD_MANAGER_CMD} consul disable
+  ${NOMAD_MANAGER_CMD} consul doctor [--address URL]
+  ${NOMAD_MANAGER_CMD} telemetry enable [options]
+  ${NOMAD_MANAGER_CMD} telemetry disable
+  ${NOMAD_MANAGER_CMD} tls enable --ca-file FILE --cert-file FILE --key-file FILE [options]
+  ${NOMAD_MANAGER_CMD} tls disable
+  ${NOMAD_MANAGER_CMD} ui enable [options]
+  ${NOMAD_MANAGER_CMD} ui disable
+  ${NOMAD_MANAGER_CMD} ui reset
+  ${NOMAD_MANAGER_CMD} docker enable [options]
+  ${NOMAD_MANAGER_CMD} docker disable
+  ${NOMAD_MANAGER_CMD} docker disable-driver
+  ${NOMAD_MANAGER_CMD} docker enable-driver
+  ${NOMAD_MANAGER_CMD} docker doctor
+  ${NOMAD_MANAGER_CMD} raw-exec enable
+  ${NOMAD_MANAGER_CMD} raw-exec disable
+  ${NOMAD_MANAGER_CMD} driver deny DRIVER
+  ${NOMAD_MANAGER_CMD} driver allow DRIVER
+  ${NOMAD_MANAGER_CMD} host-volume add NAME --path PATH [--read-only|--read-write] [--create]
+  ${NOMAD_MANAGER_CMD} host-volume remove NAME
+  ${NOMAD_MANAGER_CMD} meta set KEY VALUE
+  ${NOMAD_MANAGER_CMD} meta unset KEY
+  ${NOMAD_MANAGER_CMD} vault-jwt plan --profile NAME [options]
+  ${NOMAD_MANAGER_CMD} vault-jwt apply --profile NAME [options]
+  ${NOMAD_MANAGER_CMD} vault-jwt status --profile NAME
+  ${NOMAD_MANAGER_CMD} vault-jwt doctor --profile NAME
+  ${NOMAD_MANAGER_CMD} vault-jwt job-example --profile NAME --job NAME --secret PATH --out FILE
+  ${NOMAD_MANAGER_CMD} tutor [topic]
+  ${NOMAD_MANAGER_CMD} help
+
+Command names:
+  Installed command: ${NOMAD_MANAGER_CMD}
+  Source-tree fallback: bash nomad/manager.sh
 
 Command groups:
   Lifecycle:
@@ -300,24 +305,24 @@ Uninstall options:
   --purge                 Remove runtime, installed tools, metadata and audit logs.
 
 Common workflows:
-  $(basename "$0") install
-  $(basename "$0") install --version 2.0.0
-  $(basename "$0") install 2.0.0
-  http_proxy=http://10.2.1.107:7190 https_proxy=http://10.2.1.107:7190 $(basename "$0") install
+  ${NOMAD_MANAGER_CMD} install
+  ${NOMAD_MANAGER_CMD} install --version 2.0.0
+  ${NOMAD_MANAGER_CMD} install 2.0.0
+  http_proxy=http://10.2.1.107:7190 https_proxy=http://10.2.1.107:7190 ${NOMAD_MANAGER_CMD} install
 
-  $(basename "$0") docker enable --allow-privileged true --volumes true
-  $(basename "$0") docker doctor
-  $(basename "$0") host-volume add data --path /data --read-write --create
-  $(basename "$0") meta set role edge
+  ${NOMAD_MANAGER_CMD} docker enable --allow-privileged true --volumes true
+  ${NOMAD_MANAGER_CMD} docker doctor
+  ${NOMAD_MANAGER_CMD} host-volume add data --path /data --read-write --create
+  ${NOMAD_MANAGER_CMD} meta set role edge
 
-  $(basename "$0") vault enable --address https://vault.service.consul:8200 --aud vault.io
-  $(basename "$0") vault doctor --address https://vault.service.consul:8200
-  $(basename "$0") consul enable --address 127.0.0.1:8500
-  $(basename "$0") consul doctor --address 127.0.0.1:8500
+  ${NOMAD_MANAGER_CMD} vault enable --address https://vault.service.consul:8200 --aud vault.io
+  ${NOMAD_MANAGER_CMD} vault doctor --address https://vault.service.consul:8200
+  ${NOMAD_MANAGER_CMD} consul enable --address 127.0.0.1:8500
+  ${NOMAD_MANAGER_CMD} consul doctor --address 127.0.0.1:8500
 
-  $(basename "$0") vault-jwt plan --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646
-  $(basename "$0") vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646
-  $(basename "$0") vault-jwt job-example --profile default --job app --secret kv/data/app --out jobs/app-vault.nomad.hcl
+  ${NOMAD_MANAGER_CMD} vault-jwt plan --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646
+  ${NOMAD_MANAGER_CMD} vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646
+  ${NOMAD_MANAGER_CMD} vault-jwt job-example --profile default --job app --secret kv/data/app --out jobs/app-vault.nomad.hcl
 
 Notes:
   If VERSION is not specified, the latest OSS version is resolved from:
@@ -372,18 +377,18 @@ Safety:
   Failed validation or restart rolls back the managed config file.
 
 More help:
-  $(basename "$0") tutor
-  $(basename "$0") vault --help
-  $(basename "$0") vault-jwt --help
-  $(basename "$0") consul --help
-  $(basename "$0") telemetry --help
-  $(basename "$0") tls --help
-  $(basename "$0") ui --help
-  $(basename "$0") docker --help
-  $(basename "$0") raw-exec --help
-  $(basename "$0") driver --help
-  $(basename "$0") host-volume --help
-  $(basename "$0") meta --help
+  ${NOMAD_MANAGER_CMD} tutor
+  ${NOMAD_MANAGER_CMD} vault --help
+  ${NOMAD_MANAGER_CMD} vault-jwt --help
+  ${NOMAD_MANAGER_CMD} consul --help
+  ${NOMAD_MANAGER_CMD} telemetry --help
+  ${NOMAD_MANAGER_CMD} tls --help
+  ${NOMAD_MANAGER_CMD} ui --help
+  ${NOMAD_MANAGER_CMD} docker --help
+  ${NOMAD_MANAGER_CMD} raw-exec --help
+  ${NOMAD_MANAGER_CMD} driver --help
+  ${NOMAD_MANAGER_CMD} host-volume --help
+  ${NOMAD_MANAGER_CMD} meta --help
 EOF
 }
 
@@ -396,22 +401,27 @@ tutor_usage() {
 Nomad manager tutor
 
 Usage:
-  $(basename "$0") tutor [topic]
+  ${NOMAD_MANAGER_CMD} tutor [topic]
 
 Topics:
-  install        Install a single-node Nomad server/client.
-  docker         Configure and check Docker driver behavior.
-  vault          Configure Nomad Vault integration only.
-  vault-jwt      Configure Nomad workload identity with Vault JWT Auth.
-  consul         Configure Nomad Consul integration.
-  ui             Understand UI enable, disable and reset.
-  job            Generate, validate and run jobs with nomad-job.
-  uninstall      Choose the right uninstall level.
-  troubleshoot   Common diagnostics.
+  install           Install a single-node Nomad server/client.
+  docker            Configure and check Docker driver behavior.
+  vault             Configure Nomad Vault integration only.
+  vault-jwt         Configure Nomad workload identity with Vault JWT Auth.
+  vault-secret-job  Install Vault/Nomad, store a secret and run a job that reads it.
+  web-service       Deploy a Docker web service with port and health check.
+  private-image     Configure Docker registry auth for private images.
+  service-update    Validate, plan and update a running service.
+  troubleshoot-job  Inspect allocations, logs and common job failures.
+  consul            Configure Nomad Consul integration.
+  ui                Understand UI enable, disable and reset.
+  job               Generate, validate and run jobs with nomad-job.
+  uninstall         Choose the right uninstall level.
+  troubleshoot      Common diagnostics.
 
 Example:
-  $(basename "$0") tutor install
-  $(basename "$0") tutor vault-jwt
+  ${NOMAD_MANAGER_CMD} tutor install
+  ${NOMAD_MANAGER_CMD} tutor vault-secret-job
 EOF
       ;;
     install)
@@ -419,10 +429,10 @@ EOF
 Scenario: install Nomad single node
 
 1. Install latest Nomad:
-   $(basename "$0") install
+   ${NOMAD_MANAGER_CMD} install
 
 2. Install through an HTTP proxy:
-   http_proxy=http://10.2.1.107:7190 https_proxy=http://10.2.1.107:7190 $(basename "$0") install
+   http_proxy=http://10.2.1.107:7190 https_proxy=http://10.2.1.107:7190 ${NOMAD_MANAGER_CMD} install
 
 3. Load the bootstrap ACL token after install:
    source ~/nomad.acl
@@ -449,20 +459,20 @@ EOF
 Scenario: Docker driver management
 
 1. Check Docker and Nomad driver state:
-   $(basename "$0") docker doctor
+   ${NOMAD_MANAGER_CMD} docker doctor
    nomad node status -self
 
 2. Enable Docker plugin config with the current convenience defaults:
-   $(basename "$0") docker enable --allow-privileged true --volumes true
+   ${NOMAD_MANAGER_CMD} docker enable --allow-privileged true --volumes true
 
 3. Harden Docker defaults when privileged jobs and host mounts are not needed:
-   $(basename "$0") docker enable --allow-privileged false --volumes false
+   ${NOMAD_MANAGER_CMD} docker enable --allow-privileged false --volumes false
 
 4. Temporarily deny scheduling Docker tasks:
-   $(basename "$0") docker disable-driver
+   ${NOMAD_MANAGER_CMD} docker disable-driver
 
 5. Allow Docker scheduling again:
-   $(basename "$0") docker enable-driver
+   ${NOMAD_MANAGER_CMD} docker enable-driver
 
 Notes:
   docker disable removes only the managed Docker plugin config.
@@ -474,16 +484,16 @@ EOF
 Scenario: Nomad Vault integration config
 
 1. Configure Nomad to know where Vault is:
-   $(basename "$0") vault enable --address http://127.0.0.1:8200 --aud vault.io --ttl 1h
+   ${NOMAD_MANAGER_CMD} vault enable --address http://127.0.0.1:8200 --aud vault.io --ttl 1h
 
 2. Check the generated Nomad config and Vault health:
-   $(basename "$0") vault doctor --address http://127.0.0.1:8200
+   ${NOMAD_MANAGER_CMD} vault doctor --address http://127.0.0.1:8200
 
 3. Use a Vault namespace when needed:
-   $(basename "$0") vault enable --address https://vault.example.com:8200 --namespace team-a --aud vault.io
+   ${NOMAD_MANAGER_CMD} vault enable --address https://vault.example.com:8200 --namespace team-a --aud vault.io
 
 4. Remove only the managed Nomad Vault config:
-   $(basename "$0") vault disable
+   ${NOMAD_MANAGER_CMD} vault disable
 
 Notes:
   This config only connects Nomad to Vault.
@@ -495,17 +505,17 @@ EOF
 Scenario: Nomad workload identity with Vault JWT Auth
 
 1. Plan the full Nomad + Vault JWT configuration:
-   $(basename "$0") vault-jwt plan --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646
+   ${NOMAD_MANAGER_CMD} vault-jwt plan --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646
 
 2. Apply the configuration with a Vault token in the environment:
    export VAULT_TOKEN=<redacted>
-   $(basename "$0") vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646 --secret-path kv/data/app
+   ${NOMAD_MANAGER_CMD} vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646 --secret-path kv/data/app
 
 3. Check all linked pieces:
-   $(basename "$0") vault-jwt doctor --profile default
+   ${NOMAD_MANAGER_CMD} vault-jwt doctor --profile default
 
 4. Generate a job example that uses the profile:
-   $(basename "$0") vault-jwt job-example --profile default --job app --secret kv/data/app --out jobs/app-vault.nomad.hcl
+   ${NOMAD_MANAGER_CMD} vault-jwt job-example --profile default --job app --secret kv/data/app --out jobs/app-vault.nomad.hcl
 
 5. Run the generated job:
    nomad-job validate jobs/app-vault.nomad.hcl
@@ -516,21 +526,162 @@ Notes:
   then saves the profile under ${VAULT_JWT_PROFILE_DIR}.
 EOF
       ;;
+    vault-secret-job)
+      cat <<EOF
+Scenario: install Vault and Nomad, then run a job that reads a Vault secret
+
+1. Install, initialize and unseal Vault:
+   vault-manager install
+   vault-manager init --key-shares 1 --key-threshold 1 --out /opt/vault/init/vault-init.json
+   vault-manager unseal --keys-file /opt/vault/init/vault-init.json
+
+2. Export Vault address and a setup token:
+   export VAULT_ADDR=http://127.0.0.1:8200
+   export VAULT_TOKEN=<root-token-from-/opt/vault/init/vault-init.json>
+
+3. Enable KV v2 once and write an application secret:
+   vault secrets enable -path=kv kv-v2
+   vault kv put kv/app value='my-secret-value'
+
+4. Install Nomad and load the bootstrap ACL token:
+   ${NOMAD_MANAGER_CMD} install
+   source ~/nomad.acl
+
+5. Link Nomad workload identity to Vault JWT Auth:
+   ${NOMAD_MANAGER_CMD} vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://127.0.0.1:4646 --secret-path kv/data/app
+
+6. Generate and run a job that reads kv/data/app:
+   ${NOMAD_MANAGER_CMD} vault-jwt job-example --profile default --job app --secret kv/data/app --out jobs/app-vault.nomad.hcl
+   nomad-job validate jobs/app-vault.nomad.hcl
+   nomad-job apply jobs/app-vault.nomad.hcl --auto-approve
+
+7. Inspect the allocation:
+   nomad-job status app
+   nomad alloc status
+   nomad alloc logs <alloc-id> app
+
+Notes:
+  vault kv put uses the KV CLI path kv/app.
+  Nomad templates and Vault policies use the KV v2 API path kv/data/app.
+  If kv/ is already enabled, skip the vault secrets enable command.
+  If Vault and Nomad are on different nodes, set --nomad-addr to an address reachable from Vault.
+EOF
+      ;;
+    web-service)
+      cat <<EOF
+Scenario: deploy a Docker web service
+
+1. Make sure Nomad can run Docker tasks:
+   ${NOMAD_MANAGER_CMD} docker doctor
+   source ~/nomad.acl
+
+2. Scaffold a service with a static host port and HTTP health check:
+   nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --check-http / --cpu 200 --memory 128 --out jobs/web.nomad.hcl
+
+3. Validate, plan and apply:
+   nomad-job validate jobs/web.nomad.hcl
+   nomad-job plan jobs/web.nomad.hcl
+   nomad-job apply jobs/web.nomad.hcl --auto-approve
+
+4. Inspect and test:
+   nomad-job status web
+   nomad alloc status
+   curl http://127.0.0.1:8080/
+
+Notes:
+  Use a static host port only when you need a predictable address.
+  For multiple instances, prefer dynamic ports and service discovery.
+EOF
+      ;;
+    private-image)
+      cat <<EOF
+Scenario: run jobs from a private Docker registry
+
+1. Create a Docker auth config on the Nomad client:
+   docker login registry.example.com
+   sudo install -d -m 0750 /etc/nomad.d/docker-auth
+   sudo install -m 0600 ~/.docker/config.json /etc/nomad.d/docker-auth/config.json
+
+2. Point the Nomad Docker driver at the auth config:
+   ${NOMAD_MANAGER_CMD} docker enable --auth-config /etc/nomad.d/docker-auth/config.json --allow-privileged false --volumes false
+   ${NOMAD_MANAGER_CMD} docker doctor
+
+3. Scaffold and run a private-image job:
+   nomad-job scaffold docker --job api --image registry.example.com/team/api:1.0 --port http:8080:8080 --check-http /health --out jobs/api.nomad.hcl
+   nomad-job apply jobs/api.nomad.hcl --auto-approve
+
+Notes:
+  Keep the Docker auth config readable only by trusted administrators.
+  Image pull failures usually show up in allocation events and client logs.
+EOF
+      ;;
+    service-update)
+      cat <<EOF
+Scenario: validate, plan and update a running service
+
+1. Generate or edit the next job version:
+   nomad-job scaffold docker --job web --image registry.example.com/team/web:1.1 --port http:8080:8080 --check-http /health --out jobs/web.nomad.hcl --force
+
+2. Validate and review the plan before changing the running job:
+   nomad-job validate jobs/web.nomad.hcl
+   nomad-job plan jobs/web.nomad.hcl
+
+3. Apply when the plan is expected:
+   nomad-job apply jobs/web.nomad.hcl
+
+4. Watch deployment state:
+   nomad-job status web
+   nomad job history web
+   nomad alloc status
+
+Notes:
+  Generated jobs include update settings with auto_revert=true.
+  Keep old job files or use nomad job history when you need a rollback reference.
+EOF
+      ;;
+    troubleshoot-job)
+      cat <<EOF
+Scenario: troubleshoot Nomad job failures
+
+1. Start with job and allocation state:
+   nomad-job status app
+   nomad alloc status
+
+2. Inspect allocation events and logs:
+   nomad alloc status <alloc-id>
+   nomad alloc logs <alloc-id> <task>
+   nomad alloc logs -stderr <alloc-id> <task>
+
+3. Check the generated job and scheduler decision:
+   nomad job inspect app
+   nomad job status app
+   nomad eval status <eval-id>
+
+4. Check common node-side causes:
+   ${NOMAD_MANAGER_CMD} docker doctor
+   nomad node status -self
+   journalctl -u nomad -n 100 --no-pager
+
+Common causes:
+  Image pull auth, occupied static ports, missing host paths, failed health checks,
+  insufficient resources, Vault policy mismatch, or Vault auth/JWKS reachability.
+EOF
+      ;;
     consul)
       cat <<EOF
 Scenario: Nomad Consul integration config
 
 1. Enable Consul integration for a local Consul agent:
-   $(basename "$0") consul enable --address 127.0.0.1:8500
+   ${NOMAD_MANAGER_CMD} consul enable --address 127.0.0.1:8500
 
 2. Enable Consul integration with TLS:
-   $(basename "$0") consul enable --address consul.service.consul:8501 --ssl true --verify true
+   ${NOMAD_MANAGER_CMD} consul enable --address consul.service.consul:8501 --ssl true --verify true
 
 3. Check Consul config and leader endpoint reachability:
-   $(basename "$0") consul doctor --address 127.0.0.1:8500
+   ${NOMAD_MANAGER_CMD} consul doctor --address 127.0.0.1:8500
 
 4. Remove only the managed Consul config:
-   $(basename "$0") consul disable
+   ${NOMAD_MANAGER_CMD} consul disable
 EOF
       ;;
     ui)
@@ -538,13 +689,13 @@ EOF
 Scenario: Nomad Web UI management
 
 1. Enable UI customization and optional links:
-   $(basename "$0") ui enable --vault-url https://vault.example.com:8200 --consul-url https://consul.example.com:8501
+   ${NOMAD_MANAGER_CMD} ui enable --vault-url https://vault.example.com:8200 --consul-url https://consul.example.com:8501
 
 2. Disable the Web UI:
-   $(basename "$0") ui disable
+   ${NOMAD_MANAGER_CMD} ui disable
 
 3. Restore Nomad default UI behavior:
-   $(basename "$0") ui reset
+   ${NOMAD_MANAGER_CMD} ui reset
 
 Notes:
   ui disable writes ui.enabled=false.
@@ -578,13 +729,13 @@ EOF
 Scenario: uninstall Nomad safely
 
 1. Remove Nomad runtime only. Keep installed management tools, metadata and audit logs:
-   $(basename "$0") uninstall
+   ${NOMAD_MANAGER_CMD} uninstall
 
 2. Remove runtime and installed management scripts. Keep metadata and audit logs:
-   $(basename "$0") uninstall --remove-tools
+   ${NOMAD_MANAGER_CMD} uninstall --remove-tools
 
 3. Remove runtime, tools, metadata and audit logs:
-   $(basename "$0") uninstall --purge
+   ${NOMAD_MANAGER_CMD} uninstall --purge
 
 Notes:
   The default uninstall is intentionally conservative so audit history remains available.
@@ -607,9 +758,9 @@ Scenario: Nomad troubleshooting
    nomad node status -self
 
 4. Check common integrations:
-   $(basename "$0") docker doctor
-   $(basename "$0") vault doctor --address http://127.0.0.1:8200
-   $(basename "$0") consul doctor --address 127.0.0.1:8500
+   ${NOMAD_MANAGER_CMD} docker doctor
+   ${NOMAD_MANAGER_CMD} vault doctor --address http://127.0.0.1:8200
+   ${NOMAD_MANAGER_CMD} consul doctor --address 127.0.0.1:8500
 
 5. Check management metadata and audit history:
    cat ${INSTALL_METADATA_FILE}
@@ -627,11 +778,11 @@ vault_jwt_usage() {
 Nomad + Vault JWT workload identity
 
 Usage:
-  $(basename "$0") vault-jwt plan --profile NAME [options]
-  $(basename "$0") vault-jwt apply --profile NAME [options]
-  $(basename "$0") vault-jwt status --profile NAME
-  $(basename "$0") vault-jwt doctor --profile NAME
-  $(basename "$0") vault-jwt job-example --profile NAME --job NAME --secret PATH --out FILE [--force]
+  ${NOMAD_MANAGER_CMD} vault-jwt plan --profile NAME [options]
+  ${NOMAD_MANAGER_CMD} vault-jwt apply --profile NAME [options]
+  ${NOMAD_MANAGER_CMD} vault-jwt status --profile NAME
+  ${NOMAD_MANAGER_CMD} vault-jwt doctor --profile NAME
+  ${NOMAD_MANAGER_CMD} vault-jwt job-example --profile NAME --job NAME --secret PATH --out FILE [--force]
 
 Options for plan/apply:
   --profile NAME              Required profile name
@@ -664,14 +815,18 @@ Vault role:
   apply writes claim mappings for nomad_namespace, nomad_job_id and nomad_task,
   then issues renewable service tokens with token_explicit_max_ttl=0.
 
+Policy notes:
+  The default generated policy allows kv/data/*.
+  For production, pass one or more concrete --secret-path values.
+
 Profile file:
   ${VAULT_JWT_PROFILE_DIR}/<PROFILE>.env
 
 Examples:
-  $(basename "$0") vault-jwt plan --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646
-  $(basename "$0") vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646 --secret-path kv/data/app
-  $(basename "$0") vault-jwt doctor --profile default
-  $(basename "$0") vault-jwt job-example --profile default --job app --secret kv/data/app --out jobs/app.nomad.hcl
+  ${NOMAD_MANAGER_CMD} vault-jwt plan --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646
+  ${NOMAD_MANAGER_CMD} vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646 --secret-path kv/data/app
+  ${NOMAD_MANAGER_CMD} vault-jwt doctor --profile default
+  ${NOMAD_MANAGER_CMD} vault-jwt job-example --profile default --job app --secret kv/data/app --out jobs/app.nomad.hcl
 EOF
 }
 
@@ -680,9 +835,9 @@ vault_usage() {
 Nomad Vault integration config
 
 Usage:
-  $(basename "$0") vault enable --address URL [options]
-  $(basename "$0") vault disable
-  $(basename "$0") vault doctor [--address URL] [--namespace NAME]
+  ${NOMAD_MANAGER_CMD} vault enable --address URL [options]
+  ${NOMAD_MANAGER_CMD} vault disable
+  ${NOMAD_MANAGER_CMD} vault doctor [--address URL] [--namespace NAME]
 
 Options:
   --address URL                 Vault API address, for example https://vault.service.consul:8200
@@ -704,9 +859,9 @@ Behavior:
   availability and Vault health endpoint reachability.
 
 Examples:
-  $(basename "$0") vault enable --address https://vault.service.consul:8200 --aud vault.io --ttl 1h
-  $(basename "$0") vault doctor --address https://vault.service.consul:8200
-  $(basename "$0") vault disable
+  ${NOMAD_MANAGER_CMD} vault enable --address https://vault.service.consul:8200 --aud vault.io --ttl 1h
+  ${NOMAD_MANAGER_CMD} vault doctor --address https://vault.service.consul:8200
+  ${NOMAD_MANAGER_CMD} vault disable
 EOF
 }
 
@@ -715,9 +870,9 @@ consul_usage() {
 Nomad Consul integration config
 
 Usage:
-  $(basename "$0") consul enable --address URL [options]
-  $(basename "$0") consul disable
-  $(basename "$0") consul doctor [--address URL] [--ssl true|false]
+  ${NOMAD_MANAGER_CMD} consul enable --address URL [options]
+  ${NOMAD_MANAGER_CMD} consul disable
+  ${NOMAD_MANAGER_CMD} consul doctor [--address URL] [--ssl true|false]
 
 Options:
   --address URL        Consul HTTP address, for example 127.0.0.1:8500
@@ -737,9 +892,9 @@ Behavior:
   availability and Consul leader endpoint reachability.
 
 Examples:
-  $(basename "$0") consul enable --address 127.0.0.1:8500
-  $(basename "$0") consul enable --address consul.service.consul:8501 --ssl true --verify true
-  $(basename "$0") consul doctor --address 127.0.0.1:8500
+  ${NOMAD_MANAGER_CMD} consul enable --address 127.0.0.1:8500
+  ${NOMAD_MANAGER_CMD} consul enable --address consul.service.consul:8501 --ssl true --verify true
+  ${NOMAD_MANAGER_CMD} consul doctor --address 127.0.0.1:8500
 EOF
 }
 
@@ -748,8 +903,8 @@ telemetry_usage() {
 Nomad telemetry config
 
 Usage:
-  $(basename "$0") telemetry enable [options]
-  $(basename "$0") telemetry disable
+  ${NOMAD_MANAGER_CMD} telemetry enable [options]
+  ${NOMAD_MANAGER_CMD} telemetry disable
 
 Options:
   --prometheus true|false       Enable Prometheus metrics, default: true
@@ -765,9 +920,9 @@ Behavior:
     ${NOMAD_ADDR}/v1/metrics?format=prometheus
 
 Examples:
-  $(basename "$0") telemetry enable
-  $(basename "$0") telemetry enable --interval 5s --disable-hostname true
-  $(basename "$0") telemetry disable
+  ${NOMAD_MANAGER_CMD} telemetry enable
+  ${NOMAD_MANAGER_CMD} telemetry enable --interval 5s --disable-hostname true
+  ${NOMAD_MANAGER_CMD} telemetry disable
 EOF
 }
 
@@ -776,8 +931,8 @@ tls_usage() {
 Nomad TLS config
 
 Usage:
-  $(basename "$0") tls enable --ca-file FILE --cert-file FILE --key-file FILE [options]
-  $(basename "$0") tls disable
+  ${NOMAD_MANAGER_CMD} tls enable --ca-file FILE --cert-file FILE --key-file FILE [options]
+  ${NOMAD_MANAGER_CMD} tls disable
 
 Options:
   --ca-file FILE                    CA certificate file
@@ -794,9 +949,9 @@ Behavior:
   Certificate files must already exist on the target host and be readable by Nomad.
 
 Examples:
-  $(basename "$0") tls enable --ca-file ${CONFIG_DIR}/certs/ca.pem --cert-file ${CONFIG_DIR}/certs/server.pem --key-file ${CONFIG_DIR}/certs/server-key.pem
-  $(basename "$0") tls enable --ca-file ${CONFIG_DIR}/certs/ca.pem --cert-file ${CONFIG_DIR}/certs/server.pem --key-file ${CONFIG_DIR}/certs/server-key.pem --verify-server-hostname true
-  $(basename "$0") tls disable
+  ${NOMAD_MANAGER_CMD} tls enable --ca-file ${CONFIG_DIR}/certs/ca.pem --cert-file ${CONFIG_DIR}/certs/server.pem --key-file ${CONFIG_DIR}/certs/server-key.pem
+  ${NOMAD_MANAGER_CMD} tls enable --ca-file ${CONFIG_DIR}/certs/ca.pem --cert-file ${CONFIG_DIR}/certs/server.pem --key-file ${CONFIG_DIR}/certs/server-key.pem --verify-server-hostname true
+  ${NOMAD_MANAGER_CMD} tls disable
 EOF
 }
 
@@ -805,11 +960,11 @@ docker_usage() {
 Nomad Docker driver config
 
 Usage:
-  $(basename "$0") docker enable [options]
-  $(basename "$0") docker disable
-  $(basename "$0") docker disable-driver
-  $(basename "$0") docker enable-driver
-  $(basename "$0") docker doctor
+  ${NOMAD_MANAGER_CMD} docker enable [options]
+  ${NOMAD_MANAGER_CMD} docker disable
+  ${NOMAD_MANAGER_CMD} docker disable-driver
+  ${NOMAD_MANAGER_CMD} docker enable-driver
+  ${NOMAD_MANAGER_CMD} docker doctor
 
 Options:
   --allow-privileged true|false  Allow privileged Docker tasks, default: true
@@ -827,10 +982,10 @@ Behavior:
   docker CLI, Docker daemon and /var/run/docker.sock.
 
 Examples:
-  $(basename "$0") docker enable --allow-privileged true --volumes true
-  $(basename "$0") docker disable-driver
-  $(basename "$0") docker enable-driver
-  $(basename "$0") docker doctor
+  ${NOMAD_MANAGER_CMD} docker enable --allow-privileged true --volumes true
+  ${NOMAD_MANAGER_CMD} docker disable-driver
+  ${NOMAD_MANAGER_CMD} docker enable-driver
+  ${NOMAD_MANAGER_CMD} docker doctor
 EOF
 }
 
@@ -839,8 +994,8 @@ driver_usage() {
 Nomad client driver denylist
 
 Usage:
-  $(basename "$0") driver deny DRIVER
-  $(basename "$0") driver allow DRIVER
+  ${NOMAD_MANAGER_CMD} driver deny DRIVER
+  ${NOMAD_MANAGER_CMD} driver allow DRIVER
 
 Behavior:
   deny adds DRIVER to Nomad client option "driver.denylist".
@@ -852,9 +1007,9 @@ Driver names:
   docker, exec, raw_exec, java, qemu and other installed Nomad task drivers.
 
 Examples:
-  $(basename "$0") driver deny docker
-  $(basename "$0") driver allow docker
-  $(basename "$0") driver deny raw_exec
+  ${NOMAD_MANAGER_CMD} driver deny docker
+  ${NOMAD_MANAGER_CMD} driver allow docker
+  ${NOMAD_MANAGER_CMD} driver deny raw_exec
 EOF
 }
 
@@ -863,8 +1018,8 @@ host_volume_usage() {
 Nomad client host volume config
 
 Usage:
-  $(basename "$0") host-volume add NAME --path PATH [--read-only|--read-write] [--create]
-  $(basename "$0") host-volume remove NAME
+  ${NOMAD_MANAGER_CMD} host-volume add NAME --path PATH [--read-only|--read-write] [--create]
+  ${NOMAD_MANAGER_CMD} host-volume remove NAME
 
 Options:
   --path PATH       Host path exposed to Nomad jobs
@@ -894,9 +1049,9 @@ Job HCL example:
   }
 
 Examples:
-  $(basename "$0") host-volume add data --path /data --read-write --create
-  $(basename "$0") host-volume add config --path /etc/app --read-only
-  $(basename "$0") host-volume remove data
+  ${NOMAD_MANAGER_CMD} host-volume add data --path /data --read-write --create
+  ${NOMAD_MANAGER_CMD} host-volume add config --path /etc/app --read-only
+  ${NOMAD_MANAGER_CMD} host-volume remove data
 EOF
 }
 
@@ -905,8 +1060,8 @@ meta_usage() {
 Nomad client metadata config
 
 Usage:
-  $(basename "$0") meta set KEY VALUE
-  $(basename "$0") meta unset KEY
+  ${NOMAD_MANAGER_CMD} meta set KEY VALUE
+  ${NOMAD_MANAGER_CMD} meta unset KEY
 
 Notes:
   KEY must be a HCL identifier: letters, numbers and underscore, starting with a letter or underscore.
@@ -920,9 +1075,9 @@ Scheduling example:
   }
 
 Examples:
-  $(basename "$0") meta set role edge
-  $(basename "$0") meta set zone cn-east-1
-  $(basename "$0") meta unset role
+  ${NOMAD_MANAGER_CMD} meta set role edge
+  ${NOMAD_MANAGER_CMD} meta set zone cn-east-1
+  ${NOMAD_MANAGER_CMD} meta unset role
 EOF
 }
 
@@ -931,9 +1086,9 @@ ui_usage() {
 Nomad UI config
 
 Usage:
-  $(basename "$0") ui enable [options]
-  $(basename "$0") ui disable
-  $(basename "$0") ui reset
+  ${NOMAD_MANAGER_CMD} ui enable [options]
+  ${NOMAD_MANAGER_CMD} ui disable
+  ${NOMAD_MANAGER_CMD} ui reset
 
 Options:
   --consul-url URL           Consul UI URL
@@ -952,11 +1107,11 @@ Behavior:
   consul-url and vault-url only affect links shown in the Nomad web UI.
 
 Examples:
-  $(basename "$0") ui enable
-  $(basename "$0") ui enable --vault-url https://vault.example.com:8200 --consul-url https://consul.example.com:8501
-  $(basename "$0") ui enable --label prod --label-background '#b91c1c' --label-color '#ffffff'
-  $(basename "$0") ui disable
-  $(basename "$0") ui reset
+  ${NOMAD_MANAGER_CMD} ui enable
+  ${NOMAD_MANAGER_CMD} ui enable --vault-url https://vault.example.com:8200 --consul-url https://consul.example.com:8501
+  ${NOMAD_MANAGER_CMD} ui enable --label prod --label-background '#b91c1c' --label-color '#ffffff'
+  ${NOMAD_MANAGER_CMD} ui disable
+  ${NOMAD_MANAGER_CMD} ui reset
 EOF
 }
 
@@ -965,8 +1120,8 @@ raw_exec_usage() {
 Nomad raw_exec driver config
 
 Usage:
-  $(basename "$0") raw-exec enable
-  $(basename "$0") raw-exec disable
+  ${NOMAD_MANAGER_CMD} raw-exec enable
+  ${NOMAD_MANAGER_CMD} raw-exec disable
 
 Behavior:
   enable writes ${RAW_EXEC_CONFIG}, validates Nomad config and restarts nomad.service.
@@ -974,12 +1129,12 @@ Behavior:
   raw_exec runs commands directly on the host. Enable it only for trusted jobs.
 
 Related commands:
-  $(basename "$0") driver deny raw_exec
-  $(basename "$0") driver allow raw_exec
+  ${NOMAD_MANAGER_CMD} driver deny raw_exec
+  ${NOMAD_MANAGER_CMD} driver allow raw_exec
 
 Examples:
-  $(basename "$0") raw-exec enable
-  $(basename "$0") raw-exec disable
+  ${NOMAD_MANAGER_CMD} raw-exec enable
+  ${NOMAD_MANAGER_CMD} raw-exec disable
 EOF
 }
 
@@ -1677,7 +1832,7 @@ EOF
   log_info "Installing default managed config: ${DOCKER_CONFIG}"
   log_warn "Docker default: privileged tasks and host volume mounts are enabled for single-node convenience."
   log_info "Docker default: image/container garbage collection and Nomad labels are enabled."
-  log_info "Docker defaults can be changed later with: $(basename "$0") docker enable --allow-privileged false --volumes false"
+  log_info "Docker defaults can be changed later with: ${NOMAD_MANAGER_CMD} docker enable --allow-privileged false --volumes false"
   run_root install -m 0644 "$docker_file" "$DOCKER_CONFIG"
 }
 
@@ -3183,7 +3338,7 @@ Plan:
   [7/7] Save profile ${VAULT_JWT_PROFILE_DIR}/${VJ_PROFILE}.env
 
 Next:
-  $(basename "$0") vault-jwt apply --profile ${VJ_PROFILE}
+  ${NOMAD_MANAGER_CMD} vault-jwt apply --profile ${VJ_PROFILE}
 EOF
 }
 
@@ -3402,7 +3557,7 @@ vault_jwt_doctor() {
     return
   fi
 
-  printf '\nFix:\n  %s vault-jwt apply --profile %s\n' "$(basename "$0")" "$profile"
+  printf '\nFix:\n  %s vault-jwt apply --profile %s\n' "${NOMAD_MANAGER_CMD}" "$profile"
   return 1
 }
 

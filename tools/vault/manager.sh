@@ -3,6 +3,7 @@ set -euo pipefail
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
+VAULT_MANAGER_CMD="${VAULT_MANAGER_CMD:-vault-manager}"
 DEFAULT_VAULT_VERSION="2.0.0"
 VAULT_USER="vault"
 VAULT_GROUP="vault"
@@ -235,23 +236,27 @@ usage() {
 Vault manager
 
 Usage:
-  $(basename "$0") install [--version VERSION|VERSION] [options]
-  $(basename "$0") uninstall [--purge-data] [--remove-tools|--purge]
-  $(basename "$0") status [vault options]
-  $(basename "$0") doctor [vault options]
-  $(basename "$0") init [--key-shares N --key-threshold N --out FILE] [--force] [vault options]
-  $(basename "$0") unseal --keys-file FILE [vault options]
-  $(basename "$0") auth list [vault options]
-  $(basename "$0") auth enable TYPE [--path PATH] [vault options]
-  $(basename "$0") auth disable PATH [vault options]
-  $(basename "$0") auth read PATH [vault options]
-  $(basename "$0") auth write PATH KEY=VALUE... [vault options]
-  $(basename "$0") policy list [vault options]
-  $(basename "$0") policy read NAME [vault options]
-  $(basename "$0") policy write NAME FILE [vault options]
-  $(basename "$0") policy delete NAME [vault options]
-  $(basename "$0") tutor [topic]
-  $(basename "$0") help
+  ${VAULT_MANAGER_CMD} install [--version VERSION|VERSION] [options]
+  ${VAULT_MANAGER_CMD} uninstall [--purge-data] [--remove-tools|--purge]
+  ${VAULT_MANAGER_CMD} status [vault options]
+  ${VAULT_MANAGER_CMD} doctor [vault options]
+  ${VAULT_MANAGER_CMD} init [--key-shares N --key-threshold N --out FILE] [--force] [vault options]
+  ${VAULT_MANAGER_CMD} unseal --keys-file FILE [vault options]
+  ${VAULT_MANAGER_CMD} auth list [vault options]
+  ${VAULT_MANAGER_CMD} auth enable TYPE [--path PATH] [vault options]
+  ${VAULT_MANAGER_CMD} auth disable PATH [vault options]
+  ${VAULT_MANAGER_CMD} auth read PATH [vault options]
+  ${VAULT_MANAGER_CMD} auth write PATH KEY=VALUE... [vault options]
+  ${VAULT_MANAGER_CMD} policy list [vault options]
+  ${VAULT_MANAGER_CMD} policy read NAME [vault options]
+  ${VAULT_MANAGER_CMD} policy write NAME FILE [vault options]
+  ${VAULT_MANAGER_CMD} policy delete NAME [vault options]
+  ${VAULT_MANAGER_CMD} tutor [topic]
+  ${VAULT_MANAGER_CMD} help
+
+Command names:
+  Installed command: ${VAULT_MANAGER_CMD}
+  Source-tree fallback: bash vault/manager.sh
 
 Command groups:
   Lifecycle:
@@ -285,21 +290,21 @@ Vault options:
   --token-file FILE          Read token from plain text or init JSON file
 
 Common workflows:
-  $(basename "$0") install
-  $(basename "$0") install --version 2.0.0
-  $(basename "$0") install --api-addr http://10.2.37.64:8200 --cluster-addr http://10.2.37.64:8201
-  http_proxy=http://10.2.1.107:7190 https_proxy=http://10.2.1.107:7190 $(basename "$0") install
+  ${VAULT_MANAGER_CMD} install
+  ${VAULT_MANAGER_CMD} install --version 2.0.0
+  ${VAULT_MANAGER_CMD} install --api-addr http://10.2.37.64:8200 --cluster-addr http://10.2.37.64:8201
+  http_proxy=http://10.2.1.107:7190 https_proxy=http://10.2.1.107:7190 ${VAULT_MANAGER_CMD} install
 
-  $(basename "$0") init --key-shares 1 --key-threshold 1 --out /opt/vault/init/vault-init.json
-  $(basename "$0") unseal --keys-file /opt/vault/init/vault-init.json
-  $(basename "$0") status --token-file /opt/vault/init/vault-init.json
-  $(basename "$0") doctor --addr http://127.0.0.1:8200
+  ${VAULT_MANAGER_CMD} init --key-shares 1 --key-threshold 1 --out /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} unseal --keys-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} status --token-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} doctor --addr http://127.0.0.1:8200
 
-  $(basename "$0") auth enable userpass --token-file /opt/vault/init/vault-init.json
-  $(basename "$0") auth enable jwt --path jwt-nomad --token-file /opt/vault/init/vault-init.json
-  $(basename "$0") auth write jwt-nomad/config jwks_url=http://127.0.0.1:4646/.well-known/jwks.json --token-file /opt/vault/init/vault-init.json
-  $(basename "$0") policy write app-read ./policy.hcl --token-file /opt/vault/init/vault-init.json
-  $(basename "$0") policy read app-read --token-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} auth enable userpass --token-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} auth enable jwt --path jwt-nomad --token-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} auth write jwt-nomad/config jwks_url=http://127.0.0.1:4646/.well-known/jwks.json --token-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} policy write app-read ./policy.hcl --token-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} policy read app-read --token-file /opt/vault/init/vault-init.json
 
 Installed tool snapshot:
   ${VAULT_ROOT_DIR} is the Vault root directory managed by this script.
@@ -336,9 +341,9 @@ Safety:
   Token, key and password-like arguments are redacted in audit logs.
 
 More help:
-  $(basename "$0") tutor
-  $(basename "$0") auth --help
-  $(basename "$0") policy --help
+  ${VAULT_MANAGER_CMD} tutor
+  ${VAULT_MANAGER_CMD} auth --help
+  ${VAULT_MANAGER_CMD} policy --help
 EOF
 }
 
@@ -351,20 +356,22 @@ tutor_usage() {
 Vault manager tutor
 
 Usage:
-  $(basename "$0") tutor [topic]
+  ${VAULT_MANAGER_CMD} tutor [topic]
 
 Topics:
   install        Install a single-node Vault server.
   init           Initialize, unseal and use token files.
+  secret         Enable KV v2 and store application secrets.
   auth           Manage auth methods.
   policy         Manage policies.
   nomad-jwt      Prepare Vault JWT Auth for Nomad workload identity.
+  recovery       Recover common init, seal and token-file situations.
   uninstall      Choose the right uninstall level.
   troubleshoot   Common diagnostics.
 
 Example:
-  $(basename "$0") tutor install
-  $(basename "$0") tutor nomad-jwt
+  ${VAULT_MANAGER_CMD} tutor install
+  ${VAULT_MANAGER_CMD} tutor secret
 EOF
       ;;
     install)
@@ -372,17 +379,17 @@ EOF
 Scenario: install Vault single node
 
 1. Install latest Vault:
-   $(basename "$0") install
+   ${VAULT_MANAGER_CMD} install
 
 2. Install through an HTTP proxy:
-   http_proxy=http://10.2.1.107:7190 https_proxy=http://10.2.1.107:7190 $(basename "$0") install
+   http_proxy=http://10.2.1.107:7190 https_proxy=http://10.2.1.107:7190 ${VAULT_MANAGER_CMD} install
 
 3. Install with an address reachable by other nodes:
-   $(basename "$0") install --api-addr http://10.2.37.64:8200 --cluster-addr http://10.2.37.64:8201
+   ${VAULT_MANAGER_CMD} install --api-addr http://10.2.37.64:8200 --cluster-addr http://10.2.37.64:8201
 
 4. Check service and metadata:
    systemctl status vault
-   $(basename "$0") status
+   ${VAULT_MANAGER_CMD} status
    cat ${INSTALL_METADATA_FILE}
 
 Notes:
@@ -395,20 +402,51 @@ EOF
 Scenario: initialize and unseal Vault
 
 1. Initialize Vault and save the init JSON:
-   $(basename "$0") init --key-shares 1 --key-threshold 1 --out ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} init --key-shares 1 --key-threshold 1 --out ${INIT_DIR}/vault-init.json
 
 2. Unseal Vault from the init JSON:
-   $(basename "$0") unseal --keys-file ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} unseal --keys-file ${INIT_DIR}/vault-init.json
 
 3. Use the init JSON as a token file:
-   $(basename "$0") status --token-file ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} status --token-file ${INIT_DIR}/vault-init.json
 
 4. Check health:
-   $(basename "$0") doctor --addr ${DEFAULT_VAULT_ADDR}
+   ${VAULT_MANAGER_CMD} doctor --addr ${DEFAULT_VAULT_ADDR}
 
 Safety:
   The init JSON contains unseal keys and the root token.
   Keep it readable only by trusted administrators.
+EOF
+      ;;
+    secret | kv-secret)
+      cat <<EOF
+Scenario: store and read application secrets with KV v2
+
+1. Make sure Vault is initialized and unsealed:
+   ${VAULT_MANAGER_CMD} status
+   ${VAULT_MANAGER_CMD} unseal --keys-file ${INIT_DIR}/vault-init.json
+
+2. Export Vault address and a setup token:
+   export VAULT_ADDR=${DEFAULT_VAULT_ADDR}
+   export VAULT_TOKEN=<root-token-from-${INIT_DIR}/vault-init.json>
+
+3. Enable KV v2 once at path kv:
+   vault secrets enable -path=kv kv-v2
+
+4. Write and read an application secret:
+   vault kv put kv/app value='my-secret-value'
+   vault kv get kv/app
+   vault kv get -field=value kv/app
+
+5. Allow a Nomad job to read that secret:
+   nomad-manager vault-jwt apply --profile default --vault-addr ${DEFAULT_VAULT_ADDR} --nomad-addr http://127.0.0.1:4646 --secret-path kv/data/app
+   nomad-manager vault-jwt job-example --profile default --job app --secret kv/data/app --out jobs/app-vault.nomad.hcl
+
+Notes:
+  vault kv put uses the KV CLI path kv/app.
+  Nomad templates and Vault policies use the KV v2 API path kv/data/app.
+  If kv/ is already enabled, skip the vault secrets enable command.
+  Avoid putting real secret values directly in shared shell history.
 EOF
       ;;
     auth)
@@ -416,19 +454,19 @@ EOF
 Scenario: manage Vault auth methods
 
 1. List enabled auth methods:
-   $(basename "$0") auth list --token-file ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} auth list --token-file ${INIT_DIR}/vault-init.json
 
 2. Enable userpass auth:
-   $(basename "$0") auth enable userpass --token-file ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} auth enable userpass --token-file ${INIT_DIR}/vault-init.json
 
 3. Enable JWT auth at a custom path:
-   $(basename "$0") auth enable jwt --path jwt-nomad --description "Nomad workload identity" --token-file ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} auth enable jwt --path jwt-nomad --description "Nomad workload identity" --token-file ${INIT_DIR}/vault-init.json
 
 4. Write an auth config:
-   $(basename "$0") auth write jwt-nomad/config jwks_url=http://127.0.0.1:4646/.well-known/jwks.json default_role=nomad-workloads --token-file ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} auth write jwt-nomad/config jwks_url=http://127.0.0.1:4646/.well-known/jwks.json default_role=nomad-workloads --token-file ${INIT_DIR}/vault-init.json
 
 5. Disable an auth method:
-   $(basename "$0") auth disable userpass --token-file ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} auth disable userpass --token-file ${INIT_DIR}/vault-init.json
 EOF
       ;;
     policy)
@@ -447,13 +485,13 @@ Scenario: manage Vault policies
 HCL
 
 2. Write the policy:
-   $(basename "$0") policy write app-read ./app-read.hcl --token-file ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} policy write app-read ./app-read.hcl --token-file ${INIT_DIR}/vault-init.json
 
 3. Read the policy:
-   $(basename "$0") policy read app-read --token-file ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} policy read app-read --token-file ${INIT_DIR}/vault-init.json
 
 4. Delete the policy:
-   $(basename "$0") policy delete app-read --token-file ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} policy delete app-read --token-file ${INIT_DIR}/vault-init.json
 EOF
       ;;
     nomad-jwt)
@@ -464,7 +502,7 @@ Recommended path:
   Use nomad-manager vault-jwt apply because it configures both Nomad and Vault in one linked workflow.
 
 1. Initialize and unseal Vault first:
-   $(basename "$0") tutor init
+   ${VAULT_MANAGER_CMD} tutor init
 
 2. Export a Vault token or use --token-file:
    export VAULT_TOKEN=<redacted>
@@ -474,9 +512,37 @@ Recommended path:
    nomad-manager vault-jwt apply --profile default --vault-addr ${DEFAULT_VAULT_ADDR} --nomad-addr http://10.2.37.64:4646 --secret-path kv/data/app
 
 4. Check Vault pieces manually when needed:
-   $(basename "$0") auth read jwt-nomad/config --token-file ${INIT_DIR}/vault-init.json
-   $(basename "$0") policy read nomad-workloads --token-file ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} auth read jwt-nomad/config --token-file ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} policy read nomad-workloads --token-file ${INIT_DIR}/vault-init.json
    VAULT_ADDR=${DEFAULT_VAULT_ADDR} vault read auth/jwt-nomad/role/nomad-workloads
+EOF
+      ;;
+    recovery)
+      cat <<EOF
+Scenario: recover common Vault operational situations
+
+1. Check whether Vault is initialized, sealed or unavailable:
+   ${VAULT_MANAGER_CMD} status
+   ${VAULT_MANAGER_CMD} doctor --addr ${DEFAULT_VAULT_ADDR}
+
+2. If Vault is sealed, unseal it from the saved init JSON:
+   ${VAULT_MANAGER_CMD} unseal --keys-file ${INIT_DIR}/vault-init.json
+
+3. If a manager command needs authentication, use the init JSON token file:
+   ${VAULT_MANAGER_CMD} auth list --token-file ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} policy list --token-file ${INIT_DIR}/vault-init.json
+
+4. If the root token was lost but another admin token exists:
+   export VAULT_TOKEN=<admin-token>
+   VAULT_ADDR=${DEFAULT_VAULT_ADDR} vault token lookup
+   VAULT_ADDR=${DEFAULT_VAULT_ADDR} vault token create -policy=<admin-policy>
+
+5. If local raft data or init output was removed:
+   Restore ${STATE_DIR} and ${INIT_DIR} from backup before starting Vault.
+
+Notes:
+  Do not run init again when Vault status says initialized=true.
+  Unseal keys cannot recover a lost root token by themselves; you need another valid token or recovery procedure.
 EOF
       ;;
     uninstall)
@@ -484,16 +550,16 @@ EOF
 Scenario: uninstall Vault safely
 
 1. Remove service, binary and config. Keep Vault state, tools, metadata and audit logs:
-   $(basename "$0") uninstall
+   ${VAULT_MANAGER_CMD} uninstall
 
 2. Also remove Vault state under ${STATE_DIR} and init output under ${INIT_DIR}:
-   $(basename "$0") uninstall --purge-data
+   ${VAULT_MANAGER_CMD} uninstall --purge-data
 
 3. Remove runtime and installed management scripts. Keep metadata and audit logs:
-   $(basename "$0") uninstall --remove-tools
+   ${VAULT_MANAGER_CMD} uninstall --remove-tools
 
 4. Remove runtime, Vault state, tools, metadata and audit logs:
-   $(basename "$0") uninstall --purge
+   ${VAULT_MANAGER_CMD} uninstall --purge
 
 Notes:
   Default uninstall keeps ${STATE_DIR} and ${INIT_DIR} because they can contain raft data and init output.
@@ -508,17 +574,17 @@ Scenario: Vault troubleshooting
    journalctl -u vault -n 100 --no-pager
 
 2. Check Vault status and health:
-   $(basename "$0") status
-   $(basename "$0") doctor --addr ${DEFAULT_VAULT_ADDR}
+   ${VAULT_MANAGER_CMD} status
+   ${VAULT_MANAGER_CMD} doctor --addr ${DEFAULT_VAULT_ADDR}
    curl --noproxy '*' ${DEFAULT_VAULT_ADDR}/v1/sys/health
 
 3. Check seal state and unseal when needed:
-   $(basename "$0") status
-   $(basename "$0") unseal --keys-file ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} status
+   ${VAULT_MANAGER_CMD} unseal --keys-file ${INIT_DIR}/vault-init.json
 
 4. Check auth and policy state:
-   $(basename "$0") auth list --token-file ${INIT_DIR}/vault-init.json
-   $(basename "$0") policy list --token-file ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} auth list --token-file ${INIT_DIR}/vault-init.json
+   ${VAULT_MANAGER_CMD} policy list --token-file ${INIT_DIR}/vault-init.json
 
 5. Check management metadata and audit history:
    cat ${INSTALL_METADATA_FILE}
@@ -1603,11 +1669,11 @@ auth_usage() {
 Vault auth method management
 
 Usage:
-  $(basename "$0") auth list [vault options]
-  $(basename "$0") auth enable TYPE [--path PATH] [--description TEXT] [--default-lease-ttl DURATION] [--max-lease-ttl DURATION] [vault options]
-  $(basename "$0") auth disable PATH [vault options]
-  $(basename "$0") auth read PATH [vault options]
-  $(basename "$0") auth write PATH KEY=VALUE... [vault options]
+  ${VAULT_MANAGER_CMD} auth list [vault options]
+  ${VAULT_MANAGER_CMD} auth enable TYPE [--path PATH] [--description TEXT] [--default-lease-ttl DURATION] [--max-lease-ttl DURATION] [vault options]
+  ${VAULT_MANAGER_CMD} auth disable PATH [vault options]
+  ${VAULT_MANAGER_CMD} auth read PATH [vault options]
+  ${VAULT_MANAGER_CMD} auth write PATH KEY=VALUE... [vault options]
 
 Auth commands:
   list                    Show enabled auth methods.
@@ -1634,13 +1700,17 @@ Behavior:
   disable is idempotent when PATH is already absent.
   read/write map directly to vault read/write under auth/<PATH>.
 
+Security:
+  auth write KEY=VALUE arguments may appear in shell history and audit logs.
+  Avoid passing secret values directly on the command line.
+
 Examples:
-  $(basename "$0") auth list --token-file /opt/vault/init/vault-init.json
-  $(basename "$0") auth enable userpass --token-file /opt/vault/init/vault-init.json
-  $(basename "$0") auth enable jwt --path jwt-nomad --description "Nomad workload identity" --token-file /opt/vault/init/vault-init.json
-  $(basename "$0") auth write jwt-nomad/config jwks_url=http://127.0.0.1:4646/.well-known/jwks.json default_role=nomad-workloads --token-file /opt/vault/init/vault-init.json
-  $(basename "$0") auth read jwt-nomad/config --token-file /opt/vault/init/vault-init.json
-  $(basename "$0") auth disable userpass --token-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} auth list --token-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} auth enable userpass --token-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} auth enable jwt --path jwt-nomad --description "Nomad workload identity" --token-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} auth write jwt-nomad/config jwks_url=http://127.0.0.1:4646/.well-known/jwks.json default_role=nomad-workloads --token-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} auth read jwt-nomad/config --token-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} auth disable userpass --token-file /opt/vault/init/vault-init.json
 EOF
 }
 
@@ -1649,10 +1719,10 @@ policy_usage() {
 Vault policy management
 
 Usage:
-  $(basename "$0") policy list [vault options]
-  $(basename "$0") policy read NAME [vault options]
-  $(basename "$0") policy write NAME FILE [vault options]
-  $(basename "$0") policy delete NAME [vault options]
+  ${VAULT_MANAGER_CMD} policy list [vault options]
+  ${VAULT_MANAGER_CMD} policy read NAME [vault options]
+  ${VAULT_MANAGER_CMD} policy write NAME FILE [vault options]
+  ${VAULT_MANAGER_CMD} policy delete NAME [vault options]
 
 Policy commands:
   list              Show policy names.
@@ -1681,10 +1751,10 @@ Behavior:
   The manager checks that FILE exists before writing a policy.
 
 Examples:
-  $(basename "$0") policy list --token-file /opt/vault/init/vault-init.json
-  $(basename "$0") policy write app-read ./policy.hcl --token-file /opt/vault/init/vault-init.json
-  $(basename "$0") policy read app-read --token-file /opt/vault/init/vault-init.json
-  $(basename "$0") policy delete app-read --token-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} policy list --token-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} policy write app-read ./policy.hcl --token-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} policy read app-read --token-file /opt/vault/init/vault-init.json
+  ${VAULT_MANAGER_CMD} policy delete app-read --token-file /opt/vault/init/vault-init.json
 EOF
 }
 
