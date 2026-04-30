@@ -364,6 +364,146 @@ More help:
 EOF
 }
 
+install_usage() {
+  cat <<EOF
+Vault manager install
+
+Install a single-node Vault service managed by this tool.
+
+Usage:
+  ${VAULT_MANAGER_CMD} install [VERSION] [options]
+  ${VAULT_MANAGER_CMD} install [--version <VERSION>] [options]
+
+Options:
+  --version <VERSION>        Vault version. Default resolves latest, then falls back to ${DEFAULT_VAULT_VERSION}.
+  --listen-address <ADDR>    Listener address, default: 0.0.0.0:8200
+  --cluster-address <ADDR>   Listener cluster address, default: 0.0.0.0:8201
+  --api-addr <URL>           Vault api_addr, default: ${DEFAULT_VAULT_ADDR}
+  --cluster-addr <URL>       Vault cluster_addr, default: http://127.0.0.1:8201
+  --tls-disable <true|false> Disable listener TLS, default: true
+  --tls-cert-file <FILE>     Listener TLS certificate file
+  --tls-key-file <FILE>      Listener TLS key file
+
+Examples:
+  ${VAULT_MANAGER_CMD} install
+  ${VAULT_MANAGER_CMD} install --version 2.0.0
+  ${VAULT_MANAGER_CMD} install --api-addr http://10.2.37.64:8200 --cluster-addr http://10.2.37.64:8201
+
+Temporary workspace:
+  install downloads and extracts files under TMPDIR when set, otherwise /var/tmp.
+  Use TMPDIR=/path/on/a/larger/filesystem when /tmp is small.
+
+Verify:
+  systemctl status vault
+  ${VAULT_MANAGER_CMD} status
+EOF
+}
+
+uninstall_usage() {
+  cat <<EOF
+Vault manager uninstall
+
+Remove Vault runtime files, with optional removal of state, init output,
+installed tools and audit metadata.
+
+Usage:
+  ${VAULT_MANAGER_CMD} uninstall [--purge-data] [--remove-tools|--purge]
+
+Options:
+  --purge-data              Also remove ${STATE_DIR} and ${INIT_DIR}.
+  --remove-tools            Also remove ${TOOL_ENTRY}, ${TOOL_PATH} and ${TOOL_DIR}.
+  --purge                   Remove runtime, Vault state, installed tools, metadata and audit logs.
+
+Examples:
+  ${VAULT_MANAGER_CMD} uninstall
+  ${VAULT_MANAGER_CMD} uninstall --purge-data
+  ${VAULT_MANAGER_CMD} uninstall --remove-tools
+  ${VAULT_MANAGER_CMD} uninstall --purge
+
+Notes:
+  Default uninstall keeps ${STATE_DIR} and ${INIT_DIR}.
+EOF
+}
+
+status_usage() {
+  cat <<EOF
+Vault manager status
+
+Usage:
+  ${VAULT_MANAGER_CMD} status [vault options]
+
+Vault options:
+  --addr <URL>               Vault address, default: ${DEFAULT_VAULT_ADDR}
+  --ca-cert <FILE>           Vault CA certificate file
+  --namespace <NAME>         Vault Enterprise namespace
+  --token-file <FILE>        Read token from plain text or init JSON file
+
+Example:
+  ${VAULT_MANAGER_CMD} status --token-file ${INIT_DIR}/vault-init.json
+EOF
+}
+
+doctor_usage() {
+  cat <<EOF
+Vault manager doctor
+
+Usage:
+  ${VAULT_MANAGER_CMD} doctor [vault options]
+
+Checks:
+  Vault binary, config file, vault.service state and health endpoint reachability.
+
+Vault options:
+  --addr <URL>               Vault address, default: ${DEFAULT_VAULT_ADDR}
+  --ca-cert <FILE>           Vault CA certificate file
+  --namespace <NAME>         Vault Enterprise namespace
+  --token-file <FILE>        Read token from plain text or init JSON file
+
+Example:
+  ${VAULT_MANAGER_CMD} doctor --addr ${DEFAULT_VAULT_ADDR}
+EOF
+}
+
+init_usage() {
+  cat <<EOF
+Vault manager init
+
+Initialize Vault once and write the init JSON with mode 0600.
+
+Usage:
+  ${VAULT_MANAGER_CMD} init [--key-shares <N> --key-threshold <N> --out <FILE>] [--force] [vault options]
+
+Options:
+  --key-shares <N>           Number of unseal key shares, default: 5
+  --key-threshold <N>        Number of unseal keys required, default: 3
+  --out <FILE>               Init JSON output, default: ${INIT_DIR}/vault-init.json
+  --force                    Overwrite output file
+
+Example:
+  ${VAULT_MANAGER_CMD} init --key-shares 1 --key-threshold 1 --out ${INIT_DIR}/vault-init.json
+EOF
+}
+
+unseal_usage() {
+  cat <<EOF
+Vault manager unseal
+
+Usage:
+  ${VAULT_MANAGER_CMD} unseal --keys-file <FILE> [vault options]
+
+Options:
+  --keys-file <FILE>         Init JSON file containing unseal keys
+
+Vault options:
+  --addr <URL>               Vault address, default: ${DEFAULT_VAULT_ADDR}
+  --ca-cert <FILE>           Vault CA certificate file
+  --namespace <NAME>         Vault Enterprise namespace
+
+Example:
+  ${VAULT_MANAGER_CMD} unseal --keys-file ${INIT_DIR}/vault-init.json
+EOF
+}
+
 tutor_usage() {
   local topic="${1:-overview}"
 
@@ -939,6 +1079,25 @@ extract_zip() {
   python3 -m zipfile -e "$zip_file" "$output_dir"
 }
 
+create_install_tmpdir() {
+  local prefix="$1"
+  local parent="${TMPDIR:-/var/tmp}"
+  local tmpdir
+
+  if [ ! -d "$parent" ]; then
+    fatal "Temporary directory parent not found: ${parent}. Set TMPDIR to a writable directory with enough space"
+  fi
+  if [ ! -w "$parent" ]; then
+    fatal "Temporary directory parent is not writable: ${parent}. Set TMPDIR to a writable directory with enough space"
+  fi
+
+  if ! tmpdir="$(mktemp -d "${parent%/}/${prefix}.XXXXXXXXXX")"; then
+    fatal "Failed to create temporary directory under ${parent}"
+  fi
+  log_info "Using install temporary directory: ${tmpdir}"
+  printf '%s\n' "$tmpdir"
+}
+
 hcl_string() {
   local value="$1"
 
@@ -1377,7 +1536,7 @@ install_vault() {
         tls_key_file="$1"
         ;;
       -h | --help)
-        usage
+        install_usage
         exit 0
         ;;
       -*)
@@ -1409,7 +1568,7 @@ install_vault() {
 
   version="$(resolve_version "$requested_version")"
   arch="$(detect_arch)"
-  TMPDIR_TO_CLEAN="$(mktemp -d)"
+  TMPDIR_TO_CLEAN="$(create_install_tmpdir vault-install)"
   tmpdir="$TMPDIR_TO_CLEAN"
   trap cleanup EXIT
 
@@ -1449,7 +1608,7 @@ uninstall_vault() {
         purge=1
         ;;
       -h | --help)
-        usage
+        uninstall_usage
         exit 0
         ;;
       *)
@@ -1632,7 +1791,7 @@ status_vault() {
       [ "$#" -gt 0 ] || fatal "Missing value for --${opt}"
       set_common_vault_option "$opt" "$1"
     elif [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-      usage
+      status_usage
       exit 0
     else
       fatal "Unknown status option: $1"
@@ -1663,7 +1822,7 @@ doctor_vault() {
       [ "$#" -gt 0 ] || fatal "Missing value for --${opt}"
       set_common_vault_option "$opt" "$1"
     elif [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
-      usage
+      doctor_usage
       exit 0
     else
       fatal "Unknown doctor option: $1"
@@ -1748,7 +1907,7 @@ init_vault() {
         force=1
         ;;
       -h | --help)
-        usage
+        init_usage
         exit 0
         ;;
       *)
@@ -1814,7 +1973,7 @@ unseal_vault() {
         keys_file="$1"
         ;;
       -h | --help)
-        usage
+        unseal_usage
         exit 0
         ;;
       *)
@@ -2112,19 +2271,49 @@ dispatch_auth() {
   [ "$#" -eq 0 ] || shift
   case "$command" in
     list)
+      case "${1:-}" in
+        -h | --help)
+          auth_usage
+          return 0
+          ;;
+      esac
       parse_trailing_vault_options "$@" || fatal "auth list accepts only vault options"
       auth_list
       ;;
     enable)
+      case "${1:-}" in
+        -h | --help)
+          auth_usage
+          return 0
+          ;;
+      esac
       auth_enable "$@"
       ;;
     disable)
+      case "${1:-}" in
+        -h | --help)
+          auth_usage
+          return 0
+          ;;
+      esac
       auth_disable "$@"
       ;;
     read)
+      case "${1:-}" in
+        -h | --help)
+          auth_usage
+          return 0
+          ;;
+      esac
       auth_read "$@"
       ;;
     write)
+      case "${1:-}" in
+        -h | --help)
+          auth_usage
+          return 0
+          ;;
+      esac
       auth_write "$@"
       ;;
     help | -h | --help)
@@ -2179,15 +2368,39 @@ dispatch_policy() {
   [ "$#" -eq 0 ] || shift
   case "$command" in
     list)
+      case "${1:-}" in
+        -h | --help)
+          policy_usage
+          return 0
+          ;;
+      esac
       policy_list "$@"
       ;;
     read)
+      case "${1:-}" in
+        -h | --help)
+          policy_usage
+          return 0
+          ;;
+      esac
       policy_read "$@"
       ;;
     write)
+      case "${1:-}" in
+        -h | --help)
+          policy_usage
+          return 0
+          ;;
+      esac
       policy_write "$@"
       ;;
     delete)
+      case "${1:-}" in
+        -h | --help)
+          policy_usage
+          return 0
+          ;;
+      esac
       policy_delete "$@"
       ;;
     help | -h | --help)
@@ -2219,21 +2432,57 @@ main() {
 
   case "$command" in
     install)
+      case "${1:-}" in
+        -h | --help)
+          install_usage
+          return 0
+          ;;
+      esac
       install_vault "$@"
       ;;
     uninstall)
+      case "${1:-}" in
+        -h | --help)
+          uninstall_usage
+          return 0
+          ;;
+      esac
       uninstall_vault "$@"
       ;;
     status)
+      case "${1:-}" in
+        -h | --help)
+          status_usage
+          return 0
+          ;;
+      esac
       status_vault "$@"
       ;;
     doctor)
+      case "${1:-}" in
+        -h | --help)
+          doctor_usage
+          return 0
+          ;;
+      esac
       doctor_vault "$@"
       ;;
     init)
+      case "${1:-}" in
+        -h | --help)
+          init_usage
+          return 0
+          ;;
+      esac
       init_vault "$@"
       ;;
     unseal)
+      case "${1:-}" in
+        -h | --help)
+          unseal_usage
+          return 0
+          ;;
+      esac
       unseal_vault "$@"
       ;;
     auth)
@@ -2258,13 +2507,34 @@ main() {
 run_with_audit() {
   local exit_code=0
   local command_line
+  local quiet_help=0
+  local arg
 
   AUDIT_ACTIVE=1
   AUDIT_FINALIZED=0
   AUDIT_ERROR=""
   AUDIT_ARGS=("$@")
   command_line="$(redacted_command_line "$@")"
-  log_info "Starting vault-manager command: ${command_line}"
+  if [ "$#" -eq 0 ]; then
+    quiet_help=1
+  else
+    case "${1:-}" in
+      tutor | help | -h | --help)
+        quiet_help=1
+        ;;
+      *)
+        for arg in "$@"; do
+          case "$arg" in
+            help | -h | --help)
+              quiet_help=1
+              break
+              ;;
+          esac
+        done
+        ;;
+    esac
+  fi
+  [ "$quiet_help" -eq 1 ] || log_info "Starting vault-manager command: ${command_line}"
   audit_record "started" 0 "$@"
 
   set -E
@@ -2272,7 +2542,7 @@ run_with_audit() {
   main "$@"
   trap - ERR
 
-  log_info "Completed vault-manager command: ${command_line}"
+  [ "$quiet_help" -eq 1 ] || log_info "Completed vault-manager command: ${command_line}"
   audit_record "success" 0 "$@"
   AUDIT_FINALIZED=1
   return 0

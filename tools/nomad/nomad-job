@@ -279,6 +279,7 @@ Docker scaffold:
     --host-volume <SPEC>       Nomad host volume mount, repeatable
                                <SPEC>: volume_name:/container[:ro|rw]
     --service-name <NAME>      Register service name, default: job name
+    --service-provider <PROVIDER>  Service provider: nomad or consul, default: nomad
     --no-service               Do not emit service block
     --check-http <PATH>        HTTP health check path
     --check-tcp                TCP health check
@@ -295,6 +296,7 @@ Docker scaffold:
     --port uses Nomad port labels: name:to or name:static:to.
     --mount accepts Docker bind, named volume and tmpfs mounts.
     --host-volume refers to a Nomad client host_volume that must already exist.
+    --service-provider defaults to nomad so service registration does not require Consul.
     Colon-separated specs do not support paths containing ":".
 
 Compose conversion:
@@ -309,9 +311,11 @@ Compose conversion:
     --volume-root <PATH>       Map named volumes to bind paths under <PATH>
     --cpu-default <MHz>        CPU when Compose omits deploy resources, default: 500
     --memory-default <MB>      Memory when Compose omits deploy resources, default: 256
+    --service-provider <PROVIDER>  Service provider: nomad or consul, default: nomad
 
   Notes:
     The converter handles common image, command, env, port, volume and resource fields.
+    Generated service blocks use provider = "nomad" by default.
     Unsupported Compose settings are reported as warnings for manual review.
     Host IP bindings such as 127.0.0.1:8080:80 are not preserved.
 
@@ -350,6 +354,228 @@ Tutor topics:
 Start here:
   nomad-job tutor
   nomad-job tutor web-service
+EOF
+}
+
+scaffold_usage() {
+  cat <<'EOF'
+Nomad job scaffold
+
+Usage:
+  nomad-job scaffold docker [options]
+  nomad-job scaffold help
+
+Commands:
+  docker    Generate a Nomad job HCL file for a Docker task.
+
+Start here:
+  nomad-job scaffold docker --help
+  nomad-job tutor docker
+  nomad-job tutor web-service
+EOF
+}
+
+scaffold_docker_usage() {
+  cat <<'EOF'
+Nomad job scaffold docker
+
+Generate a Nomad HCL job file for a Docker task.
+
+Usage:
+  nomad-job scaffold docker --job <NAME> --image <IMAGE> [options]
+
+Required:
+  --job <NAME>              Nomad job name
+  --image <IMAGE>           Docker image
+
+Output and placement:
+  --out <FILE>              Output file, use - for stdout, default: -
+  --force                   Overwrite output file
+  --type <service|batch>    Nomad job type, default: service
+  --datacenters <dc1,dc2>   Datacenter list, default: dc1
+  --namespace <NAME>        Nomad namespace
+  --region <NAME>           Nomad region
+  --group <NAME>            Group name, default: job name
+  --task <NAME>             Task name, default: group name
+  --count <N>               Group count, default: 1
+
+Docker task:
+  --cpu <MHz>               CPU resource, default: 500
+  --memory <MB>             Memory resource, default: 256
+  --command <CMD>           Docker command
+  --arg <ARG>               Docker arg, repeatable
+  --env <KEY=VALUE>         Environment variable, repeatable
+  --env-file <FILE>         Read KEY=VALUE env file, repeatable
+
+Network and service:
+  --port <SPEC>             Port mapping, repeatable
+                            SPEC: name:to or name:static:to
+  --service-name <NAME>     Service name, default: job name
+  --service-provider <PROVIDER>  Service provider: nomad or consul, default: nomad
+  --no-service              Do not emit service block
+  --check-http <PATH>       HTTP health check path
+  --check-tcp               TCP health check
+  --check-interval <DURATION>  Health check interval, default: 10s
+  --check-timeout <DURATION>   Health check timeout, default: 2s
+
+Storage:
+  --mount <SPEC>            Docker mount, repeatable
+                            bind:/host:/container[:ro|rw]
+                            volume:name:/container[:ro|rw]
+                            tmpfs:/container[:ro|rw]
+  --host-volume <SPEC>      Nomad host volume mount, repeatable
+                            volume_name:/container[:ro|rw]
+
+Vault and templates:
+  --vault-role <ROLE>       Emit task vault block with role
+  --vault-cluster <NAME>    Vault cluster, default: default
+  --identity-aud <CSV>      Emit workload identity audiences
+  --identity-ttl <DURATION> Workload identity TTL, default: 1h
+  --template-file <SPEC>    Template file, repeatable
+                            source:destination[:env]
+
+Examples:
+  nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --check-http / --out jobs/web.nomad.hcl
+  nomad-job scaffold docker --job api --image registry.example.com/team/api:1.0 --service-provider consul --out jobs/api.nomad.hcl
+  nomad-job validate jobs/web.nomad.hcl
+  nomad-job plan jobs/web.nomad.hcl
+
+Notes:
+  Service blocks use provider = "nomad" by default, so Consul is not required.
+  Use --service-provider consul only when Nomad is integrated with Consul.
+  Use --no-service for jobs that do not need service registration or checks.
+EOF
+}
+
+compose_usage() {
+  cat <<'EOF'
+Nomad job compose
+
+Usage:
+  nomad-job compose convert <COMPOSE_FILE> [options]
+  nomad-job compose help
+
+Commands:
+  convert    Convert docker-compose.yml into a reviewable Nomad job HCL file.
+
+Start here:
+  nomad-job compose convert --help
+  nomad-job tutor compose
+EOF
+}
+
+compose_convert_usage() {
+  cat <<'EOF'
+Nomad job compose convert
+
+Convert a Docker Compose file into a Nomad HCL starting point.
+
+Usage:
+  nomad-job compose convert <COMPOSE_FILE> [options]
+
+Options:
+  --out <FILE>              Output file, use - for stdout, default: -
+  --force                   Overwrite output file
+  --job <NAME>              Job name, default: Compose project/name
+  --type <service|batch>    Job type, default: service
+  --datacenters <dc1,dc2>   Datacenter list, default: dc1
+  --namespace <NAME>        Nomad namespace
+  --region <NAME>           Nomad region
+  --volume-root <PATH>      Map named volumes to bind paths under <PATH>
+  --cpu-default <MHz>       CPU when Compose omits deploy resources, default: 500
+  --memory-default <MB>     Memory when Compose omits deploy resources, default: 256
+  --service-provider <PROVIDER>  Service provider: nomad or consul, default: nomad
+
+Examples:
+  nomad-job compose convert docker-compose.yml --out jobs/compose.nomad.hcl
+  nomad-job compose convert docker-compose.yml --job app --volume-root /data/compose-volumes --out jobs/app.nomad.hcl
+
+Notes:
+  Generated service blocks use provider = "nomad" by default.
+  Compose conversion is a starting point; review ports, volumes, resources and checks before apply.
+EOF
+}
+
+validate_usage() {
+  cat <<'EOF'
+Nomad job validate
+
+Usage:
+  nomad-job validate <JOB_FILE>
+
+Checks:
+  Runs "nomad job validate" for the given HCL file.
+
+Example:
+  nomad-job validate jobs/web.nomad.hcl
+EOF
+}
+
+plan_usage() {
+  cat <<'EOF'
+Nomad job plan
+
+Usage:
+  nomad-job plan <JOB_FILE> [-- <NOMAD_JOB_PLAN_ARGS>...]
+
+Checks:
+  Runs "nomad job plan" for the given HCL file.
+  Extra Nomad plan arguments can be passed after --.
+
+Examples:
+  nomad-job plan jobs/web.nomad.hcl
+  nomad-job plan jobs/web.nomad.hcl -- -diff
+EOF
+}
+
+apply_usage() {
+  cat <<'EOF'
+Nomad job apply
+
+Usage:
+  nomad-job apply <JOB_FILE> [--auto-approve] [--detach] [--check-index <INDEX>]
+
+Behavior:
+  validate and plan are run before "nomad job run".
+  Without --auto-approve, the command asks for confirmation.
+
+Examples:
+  nomad-job apply jobs/web.nomad.hcl
+  nomad-job apply jobs/web.nomad.hcl --auto-approve
+EOF
+}
+
+status_usage() {
+  cat <<'EOF'
+Nomad job status
+
+Usage:
+  nomad-job status [JOB]
+
+Behavior:
+  Without JOB, lists Nomad jobs.
+  With JOB, shows status for that job.
+
+Examples:
+  nomad-job status
+  nomad-job status web
+EOF
+}
+
+stop_usage() {
+  cat <<'EOF'
+Nomad job stop
+
+Usage:
+  nomad-job stop <JOB> [--purge]
+
+Behavior:
+  Stops a Nomad job by job name.
+  --purge also removes job history from Nomad.
+
+Examples:
+  nomad-job stop web
+  nomad-job stop web --purge
 EOF
 }
 
@@ -466,6 +692,7 @@ Common failures:
 Notes:
   Compose conversion is a starting point, not a production guarantee.
   Review ports, volumes, resources and service checks before running the job.
+  Generated service blocks use provider = "nomad" unless --service-provider consul is passed.
   Host IP bindings in Compose ports are not preserved in the generated Nomad job.
 EOF
       ;;
@@ -631,6 +858,7 @@ Common failures:
 
 Notes:
   The port format is name:static:to. In this example, host 8080 maps to container 80.
+  Service registration uses provider = "nomad" by default, so Consul is not required.
   For multiple instances, prefer dynamic ports and service discovery instead of one fixed host port.
 EOF
       ;;
@@ -990,6 +1218,7 @@ def emit_task(lines, args, ports, env_items, mounts, host_volumes, templates):
         lines.append("")
         lines.append(f'{indent}  service {{')
         lines.append(f'{indent}    name = {hcl_string(args.service_name or args.job)}')
+        lines.append(f'{indent}    provider = {hcl_string(args.service_provider)}')
         lines.append(f'{indent}    port = {hcl_string(service_port)}')
         if args.check_http:
             lines.append("")
@@ -1092,6 +1321,7 @@ parser.add_argument("--port", action="append")
 parser.add_argument("--mount", action="append")
 parser.add_argument("--host-volume", action="append")
 parser.add_argument("--service-name")
+parser.add_argument("--service-provider", choices=["nomad", "consul"], default="nomad")
 parser.add_argument("--no-service", dest="emit_service", action="store_false")
 parser.set_defaults(emit_service=True)
 parser.add_argument("--check-http")
@@ -1437,6 +1667,7 @@ def emit_service_group(lines, name, service, base_dir, args):
         lines.append("")
         lines.append("      service {")
         lines.append(f"        name = {hcl_string(group)}")
+        lines.append(f"        provider = {hcl_string(args.service_provider)}")
         lines.append(f"        port = {hcl_string(ports[0]['name'])}")
         lines.append("      }")
     lines.append("    }")
@@ -1507,6 +1738,7 @@ parser.add_argument("--region")
 parser.add_argument("--volume-root")
 parser.add_argument("--cpu-default", type=int, default=500)
 parser.add_argument("--memory-default", type=int, default=256)
+parser.add_argument("--service-provider", choices=["nomad", "consul"], default="nomad")
 args = parser.parse_args()
 compose = load_compose(args.compose_file)
 write_output(args.out, build_hcl(compose, args.compose_file, args), args.force)
@@ -1574,7 +1806,7 @@ apply_job_file() {
         check_index="$1"
         ;;
       -h | --help)
-        usage
+        apply_usage
         exit 0
         ;;
       -*)
@@ -1647,10 +1879,16 @@ dispatch_scaffold() {
   [ "$#" -eq 0 ] || shift
   case "$command" in
     docker)
+      case "${1:-}" in
+        help | -h | --help)
+          scaffold_docker_usage
+          return 0
+          ;;
+      esac
       scaffold_docker "$@"
       ;;
     help | -h | --help)
-      usage
+      scaffold_usage
       ;;
     *)
       usage >&2
@@ -1665,10 +1903,16 @@ dispatch_compose() {
   [ "$#" -eq 0 ] || shift
   case "$command" in
     convert)
+      case "${1:-}" in
+        help | -h | --help)
+          compose_convert_usage
+          return 0
+          ;;
+      esac
       compose_convert "$@"
       ;;
     help | -h | --help)
-      usage
+      compose_usage
       ;;
     *)
       usage >&2
@@ -1699,18 +1943,42 @@ main() {
       dispatch_compose "$@"
       ;;
     validate)
+      case "${1:-}" in
+        -h | --help)
+          validate_usage
+          return 0
+          ;;
+      esac
       validate_job_file "$@"
       ;;
     plan)
+      case "${1:-}" in
+        -h | --help)
+          plan_usage
+          return 0
+          ;;
+      esac
       plan_job_file "$@"
       ;;
     apply)
       apply_job_file "$@"
       ;;
     status)
+      case "${1:-}" in
+        -h | --help)
+          status_usage
+          return 0
+          ;;
+      esac
       status_job "$@"
       ;;
     stop)
+      case "${1:-}" in
+        -h | --help)
+          stop_usage
+          return 0
+          ;;
+      esac
       stop_job "$@"
       ;;
     tutor)
@@ -1729,13 +1997,34 @@ main() {
 run_with_audit() {
   local exit_code=0
   local command_line
+  local quiet_help=0
+  local arg
 
   AUDIT_ACTIVE=1
   AUDIT_FINALIZED=0
   AUDIT_ERROR=""
   AUDIT_ARGS=("$@")
   command_line="$(redacted_command_line "$@")"
-  log_info "Starting nomad-job command: ${command_line}"
+  if [ "$#" -eq 0 ]; then
+    quiet_help=1
+  else
+    case "${1:-}" in
+      tutor | help | -h | --help)
+        quiet_help=1
+        ;;
+      *)
+        for arg in "$@"; do
+          case "$arg" in
+            help | -h | --help)
+              quiet_help=1
+              break
+              ;;
+          esac
+        done
+        ;;
+    esac
+  fi
+  [ "$quiet_help" -eq 1 ] || log_info "Starting nomad-job command: ${command_line}"
   audit_record "started" 0 "$@"
 
   set -E
@@ -1743,7 +2032,7 @@ run_with_audit() {
   main "$@"
   trap - ERR
 
-  log_info "Completed nomad-job command: ${command_line}"
+  [ "$quiet_help" -eq 1 ] || log_info "Completed nomad-job command: ${command_line}"
   audit_record "success" 0 "$@"
   AUDIT_FINALIZED=1
   return 0

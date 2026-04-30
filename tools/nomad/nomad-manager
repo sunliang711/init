@@ -411,6 +411,61 @@ More help:
 EOF
 }
 
+install_usage() {
+  cat <<EOF
+Nomad manager install
+
+Install a single-node Nomad server/client managed by this tool.
+
+Usage:
+  ${NOMAD_MANAGER_CMD} install [VERSION] [--no-acl-bootstrap]
+  ${NOMAD_MANAGER_CMD} install [--version <VERSION>] [--no-acl-bootstrap]
+
+Options:
+  --version <VERSION>      Install an explicit Nomad version.
+                           "latest" resolves the latest OSS release.
+  --no-acl-bootstrap      Start Nomad without running "nomad acl bootstrap".
+
+Examples:
+  ${NOMAD_MANAGER_CMD} install
+  ${NOMAD_MANAGER_CMD} install --version 2.0.0
+  http_proxy=http://10.2.1.107:7190 https_proxy=http://10.2.1.107:7190 ${NOMAD_MANAGER_CMD} install
+
+Temporary workspace:
+  install downloads and extracts files under TMPDIR when set, otherwise /var/tmp.
+  Use TMPDIR=/path/on/a/larger/filesystem when /tmp is small.
+
+Verify:
+  systemctl status nomad
+  nomad server members
+  nomad node status
+EOF
+}
+
+uninstall_usage() {
+  cat <<EOF
+Nomad manager uninstall
+
+Remove Nomad runtime files, with optional removal of installed tool snapshots
+and audit metadata.
+
+Usage:
+  ${NOMAD_MANAGER_CMD} uninstall [--remove-tools|--purge]
+
+Options:
+  --remove-tools          Remove installed manager/job helper scripts as well.
+  --purge                 Remove runtime files, installed tools, metadata and audit logs.
+
+Examples:
+  ${NOMAD_MANAGER_CMD} uninstall
+  ${NOMAD_MANAGER_CMD} uninstall --remove-tools
+  ${NOMAD_MANAGER_CMD} uninstall --purge
+
+Notes:
+  Default uninstall keeps installed tools, metadata and audit logs.
+EOF
+}
+
 tutor_usage() {
   local topic="${1:-overview}"
 
@@ -1599,6 +1654,25 @@ extract_zip() {
   fi
 
   python3 -m zipfile -e "$zip_file" "$output_dir"
+}
+
+create_install_tmpdir() {
+  local prefix="$1"
+  local parent="${TMPDIR:-/var/tmp}"
+  local tmpdir
+
+  if [ ! -d "$parent" ]; then
+    fatal "Temporary directory parent not found: ${parent}. Set TMPDIR to a writable directory with enough space"
+  fi
+  if [ ! -w "$parent" ]; then
+    fatal "Temporary directory parent is not writable: ${parent}. Set TMPDIR to a writable directory with enough space"
+  fi
+
+  if ! tmpdir="$(mktemp -d "${parent%/}/${prefix}.XXXXXXXXXX")"; then
+    fatal "Failed to create temporary directory under ${parent}"
+  fi
+  log_info "Using install temporary directory: ${tmpdir}"
+  printf '%s\n' "$tmpdir"
 }
 
 hcl_string() {
@@ -4011,7 +4085,7 @@ install_nomad() {
         BOOTSTRAP_ACL=0
         ;;
       -h | --help)
-        usage
+        install_usage
         exit 0
         ;;
       -*)
@@ -4042,7 +4116,7 @@ install_nomad() {
 
   version="$(resolve_version "$requested_version")"
   arch="$(detect_arch)"
-  TMPDIR_TO_CLEAN="$(mktemp -d)"
+  TMPDIR_TO_CLEAN="$(create_install_tmpdir nomad-install)"
   tmpdir="$TMPDIR_TO_CLEAN"
   trap cleanup EXIT
 
@@ -4079,7 +4153,7 @@ uninstall_nomad() {
         purge=1
         ;;
       -h | --help)
-        usage
+        uninstall_usage
         exit 0
         ;;
       *)
@@ -4137,6 +4211,12 @@ dispatch_vault() {
       configure_vault_enable "$@"
       ;;
     disable)
+      case "${1:-}" in
+        -h | --help)
+          vault_usage
+          return 0
+          ;;
+      esac
       [ "$#" -eq 0 ] || fatal "vault disable does not accept arguments"
       remove_managed_file "$VAULT_CONFIG"
       ;;
@@ -4159,15 +4239,39 @@ dispatch_vault_jwt() {
   [ "$#" -eq 0 ] || shift
   case "$command" in
     plan)
+      case "${1:-}" in
+        -h | --help)
+          vault_jwt_usage
+          return 0
+          ;;
+      esac
       vault_jwt_plan "$@"
       ;;
     apply)
+      case "${1:-}" in
+        -h | --help)
+          vault_jwt_usage
+          return 0
+          ;;
+      esac
       vault_jwt_apply "$@"
       ;;
     status)
+      case "${1:-}" in
+        -h | --help)
+          vault_jwt_usage
+          return 0
+          ;;
+      esac
       vault_jwt_status "$@"
       ;;
     doctor)
+      case "${1:-}" in
+        -h | --help)
+          vault_jwt_usage
+          return 0
+          ;;
+      esac
       vault_jwt_doctor "$@"
       ;;
     job-example)
@@ -4475,13 +4579,34 @@ main() {
 run_with_audit() {
   local exit_code=0
   local command_line
+  local quiet_help=0
+  local arg
 
   AUDIT_ACTIVE=1
   AUDIT_FINALIZED=0
   AUDIT_ERROR=""
   AUDIT_ARGS=("$@")
   command_line="$(redacted_command_line "$@")"
-  log_info "Starting nomad-manager command: ${command_line}"
+  if [ "$#" -eq 0 ]; then
+    quiet_help=1
+  else
+    case "${1:-}" in
+      tutor | help | -h | --help)
+        quiet_help=1
+        ;;
+      *)
+        for arg in "$@"; do
+          case "$arg" in
+            help | -h | --help)
+              quiet_help=1
+              break
+              ;;
+          esac
+        done
+        ;;
+    esac
+  fi
+  [ "$quiet_help" -eq 1 ] || log_info "Starting nomad-manager command: ${command_line}"
   audit_record "started" 0 "$@"
 
   set -E
@@ -4489,7 +4614,7 @@ run_with_audit() {
   main "$@"
   trap - ERR
 
-  log_info "Completed nomad-manager command: ${command_line}"
+  [ "$quiet_help" -eq 1 ] || log_info "Completed nomad-manager command: ${command_line}"
   audit_record "success" 0 "$@"
   AUDIT_FINALIZED=1
   return 0
