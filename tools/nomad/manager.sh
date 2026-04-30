@@ -1,0 +1,3295 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
+DEFAULT_NOMAD_VERSION="2.0.0"
+NOMAD_USER="nomad"
+NOMAD_GROUP="nomad"
+BIN_PATH="/usr/local/bin/nomad"
+CONFIG_DIR="/etc/nomad.d"
+DATA_DIR="/opt/nomad"
+SYSTEMD_SERVICE="/etc/systemd/system/nomad.service"
+RELEASE_INDEX_URL="https://releases.hashicorp.com/nomad/"
+NOMAD_ADDR="http://127.0.0.1:4646"
+LOCAL_NO_PROXY="127.0.0.1,localhost,::1"
+MANAGED_MARKER="# Managed by tools/nomad/manager.sh"
+LEGACY_MANAGED_MARKER="# Managed by installNomad.sh"
+TLS_CONFIG="${CONFIG_DIR}/30-tls.hcl"
+UI_CONFIG="${CONFIG_DIR}/35-ui.hcl"
+TELEMETRY_CONFIG="${CONFIG_DIR}/40-telemetry.hcl"
+VAULT_CONFIG="${CONFIG_DIR}/60-vault.hcl"
+CONSUL_CONFIG="${CONFIG_DIR}/60-consul.hcl"
+META_CONFIG="${CONFIG_DIR}/72-client-meta.hcl"
+DOCKER_CONFIG="${CONFIG_DIR}/80-docker.hcl"
+RAW_EXEC_CONFIG="${CONFIG_DIR}/81-raw-exec.hcl"
+DRIVER_DENYLIST_CONFIG="${CONFIG_DIR}/82-driver-denylist.hcl"
+VAULT_JWT_PROFILE_DIR="${VAULT_JWT_PROFILE_DIR:-/var/lib/installNomad/vault-jwt}"
+BOOTSTRAP_ACL=1
+TMPDIR_TO_CLEAN=""
+
+cleanup() {
+  if [ -n "${TMPDIR_TO_CLEAN:-}" ] && [ -d "$TMPDIR_TO_CLEAN" ]; then
+    rm -rf "$TMPDIR_TO_CLEAN"
+  fi
+}
+
+log_info() {
+  printf '[INFO] %s\n' "$*"
+}
+
+log_warn() {
+  printf '[WARN] %s\n' "$*" >&2
+}
+
+log_error() {
+  printf '[ERROR] %s\n' "$*" >&2
+}
+
+fatal() {
+  log_error "$*"
+  exit 1
+}
+
+usage() {
+  cat <<EOF
+Nomad manager
+
+Usage:
+  $(basename "$0") install [--version VERSION|VERSION] [--no-acl-bootstrap]
+  $(basename "$0") uninstall
+  $(basename "$0") vault enable --address URL [options]
+  $(basename "$0") vault disable
+  $(basename "$0") vault doctor [--address URL]
+  $(basename "$0") consul enable --address URL [options]
+  $(basename "$0") consul disable
+  $(basename "$0") consul doctor [--address URL]
+  $(basename "$0") telemetry enable [options]
+  $(basename "$0") telemetry disable
+  $(basename "$0") tls enable --ca-file FILE --cert-file FILE --key-file FILE [options]
+  $(basename "$0") tls disable
+  $(basename "$0") ui enable [options]
+  $(basename "$0") ui disable
+  $(basename "$0") docker enable [options]
+  $(basename "$0") docker disable
+  $(basename "$0") docker disable-driver
+  $(basename "$0") docker enable-driver
+  $(basename "$0") docker doctor
+  $(basename "$0") raw-exec enable
+  $(basename "$0") raw-exec disable
+  $(basename "$0") driver deny DRIVER
+  $(basename "$0") driver allow DRIVER
+  $(basename "$0") host-volume add NAME --path PATH [--read-only|--read-write] [--create]
+  $(basename "$0") host-volume remove NAME
+  $(basename "$0") meta set KEY VALUE
+  $(basename "$0") meta unset KEY
+  $(basename "$0") vault-jwt plan --profile NAME [options]
+  $(basename "$0") vault-jwt apply --profile NAME [options]
+  $(basename "$0") vault-jwt status --profile NAME
+  $(basename "$0") vault-jwt doctor --profile NAME
+  $(basename "$0") vault-jwt job-example --profile NAME --job NAME --secret PATH --out FILE
+  $(basename "$0") help
+
+Command groups:
+  Lifecycle:
+    install, uninstall
+  Nomad integrations:
+    vault, vault-jwt, consul
+  Agent features:
+    telemetry, tls, ui, docker, raw-exec
+  Client scheduling controls:
+    driver, host-volume, meta
+
+Install options:
+  --version VERSION        Install an explicit Nomad version. "latest" also resolves latest OSS release.
+  --no-acl-bootstrap      Install and start Nomad without running "nomad acl bootstrap".
+
+Common workflows:
+  $(basename "$0") install
+  $(basename "$0") install --version 2.0.0
+  $(basename "$0") install 2.0.0
+  http_proxy=http://10.2.1.107:7190 https_proxy=http://10.2.1.107:7190 $(basename "$0") install
+
+  $(basename "$0") docker enable --allow-privileged true --volumes true
+  $(basename "$0") docker doctor
+  $(basename "$0") host-volume add data --path /data --read-write --create
+  $(basename "$0") meta set role edge
+
+  $(basename "$0") vault enable --address https://vault.service.consul:8200 --aud vault.io
+  $(basename "$0") vault doctor --address https://vault.service.consul:8200
+  $(basename "$0") consul enable --address 127.0.0.1:8500
+  $(basename "$0") consul doctor --address 127.0.0.1:8500
+
+  $(basename "$0") vault-jwt plan --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646
+  $(basename "$0") vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646
+  $(basename "$0") vault-jwt job-example --profile default --job app --secret kv/data/app --out jobs/app-vault.nomad.hcl
+
+Notes:
+  If VERSION is not specified, the latest OSS version is resolved from:
+    ${RELEASE_INDEX_URL}
+  If the latest version cannot be resolved, ${DEFAULT_NOMAD_VERSION} is used.
+
+Managed config files:
+  ${TLS_CONFIG}
+  ${UI_CONFIG}
+  ${TELEMETRY_CONFIG}
+  ${VAULT_CONFIG}
+  ${CONSUL_CONFIG}
+  ${META_CONFIG}
+  ${DOCKER_CONFIG}
+  ${RAW_EXEC_CONFIG}
+  ${DRIVER_DENYLIST_CONFIG}
+  ${CONFIG_DIR}/70-host-volume-<NAME>.hcl
+  ${VAULT_JWT_PROFILE_DIR}/<PROFILE>.env
+
+Safety:
+  install/uninstall require Linux and root privilege.
+  Config subcommands only overwrite or remove files whose first line is:
+    ${MANAGED_MARKER}
+  Legacy managed files are still accepted for migration compatibility.
+  Each change is validated with:
+    nomad config validate ${CONFIG_DIR}
+  After validation, nomad.service is restarted.
+  Failed validation or restart rolls back the managed config file.
+
+More help:
+  $(basename "$0") vault --help
+  $(basename "$0") vault-jwt --help
+  $(basename "$0") consul --help
+  $(basename "$0") telemetry --help
+  $(basename "$0") tls --help
+  $(basename "$0") ui --help
+  $(basename "$0") docker --help
+  $(basename "$0") raw-exec --help
+  $(basename "$0") driver --help
+  $(basename "$0") host-volume --help
+  $(basename "$0") meta --help
+EOF
+}
+
+vault_jwt_usage() {
+  cat <<EOF
+Nomad + Vault JWT workload identity
+
+Usage:
+  $(basename "$0") vault-jwt plan --profile NAME [options]
+  $(basename "$0") vault-jwt apply --profile NAME [options]
+  $(basename "$0") vault-jwt status --profile NAME
+  $(basename "$0") vault-jwt doctor --profile NAME
+  $(basename "$0") vault-jwt job-example --profile NAME --job NAME --secret PATH --out FILE [--force]
+
+Options for plan/apply:
+  --profile NAME              Required profile name
+  --vault-addr URL            Vault API address
+  --vault-namespace NAME      Vault Enterprise namespace for Vault CLI calls
+  --nomad-addr URL            Nomad HTTP address reachable by Vault for JWKS
+  --nomad-jwks-url URL        Override JWKS URL, default: <nomad-addr>/.well-known/jwks.json
+  --auth-path PATH            Vault JWT auth path, default: jwt-nomad
+  --role NAME                 Vault JWT role, default: nomad-workloads
+  --policy NAME               Vault policy name, default: nomad-workloads
+  --aud VALUE                 JWT audience, default: vault.io
+  --ttl DURATION              Nomad identity and Vault token TTL, default: 1h
+  --secret-path PATH          Secret path allowed by generated policy, repeatable
+                               default: kv/data/*
+  --policy-file FILE          Use custom Vault policy HCL instead of generated policy
+  --force                     Allow replacing an existing profile with different values
+
+Environment:
+  VAULT_TOKEN must be available for apply/status/doctor when Vault requires auth.
+
+What apply does:
+  1. Write Nomad vault config: ${VAULT_CONFIG}
+  2. Validate Nomad config and restart nomad.service
+  3. Wait until Nomad JWKS URL is reachable
+  4. Enable or reuse Vault JWT auth at auth/<auth-path>
+  5. Write Vault JWT config, policy and role
+  6. Save the profile for status/doctor/job-example
+
+Vault role:
+  apply writes claim mappings for nomad_namespace, nomad_job_id and nomad_task,
+  then issues renewable service tokens with token_explicit_max_ttl=0.
+
+Profile file:
+  ${VAULT_JWT_PROFILE_DIR}/<PROFILE>.env
+
+Examples:
+  $(basename "$0") vault-jwt plan --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646
+  $(basename "$0") vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://10.2.37.64:4646 --secret-path kv/data/app
+  $(basename "$0") vault-jwt doctor --profile default
+  $(basename "$0") vault-jwt job-example --profile default --job app --secret kv/data/app --out jobs/app.nomad.hcl
+EOF
+}
+
+vault_usage() {
+  cat <<EOF
+Nomad Vault integration config
+
+Usage:
+  $(basename "$0") vault enable --address URL [options]
+  $(basename "$0") vault disable
+  $(basename "$0") vault doctor [--address URL] [--namespace NAME]
+
+Options:
+  --address URL                 Vault API address, for example https://vault.service.consul:8200
+  --ca-file FILE                Vault CA certificate file
+  --ca-path DIR                 Vault CA certificate directory
+  --cert-file FILE              Client certificate file
+  --key-file FILE               Client key file
+  --namespace NAME              Vault Enterprise namespace
+  --jwt-auth-backend-path PATH  JWT auth backend path, default: jwt-nomad
+  --aud CSV                     Workload identity audience list, default: vault.io
+  --ttl DURATION                Workload identity TTL, default: 1h
+  --env true|false              Expose identity token in env, default: false
+  --file true|false             Expose identity token in file, default: true
+
+Behavior:
+  enable writes ${VAULT_CONFIG}, validates Nomad config and restarts nomad.service.
+  disable removes only the managed Vault config file.
+  doctor is read-only. It checks managed config, Nomad config validation, vault CLI
+  availability and Vault health endpoint reachability.
+
+Examples:
+  $(basename "$0") vault enable --address https://vault.service.consul:8200 --aud vault.io --ttl 1h
+  $(basename "$0") vault doctor --address https://vault.service.consul:8200
+  $(basename "$0") vault disable
+EOF
+}
+
+consul_usage() {
+  cat <<EOF
+Nomad Consul integration config
+
+Usage:
+  $(basename "$0") consul enable --address URL [options]
+  $(basename "$0") consul disable
+  $(basename "$0") consul doctor [--address URL] [--ssl true|false]
+
+Options:
+  --address URL        Consul HTTP address, for example 127.0.0.1:8500
+  --grpc-address URL   Consul gRPC address
+  --ca-file FILE       Consul CA certificate file
+  --cert-file FILE     Client certificate file
+  --key-file FILE      Client key file
+  --ssl true|false     Enable HTTPS for Consul, default: false
+  --verify true|false  Verify Consul TLS certificate, default: true
+  --aud CSV            Workload identity audience list, default: consul.io
+  --ttl DURATION       Workload identity TTL, default: 1h
+
+Behavior:
+  enable writes ${CONSUL_CONFIG}, validates Nomad config and restarts nomad.service.
+  disable removes only the managed Consul config file.
+  doctor is read-only. It checks managed config, Nomad config validation, consul CLI
+  availability and Consul leader endpoint reachability.
+
+Examples:
+  $(basename "$0") consul enable --address 127.0.0.1:8500
+  $(basename "$0") consul enable --address consul.service.consul:8501 --ssl true --verify true
+  $(basename "$0") consul doctor --address 127.0.0.1:8500
+EOF
+}
+
+telemetry_usage() {
+  cat <<EOF
+Nomad telemetry config
+
+Usage:
+  $(basename "$0") telemetry enable [options]
+  $(basename "$0") telemetry disable
+
+Options:
+  --prometheus true|false       Enable Prometheus metrics, default: true
+  --alloc true|false            Publish allocation metrics, default: true
+  --node true|false             Publish node metrics, default: true
+  --interval DURATION           Collection interval, default: 1s
+  --disable-hostname true|false Disable hostname label, default: false
+
+Behavior:
+  enable writes ${TELEMETRY_CONFIG}, validates Nomad config and restarts nomad.service.
+  disable removes only the managed telemetry config.
+  Prometheus metrics are enabled by default so Prometheus can scrape:
+    ${NOMAD_ADDR}/v1/metrics?format=prometheus
+
+Examples:
+  $(basename "$0") telemetry enable
+  $(basename "$0") telemetry enable --interval 5s --disable-hostname true
+  $(basename "$0") telemetry disable
+EOF
+}
+
+tls_usage() {
+  cat <<EOF
+Nomad TLS config
+
+Usage:
+  $(basename "$0") tls enable --ca-file FILE --cert-file FILE --key-file FILE [options]
+  $(basename "$0") tls disable
+
+Options:
+  --ca-file FILE                    CA certificate file
+  --cert-file FILE                  Agent certificate file
+  --key-file FILE                   Agent key file
+  --http true|false                 Enable HTTP TLS, default: true
+  --rpc true|false                  Enable RPC TLS, default: true
+  --verify-server-hostname true|false  Verify server hostname, default: false
+  --verify-https-client true|false     Verify HTTPS clients, default: false
+
+Behavior:
+  enable writes ${TLS_CONFIG}, validates Nomad config and restarts nomad.service.
+  disable removes only the managed TLS config.
+  Certificate files must already exist on the target host and be readable by Nomad.
+
+Examples:
+  $(basename "$0") tls enable --ca-file /etc/nomad.d/certs/ca.pem --cert-file /etc/nomad.d/certs/server.pem --key-file /etc/nomad.d/certs/server-key.pem
+  $(basename "$0") tls enable --ca-file /etc/nomad.d/certs/ca.pem --cert-file /etc/nomad.d/certs/server.pem --key-file /etc/nomad.d/certs/server-key.pem --verify-server-hostname true
+  $(basename "$0") tls disable
+EOF
+}
+
+docker_usage() {
+  cat <<EOF
+Nomad Docker driver config
+
+Usage:
+  $(basename "$0") docker enable [options]
+  $(basename "$0") docker disable
+  $(basename "$0") docker disable-driver
+  $(basename "$0") docker enable-driver
+  $(basename "$0") docker doctor
+
+Options:
+  --allow-privileged true|false  Allow privileged Docker tasks, default: true
+  --volumes true|false           Allow host volume mounts, default: true
+  --image-gc true|false          Enable image GC, default: true
+  --image-delay DURATION         Image GC delay, default: 100h
+  --auth-config FILE             Docker auth config path
+
+Behavior:
+  enable writes Docker plugin config: ${DOCKER_CONFIG}
+  disable removes only the managed Docker plugin config.
+  disable-driver adds docker to Nomad client driver denylist.
+  enable-driver removes docker from Nomad client driver denylist.
+  doctor is read-only. It checks Docker config, Nomad config validation, denylist,
+  docker CLI, Docker daemon and /var/run/docker.sock.
+
+Examples:
+  $(basename "$0") docker enable --allow-privileged true --volumes true
+  $(basename "$0") docker disable-driver
+  $(basename "$0") docker enable-driver
+  $(basename "$0") docker doctor
+EOF
+}
+
+driver_usage() {
+  cat <<EOF
+Nomad client driver denylist
+
+Usage:
+  $(basename "$0") driver deny DRIVER
+  $(basename "$0") driver allow DRIVER
+
+Behavior:
+  deny adds DRIVER to Nomad client option "driver.denylist".
+  allow removes DRIVER from the denylist.
+  The denylist is stored in ${DRIVER_DENYLIST_CONFIG}.
+  This is useful when you want to disable a built-in driver without removing its plugin config.
+
+Driver names:
+  docker, exec, raw_exec, java, qemu and other installed Nomad task drivers.
+
+Examples:
+  $(basename "$0") driver deny docker
+  $(basename "$0") driver allow docker
+  $(basename "$0") driver deny raw_exec
+EOF
+}
+
+host_volume_usage() {
+  cat <<EOF
+Nomad client host volume config
+
+Usage:
+  $(basename "$0") host-volume add NAME --path PATH [--read-only|--read-write] [--create]
+  $(basename "$0") host-volume remove NAME
+
+Options:
+  --path PATH       Host path exposed to Nomad jobs
+  --read-only       Mark volume read-only
+  --read-write      Mark volume read-write, default
+  --create          Create PATH before writing config
+
+Behavior:
+  add writes ${CONFIG_DIR}/70-host-volume-<NAME>.hcl, validates Nomad config
+  and restarts nomad.service.
+  remove deletes only that managed host volume config file.
+  PATH must be absolute. Without --create, PATH must already be an existing directory.
+
+Job HCL example:
+  volume "data" {
+    type      = "host"
+    source    = "data"
+    read_only = false
+  }
+
+  task "app" {
+    volume_mount {
+      volume      = "data"
+      destination = "/data"
+      read_only   = false
+    }
+  }
+
+Examples:
+  $(basename "$0") host-volume add data --path /data --read-write --create
+  $(basename "$0") host-volume add config --path /etc/app --read-only
+  $(basename "$0") host-volume remove data
+EOF
+}
+
+meta_usage() {
+  cat <<EOF
+Nomad client metadata config
+
+Usage:
+  $(basename "$0") meta set KEY VALUE
+  $(basename "$0") meta unset KEY
+
+Notes:
+  KEY must be a HCL identifier: letters, numbers and underscore, starting with a letter or underscore.
+  Values are written as HCL strings.
+  Metadata is stored in ${META_CONFIG} and appears under the Nomad client meta map.
+
+Scheduling example:
+  constraint {
+    attribute = "\${meta.role}"
+    value     = "edge"
+  }
+
+Examples:
+  $(basename "$0") meta set role edge
+  $(basename "$0") meta set zone cn-east-1
+  $(basename "$0") meta unset role
+EOF
+}
+
+ui_usage() {
+  cat <<EOF
+Nomad UI config
+
+Usage:
+  $(basename "$0") ui enable [options]
+  $(basename "$0") ui disable
+
+Options:
+  --consul-url URL           Consul UI URL
+  --vault-url URL            Vault UI URL
+  --label TEXT               UI label text
+  --label-background COLOR   UI label background color
+  --label-color COLOR        UI label text color
+  --show-cli-hints true|false  Show CLI hints, default: true
+
+Behavior:
+  enable writes ${UI_CONFIG}, validates Nomad config and restarts nomad.service.
+  disable removes only the managed UI config.
+  consul-url and vault-url only affect links shown in the Nomad web UI.
+
+Examples:
+  $(basename "$0") ui enable
+  $(basename "$0") ui enable --vault-url https://vault.example.com:8200 --consul-url https://consul.example.com:8501
+  $(basename "$0") ui enable --label prod --label-background '#b91c1c' --label-color '#ffffff'
+  $(basename "$0") ui disable
+EOF
+}
+
+raw_exec_usage() {
+  cat <<EOF
+Nomad raw_exec driver config
+
+Usage:
+  $(basename "$0") raw-exec enable
+  $(basename "$0") raw-exec disable
+
+Behavior:
+  enable writes ${RAW_EXEC_CONFIG}, validates Nomad config and restarts nomad.service.
+  disable removes only the managed raw_exec plugin config.
+  raw_exec runs commands directly on the host. Enable it only for trusted jobs.
+
+Related commands:
+  $(basename "$0") driver deny raw_exec
+  $(basename "$0") driver allow raw_exec
+
+Examples:
+  $(basename "$0") raw-exec enable
+  $(basename "$0") raw-exec disable
+EOF
+}
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+require_command() {
+  if ! command_exists "$1"; then
+    fatal "Required command not found: $1"
+  fi
+}
+
+require_any_checksum_command() {
+  if ! command_exists sha256sum && ! command_exists shasum; then
+    fatal "Required command not found: sha256sum or shasum"
+  fi
+}
+
+require_zip_extractor() {
+  if ! command_exists unzip && ! command_exists python3; then
+    fatal "Required command not found: unzip or python3"
+  fi
+}
+
+require_linux() {
+  if [ "$(uname -s)" != "Linux" ]; then
+    fatal "This script only supports Linux"
+  fi
+}
+
+run_root() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$@"
+  elif command_exists sudo; then
+    sudo "$@"
+  else
+    fatal "Root privilege is required. Please install sudo or run as root"
+  fi
+}
+
+detect_arch() {
+  case "$(uname -m)" in
+    x86_64 | amd64)
+      printf 'amd64\n'
+      ;;
+    aarch64 | arm64)
+      printf 'arm64\n'
+      ;;
+    i386 | i686)
+      printf '386\n'
+      ;;
+    *)
+      fatal "Unsupported architecture: $(uname -m)"
+      ;;
+  esac
+}
+
+normalize_version() {
+  local version="$1"
+
+  version="${version#v}"
+  if [[ ! "$version" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+    fatal "Invalid Nomad version: $1"
+  fi
+
+  printf '%s\n' "$version"
+}
+
+curl_stdout() {
+  local url="$1"
+
+  curl --fail --location --show-error --silent --connect-timeout 10 --max-time 60 "$url"
+}
+
+curl_download() {
+  local url="$1"
+  local output="$2"
+
+  curl --fail --location --show-error --silent --retry 3 --connect-timeout 10 --max-time 300 --output "$output" "$url"
+}
+
+curl_local() {
+  local url="$1"
+
+  curl --noproxy '*' --fail --silent --max-time 2 "$url"
+}
+
+fetch_latest_version() {
+  local latest
+
+  latest="$(
+    curl_stdout "$RELEASE_INDEX_URL" |
+      sed -n 's#.*href="/nomad/\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)/".*#\1#p' |
+      head -n 1
+  )"
+
+  if [ -z "$latest" ]; then
+    return 1
+  fi
+
+  normalize_version "$latest"
+}
+
+resolve_version() {
+  local requested="$1"
+  local latest
+
+  if [ -n "$requested" ] && [ "$requested" != "latest" ]; then
+    normalize_version "$requested"
+    return
+  fi
+
+  if latest="$(fetch_latest_version)"; then
+    log_info "Resolved latest Nomad version: ${latest}" >&2
+    printf '%s\n' "$latest"
+    return
+  fi
+
+  log_warn "Failed to resolve latest Nomad version, fallback to ${DEFAULT_NOMAD_VERSION}"
+  printf '%s\n' "$DEFAULT_NOMAD_VERSION"
+}
+
+checksum_file() {
+  local file="$1"
+
+  if command_exists sha256sum; then
+    sha256sum "$file" | awk '{print $1}'
+  else
+    shasum -a 256 "$file" | awk '{print $1}'
+  fi
+}
+
+verify_checksum() {
+  local zip_file="$1"
+  local sums_file="$2"
+  local zip_name
+  local expected
+  local actual
+
+  zip_name="$(basename "$zip_file")"
+  expected="$(awk -v file="$zip_name" '$2 == file {print $1; exit}' "$sums_file")"
+  if [ -z "$expected" ]; then
+    fatal "Checksum entry not found for ${zip_name}"
+  fi
+
+  actual="$(checksum_file "$zip_file")"
+  if [ "$expected" != "$actual" ]; then
+    fatal "Checksum mismatch for ${zip_name}"
+  fi
+
+  log_info "Checksum verified: ${zip_name}"
+}
+
+extract_zip() {
+  local zip_file="$1"
+  local output_dir="$2"
+
+  if command_exists unzip; then
+    unzip -q "$zip_file" -d "$output_dir"
+    return
+  fi
+
+  python3 -m zipfile -e "$zip_file" "$output_dir"
+}
+
+hcl_string() {
+  local value="$1"
+
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "$value"
+}
+
+validate_bool() {
+  local value="$1"
+
+  case "$value" in
+    true | false)
+      printf '%s\n' "$value"
+      ;;
+    *)
+      fatal "Invalid boolean value: ${value}"
+      ;;
+  esac
+}
+
+validate_name() {
+  local value="$1"
+  local label="$2"
+
+  if [[ ! "$value" =~ ^[A-Za-z0-9_.-]+$ ]]; then
+    fatal "Invalid ${label}: ${value}"
+  fi
+}
+
+validate_hcl_key() {
+  local value="$1"
+
+  if [[ ! "$value" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    fatal "Invalid HCL key: ${value}"
+  fi
+}
+
+csv_to_hcl_list() {
+  local csv="$1"
+  local first=1
+  local item
+  local old_ifs
+
+  printf '['
+  old_ifs="$IFS"
+  IFS=','
+  for item in $csv; do
+    item="${item#"${item%%[![:space:]]*}"}"
+    item="${item%"${item##*[![:space:]]}"}"
+    [ -n "$item" ] || continue
+    if [ "$first" -eq 0 ]; then
+      printf ', '
+    fi
+    hcl_string "$item"
+    first=0
+  done
+  IFS="$old_ifs"
+  printf ']'
+}
+
+safe_remove_path() {
+  local path="$1"
+
+  case "$path" in
+    "" | "/" | "/usr" | "/usr/local" | "/usr/local/bin" | "/etc" | "/opt")
+      fatal "Refuse to remove unsafe path: ${path}"
+      ;;
+  esac
+
+  if [ -e "$path" ] || [ -L "$path" ]; then
+    run_root rm -rf -- "$path"
+  fi
+}
+
+is_managed_file() {
+  local path="$1"
+  local first_line
+
+  [ -f "$path" ] || return 1
+  first_line="$(sed -n '1p' "$path")"
+  [ "$first_line" = "$MANAGED_MARKER" ] || [ "$first_line" = "$LEGACY_MANAGED_MARKER" ]
+}
+
+ensure_managed_or_absent() {
+  local path="$1"
+
+  if [ -e "$path" ] && ! is_managed_file "$path"; then
+    fatal "Refuse to manage non-managed file: ${path}"
+  fi
+}
+
+require_config_environment() {
+  require_linux
+  require_command install
+  require_command mktemp
+  require_command systemctl
+
+  if [ ! -x "$BIN_PATH" ]; then
+    fatal "Nomad binary not found: ${BIN_PATH}. Please run install first"
+  fi
+
+  run_root install -d -m 0755 "$CONFIG_DIR"
+}
+
+validate_nomad_config() {
+  run_root "$BIN_PATH" config validate "$CONFIG_DIR"
+}
+
+restart_nomad_service() {
+  run_root systemctl restart nomad
+  sleep 2
+  if ! run_root systemctl is-active --quiet nomad; then
+    if command_exists journalctl; then
+      run_root journalctl -u nomad -n 80 --no-pager || true
+    fi
+    return 1
+  fi
+}
+
+restore_managed_file() {
+  local target="$1"
+  local backup="$2"
+  local had_backup="$3"
+
+  if [ "$had_backup" -eq 1 ]; then
+    run_root install -m 0644 "$backup" "$target"
+  else
+    run_root rm -f -- "$target"
+  fi
+}
+
+commit_managed_file() {
+  local target="$1"
+  local source="$2"
+  local backup
+  local had_backup=0
+
+  require_config_environment
+  ensure_managed_or_absent "$target"
+
+  backup="$(mktemp)"
+  if [ -f "$target" ]; then
+    cp "$target" "$backup"
+    had_backup=1
+    if cmp -s "$target" "$source"; then
+      rm -f "$backup"
+      log_info "No config change: ${target}"
+      return
+    fi
+  fi
+
+  run_root install -m 0644 "$source" "$target"
+  if ! validate_nomad_config; then
+    restore_managed_file "$target" "$backup" "$had_backup"
+    rm -f "$backup"
+    fatal "Nomad config validation failed, rollback completed"
+  fi
+
+  if ! restart_nomad_service; then
+    restore_managed_file "$target" "$backup" "$had_backup"
+    validate_nomad_config || true
+    restart_nomad_service || true
+    rm -f "$backup"
+    fatal "Nomad restart failed, rollback completed"
+  fi
+
+  rm -f "$backup"
+  log_info "Config applied: ${target}"
+}
+
+remove_managed_file() {
+  local target="$1"
+  local backup
+
+  require_config_environment
+  if [ ! -e "$target" ]; then
+    log_info "Config already absent: ${target}"
+    return
+  fi
+
+  ensure_managed_or_absent "$target"
+  backup="$(mktemp)"
+  cp "$target" "$backup"
+
+  run_root rm -f -- "$target"
+  if ! validate_nomad_config; then
+    run_root install -m 0644 "$backup" "$target"
+    rm -f "$backup"
+    fatal "Nomad config validation failed, rollback completed"
+  fi
+
+  if ! restart_nomad_service; then
+    run_root install -m 0644 "$backup" "$target"
+    validate_nomad_config || true
+    restart_nomad_service || true
+    rm -f "$backup"
+    fatal "Nomad restart failed, rollback completed"
+  fi
+
+  rm -f "$backup"
+  log_info "Config removed: ${target}"
+}
+
+host_volume_config_path() {
+  local name="$1"
+
+  validate_name "$name" "host volume name"
+  printf '%s/70-host-volume-%s.hcl\n' "$CONFIG_DIR" "$name"
+}
+
+ensure_nomad_user() {
+  if id "$NOMAD_USER" >/dev/null 2>&1; then
+    return
+  fi
+
+  log_info "Creating system user: ${NOMAD_USER}"
+  run_root useradd --system --home "$CONFIG_DIR" --shell /bin/false "$NOMAD_USER"
+}
+
+install_directories() {
+  log_info "Creating Nomad directories"
+  run_root install -d -m 0755 -o "$NOMAD_USER" -g "$NOMAD_GROUP" "$CONFIG_DIR"
+  run_root install -d -m 0755 -o "$NOMAD_USER" -g "$NOMAD_GROUP" "$DATA_DIR"
+  run_root install -d -m 0755 -o "$NOMAD_USER" -g "$NOMAD_GROUP" "${DATA_DIR}/data"
+}
+
+write_systemd_service() {
+  local tmpdir="$1"
+  local service_file="${tmpdir}/nomad.service"
+
+  cat >"$service_file" <<'EOF'
+[Unit]
+Description=Nomad
+Documentation=https://developer.hashicorp.com/nomad/docs
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=root
+Group=root
+ExecReload=/bin/kill -HUP $MAINPID
+ExecStart=/usr/local/bin/nomad agent -config /etc/nomad.d
+KillMode=process
+KillSignal=SIGINT
+LimitNOFILE=65536
+LimitNPROC=infinity
+Restart=on-failure
+RestartSec=2
+TasksMax=infinity
+OOMScoreAdjust=-1000
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  log_info "Installing systemd service: ${SYSTEMD_SERVICE}"
+  run_root install -m 0644 "$service_file" "$SYSTEMD_SERVICE"
+}
+
+write_nomad_config() {
+  local tmpdir="$1"
+  local config_file="${tmpdir}/nomad.hcl"
+
+  # 单节点模式同时启用 server 和 client，便于一台机器直接调度任务。
+  cat >"$config_file" <<EOF
+datacenter = "dc1"
+data_dir   = "${DATA_DIR}/data"
+bind_addr  = "0.0.0.0"
+log_level  = "INFO"
+
+server {
+  enabled          = true
+  bootstrap_expect = 1
+}
+
+client {
+  enabled = true
+  servers = ["127.0.0.1:4647"]
+}
+
+acl {
+  enabled = true
+}
+EOF
+
+  log_info "Installing Nomad config: ${CONFIG_DIR}/nomad.hcl"
+  run_root install -m 0644 "$config_file" "${CONFIG_DIR}/nomad.hcl"
+  run_root chown "${NOMAD_USER}:${NOMAD_GROUP}" "${CONFIG_DIR}/nomad.hcl"
+}
+
+write_default_managed_configs() {
+  local tmpdir="$1"
+  local telemetry_file="${tmpdir}/40-telemetry.hcl"
+  local docker_file="${tmpdir}/80-docker.hcl"
+
+  cat >"$telemetry_file" <<EOF
+${MANAGED_MARKER}
+telemetry {
+  collection_interval        = "1s"
+  disable_hostname           = false
+  prometheus_metrics         = true
+  publish_allocation_metrics = true
+  publish_node_metrics       = true
+}
+EOF
+
+  cat >"$docker_file" <<EOF
+${MANAGED_MARKER}
+plugin "docker" {
+  config {
+    allow_privileged = true
+
+    volumes {
+      enabled = true
+    }
+
+    gc {
+      image = true
+      image_delay = "100h"
+      container = true
+
+      dangling_containers {
+        enabled = true
+        dry_run = false
+        period = "10m"
+        creation_grace = "10m"
+      }
+    }
+
+    extra_labels = ["job_name", "task_group_name", "task_name", "namespace", "node_name", "short_alloc_id"]
+  }
+}
+EOF
+
+  log_info "Installing default managed config: ${TELEMETRY_CONFIG}"
+  run_root install -m 0644 "$telemetry_file" "$TELEMETRY_CONFIG"
+  log_info "Installing default managed config: ${DOCKER_CONFIG}"
+  run_root install -m 0644 "$docker_file" "$DOCKER_CONFIG"
+}
+
+download_nomad() {
+  local version="$1"
+  local arch="$2"
+  local tmpdir="$3"
+  local zip_name="nomad_${version}_linux_${arch}.zip"
+  local sums_name="nomad_${version}_SHA256SUMS"
+  local base_url="https://releases.hashicorp.com/nomad/${version}"
+  local zip_file="${tmpdir}/${zip_name}"
+  local sums_file="${tmpdir}/${sums_name}"
+
+  log_info "Downloading Nomad ${version} for linux_${arch}"
+  curl_download "${base_url}/${zip_name}" "$zip_file"
+  curl_download "${base_url}/${sums_name}" "$sums_file"
+  verify_checksum "$zip_file" "$sums_file"
+
+  extract_zip "$zip_file" "${tmpdir}/extract"
+  if [ ! -f "${tmpdir}/extract/nomad" ]; then
+    fatal "Nomad binary not found in archive"
+  fi
+}
+
+install_binary() {
+  local tmpdir="$1"
+
+  log_info "Installing binary: ${BIN_PATH}"
+  run_root install -m 0755 -o root -g root "${tmpdir}/extract/nomad" "$BIN_PATH"
+  "$BIN_PATH" version
+}
+
+wait_for_nomad() {
+  local attempt=1
+
+  log_info "Waiting for Nomad HTTP API"
+  while [ "$attempt" -le 60 ]; do
+    if curl_local "${NOMAD_ADDR}/v1/status/leader" >/dev/null 2>&1; then
+      return
+    fi
+
+    if ! run_root systemctl is-active --quiet nomad; then
+      log_error "Nomad service is not active"
+      if command_exists journalctl; then
+        run_root journalctl -u nomad -n 80 --no-pager || true
+      fi
+      exit 1
+    fi
+
+    sleep 2
+    attempt=$((attempt + 1))
+  done
+
+  if command_exists journalctl; then
+    run_root journalctl -u nomad -n 80 --no-pager || true
+  fi
+  fatal "Timed out waiting for Nomad HTTP API"
+}
+
+target_token_file() {
+  local target_user
+  local target_home
+
+  target_user="${SUDO_USER:-$(id -un)}"
+  target_home="${HOME}"
+
+  if command_exists getent; then
+    target_home="$(getent passwd "$target_user" | awk -F: '{print $6}' || true)"
+  fi
+
+  if [ -z "$target_home" ] || [ ! -d "$target_home" ]; then
+    target_home="${HOME}"
+  fi
+
+  printf '%s/nomad.acl\n' "$target_home"
+}
+
+write_acl_token_file() {
+  local output="$1"
+  local token_file
+  local tmp_file
+  local secret_id
+  local target_user
+  local target_group
+
+  token_file="$(target_token_file)"
+  tmp_file="$(mktemp)"
+  secret_id="$(printf '%s\n' "$output" | awk -F'= ' 'tolower($1) ~ /secret id/ {gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2; exit}')"
+
+  {
+    printf '# Generated by installNomad.sh\n'
+    printf '# Source this file to use the bootstrapped ACL token.\n'
+    printf 'export NOMAD_ADDR=%s\n' "$NOMAD_ADDR"
+    if [ -n "$secret_id" ]; then
+      printf 'export NOMAD_TOKEN=%s\n' "$secret_id"
+    fi
+    printf '\n'
+    printf '%s\n' "$output" | sed 's/^/# /'
+  } >"$tmp_file"
+  chmod 0600 "$tmp_file"
+
+  install -m 0600 "$tmp_file" "$token_file"
+
+  target_user="${SUDO_USER:-$(id -un)}"
+  if [ "$(id -u)" -eq 0 ] && [ "$target_user" != "root" ]; then
+    target_group="$(id -gn "$target_user" 2>/dev/null || printf '%s' "$target_user")"
+    chown "${target_user}:${target_group}" "$token_file" || true
+  fi
+
+  rm -f "$tmp_file"
+  log_info "ACL token saved to ${token_file}"
+}
+
+remove_acl_token_file() {
+  local token_file
+  local first_line
+
+  token_file="$(target_token_file)"
+  if [ ! -f "$token_file" ]; then
+    return
+  fi
+
+  first_line="$(sed -n '1p' "$token_file")"
+  if [ "$first_line" != "# Generated by installNomad.sh" ]; then
+    log_warn "Skip removing ACL token file without generated marker: ${token_file}"
+    return
+  fi
+
+  rm -f "$token_file"
+  log_info "Removed ACL token file: ${token_file}"
+}
+
+bootstrap_acl() {
+  local output
+
+  if [ "$BOOTSTRAP_ACL" -ne 1 ]; then
+    log_info "Skipping ACL bootstrap"
+    return
+  fi
+
+  log_info "Bootstrapping Nomad ACL"
+  if output="$(NOMAD_ADDR="$NOMAD_ADDR" no_proxy="$LOCAL_NO_PROXY" NO_PROXY="$LOCAL_NO_PROXY" "$BIN_PATH" acl bootstrap 2>&1)"; then
+    write_acl_token_file "$output"
+    return
+  fi
+
+  if printf '%s\n' "$output" | grep -qi 'already'; then
+    log_warn "Nomad ACL has already been bootstrapped"
+    return
+  fi
+
+  log_warn "Nomad ACL bootstrap failed. Check service status and run manually if needed"
+}
+
+configure_vault_enable() {
+  local address=""
+  local ca_file=""
+  local ca_path=""
+  local cert_file=""
+  local key_file=""
+  local namespace=""
+  local jwt_auth_backend_path="jwt-nomad"
+  local aud="vault.io"
+  local ttl="1h"
+  local env="false"
+  local file="true"
+  local tmp
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --address)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --address"
+        address="$1"
+        ;;
+      --ca-file)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --ca-file"
+        ca_file="$1"
+        ;;
+      --ca-path)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --ca-path"
+        ca_path="$1"
+        ;;
+      --cert-file)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --cert-file"
+        cert_file="$1"
+        ;;
+      --key-file)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --key-file"
+        key_file="$1"
+        ;;
+      --namespace)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --namespace"
+        namespace="$1"
+        ;;
+      --jwt-auth-backend-path)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --jwt-auth-backend-path"
+        jwt_auth_backend_path="$1"
+        ;;
+      --aud)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --aud"
+        aud="$1"
+        ;;
+      --ttl)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --ttl"
+        ttl="$1"
+        ;;
+      --env)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --env"
+        env="$(validate_bool "$1")"
+        ;;
+      --file)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --file"
+        file="$(validate_bool "$1")"
+        ;;
+      -h | --help)
+        vault_usage
+        exit 0
+        ;;
+      *)
+        fatal "Unknown vault enable option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  [ -n "$address" ] || fatal "vault enable requires --address"
+
+  tmp="$(mktemp)"
+  {
+    printf '%s\n' "$MANAGED_MARKER"
+    printf 'vault {\n'
+    printf '  enabled = true\n'
+    printf '  address = %s\n' "$(hcl_string "$address")"
+    [ -z "$namespace" ] || printf '  namespace = %s\n' "$(hcl_string "$namespace")"
+    [ -z "$jwt_auth_backend_path" ] || printf '  jwt_auth_backend_path = %s\n' "$(hcl_string "$jwt_auth_backend_path")"
+    [ -z "$ca_file" ] || printf '  ca_file = %s\n' "$(hcl_string "$ca_file")"
+    [ -z "$ca_path" ] || printf '  ca_path = %s\n' "$(hcl_string "$ca_path")"
+    [ -z "$cert_file" ] || printf '  cert_file = %s\n' "$(hcl_string "$cert_file")"
+    [ -z "$key_file" ] || printf '  key_file = %s\n' "$(hcl_string "$key_file")"
+    printf '\n'
+    printf '  default_identity {\n'
+    printf '    aud  = %s\n' "$(csv_to_hcl_list "$aud")"
+    printf '    env  = %s\n' "$env"
+    printf '    file = %s\n' "$file"
+    printf '    ttl  = %s\n' "$(hcl_string "$ttl")"
+    printf '  }\n'
+    printf '}\n'
+  } >"$tmp"
+
+  commit_managed_file "$VAULT_CONFIG" "$tmp"
+  rm -f "$tmp"
+}
+
+configure_consul_enable() {
+  local address=""
+  local grpc_address=""
+  local ca_file=""
+  local cert_file=""
+  local key_file=""
+  local ssl="false"
+  local verify="true"
+  local aud="consul.io"
+  local ttl="1h"
+  local tmp
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --address)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --address"
+        address="$1"
+        ;;
+      --grpc-address)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --grpc-address"
+        grpc_address="$1"
+        ;;
+      --ca-file)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --ca-file"
+        ca_file="$1"
+        ;;
+      --cert-file)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --cert-file"
+        cert_file="$1"
+        ;;
+      --key-file)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --key-file"
+        key_file="$1"
+        ;;
+      --ssl)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --ssl"
+        ssl="$(validate_bool "$1")"
+        ;;
+      --verify)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --verify"
+        verify="$(validate_bool "$1")"
+        ;;
+      --aud)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --aud"
+        aud="$1"
+        ;;
+      --ttl)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --ttl"
+        ttl="$1"
+        ;;
+      -h | --help)
+        consul_usage
+        exit 0
+        ;;
+      *)
+        fatal "Unknown consul enable option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  [ -n "$address" ] || fatal "consul enable requires --address"
+
+  tmp="$(mktemp)"
+  {
+    printf '%s\n' "$MANAGED_MARKER"
+    printf 'consul {\n'
+    printf '  address    = %s\n' "$(hcl_string "$address")"
+    printf '  ssl        = %s\n' "$ssl"
+    printf '  verify_ssl = %s\n' "$verify"
+    [ -z "$grpc_address" ] || printf '  grpc_address = %s\n' "$(hcl_string "$grpc_address")"
+    [ -z "$ca_file" ] || printf '  ca_file = %s\n' "$(hcl_string "$ca_file")"
+    [ -z "$cert_file" ] || printf '  cert_file = %s\n' "$(hcl_string "$cert_file")"
+    [ -z "$key_file" ] || printf '  key_file = %s\n' "$(hcl_string "$key_file")"
+    printf '\n'
+    printf '  service_identity {\n'
+    printf '    aud = %s\n' "$(csv_to_hcl_list "$aud")"
+    printf '    ttl = %s\n' "$(hcl_string "$ttl")"
+    printf '  }\n'
+    printf '\n'
+    printf '  task_identity {\n'
+    printf '    aud = %s\n' "$(csv_to_hcl_list "$aud")"
+    printf '    ttl = %s\n' "$(hcl_string "$ttl")"
+    printf '  }\n'
+    printf '}\n'
+  } >"$tmp"
+
+  commit_managed_file "$CONSUL_CONFIG" "$tmp"
+  rm -f "$tmp"
+}
+
+configure_telemetry_enable() {
+  local prometheus="true"
+  local alloc="true"
+  local node="true"
+  local interval="1s"
+  local disable_hostname="false"
+  local tmp
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --prometheus)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --prometheus"
+        prometheus="$(validate_bool "$1")"
+        ;;
+      --alloc)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --alloc"
+        alloc="$(validate_bool "$1")"
+        ;;
+      --node)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --node"
+        node="$(validate_bool "$1")"
+        ;;
+      --interval)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --interval"
+        interval="$1"
+        ;;
+      --disable-hostname)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --disable-hostname"
+        disable_hostname="$(validate_bool "$1")"
+        ;;
+      -h | --help)
+        telemetry_usage
+        exit 0
+        ;;
+      *)
+        fatal "Unknown telemetry enable option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  tmp="$(mktemp)"
+  {
+    printf '%s\n' "$MANAGED_MARKER"
+    printf 'telemetry {\n'
+    printf '  collection_interval        = %s\n' "$(hcl_string "$interval")"
+    printf '  disable_hostname           = %s\n' "$disable_hostname"
+    printf '  prometheus_metrics         = %s\n' "$prometheus"
+    printf '  publish_allocation_metrics = %s\n' "$alloc"
+    printf '  publish_node_metrics       = %s\n' "$node"
+    printf '}\n'
+  } >"$tmp"
+
+  commit_managed_file "$TELEMETRY_CONFIG" "$tmp"
+  rm -f "$tmp"
+}
+
+configure_tls_enable() {
+  local ca_file=""
+  local cert_file=""
+  local key_file=""
+  local http="true"
+  local rpc="true"
+  local verify_server_hostname="false"
+  local verify_https_client="false"
+  local tmp
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --ca-file)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --ca-file"
+        ca_file="$1"
+        ;;
+      --cert-file)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --cert-file"
+        cert_file="$1"
+        ;;
+      --key-file)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --key-file"
+        key_file="$1"
+        ;;
+      --http)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --http"
+        http="$(validate_bool "$1")"
+        ;;
+      --rpc)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --rpc"
+        rpc="$(validate_bool "$1")"
+        ;;
+      --verify-server-hostname)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --verify-server-hostname"
+        verify_server_hostname="$(validate_bool "$1")"
+        ;;
+      --verify-https-client)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --verify-https-client"
+        verify_https_client="$(validate_bool "$1")"
+        ;;
+      -h | --help)
+        tls_usage
+        exit 0
+        ;;
+      *)
+        fatal "Unknown tls enable option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  [ -n "$ca_file" ] || fatal "tls enable requires --ca-file"
+  [ -n "$cert_file" ] || fatal "tls enable requires --cert-file"
+  [ -n "$key_file" ] || fatal "tls enable requires --key-file"
+
+  tmp="$(mktemp)"
+  {
+    printf '%s\n' "$MANAGED_MARKER"
+    printf 'tls {\n'
+    printf '  http = %s\n' "$http"
+    printf '  rpc  = %s\n' "$rpc"
+    printf '  ca_file   = %s\n' "$(hcl_string "$ca_file")"
+    printf '  cert_file = %s\n' "$(hcl_string "$cert_file")"
+    printf '  key_file  = %s\n' "$(hcl_string "$key_file")"
+    printf '  verify_server_hostname = %s\n' "$verify_server_hostname"
+    printf '  verify_https_client    = %s\n' "$verify_https_client"
+    printf '}\n'
+  } >"$tmp"
+
+  commit_managed_file "$TLS_CONFIG" "$tmp"
+  rm -f "$tmp"
+}
+
+configure_ui_enable() {
+  local consul_url=""
+  local vault_url=""
+  local label_text=""
+  local label_background=""
+  local label_color=""
+  local show_cli_hints="true"
+  local tmp
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --consul-url)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --consul-url"
+        consul_url="$1"
+        ;;
+      --vault-url)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --vault-url"
+        vault_url="$1"
+        ;;
+      --label)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --label"
+        label_text="$1"
+        ;;
+      --label-background)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --label-background"
+        label_background="$1"
+        ;;
+      --label-color)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --label-color"
+        label_color="$1"
+        ;;
+      --show-cli-hints)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --show-cli-hints"
+        show_cli_hints="$(validate_bool "$1")"
+        ;;
+      -h | --help)
+        ui_usage
+        exit 0
+        ;;
+      *)
+        fatal "Unknown ui enable option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  tmp="$(mktemp)"
+  {
+    printf '%s\n' "$MANAGED_MARKER"
+    printf 'ui {\n'
+    printf '  enabled = true\n'
+    printf '  show_cli_hints = %s\n' "$show_cli_hints"
+    [ -z "$consul_url" ] || printf '  consul {\n    ui_url = %s\n  }\n' "$(hcl_string "$consul_url")"
+    [ -z "$vault_url" ] || printf '  vault {\n    ui_url = %s\n  }\n' "$(hcl_string "$vault_url")"
+    if [ -n "$label_text" ] || [ -n "$label_background" ] || [ -n "$label_color" ]; then
+      printf '  label {\n'
+      [ -z "$label_text" ] || printf '    text = %s\n' "$(hcl_string "$label_text")"
+      [ -z "$label_background" ] || printf '    background_color = %s\n' "$(hcl_string "$label_background")"
+      [ -z "$label_color" ] || printf '    text_color = %s\n' "$(hcl_string "$label_color")"
+      printf '  }\n'
+    fi
+    printf '}\n'
+  } >"$tmp"
+
+  commit_managed_file "$UI_CONFIG" "$tmp"
+  rm -f "$tmp"
+}
+
+configure_docker_enable() {
+  local allow_privileged="true"
+  local volumes="true"
+  local image_gc="true"
+  local image_delay="100h"
+  local auth_config=""
+  local tmp
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --allow-privileged)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --allow-privileged"
+        allow_privileged="$(validate_bool "$1")"
+        ;;
+      --volumes)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --volumes"
+        volumes="$(validate_bool "$1")"
+        ;;
+      --image-gc)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --image-gc"
+        image_gc="$(validate_bool "$1")"
+        ;;
+      --image-delay)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --image-delay"
+        image_delay="$1"
+        ;;
+      --auth-config)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --auth-config"
+        auth_config="$1"
+        ;;
+      -h | --help)
+        docker_usage
+        exit 0
+        ;;
+      *)
+        fatal "Unknown docker enable option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  tmp="$(mktemp)"
+  {
+    printf '%s\n' "$MANAGED_MARKER"
+    printf 'plugin "docker" {\n'
+    printf '  config {\n'
+    printf '    allow_privileged = %s\n' "$allow_privileged"
+    printf '\n'
+    printf '    volumes {\n'
+    printf '      enabled = %s\n' "$volumes"
+    printf '    }\n'
+    [ -z "$auth_config" ] || printf '\n    auth {\n      config = %s\n    }\n' "$(hcl_string "$auth_config")"
+    printf '\n'
+    printf '    gc {\n'
+    printf '      image = %s\n' "$image_gc"
+    printf '      image_delay = %s\n' "$(hcl_string "$image_delay")"
+    printf '      container = true\n'
+    printf '\n'
+    printf '      dangling_containers {\n'
+    printf '        enabled = true\n'
+    printf '        dry_run = false\n'
+    printf '        period = "10m"\n'
+    printf '        creation_grace = "10m"\n'
+    printf '      }\n'
+    printf '    }\n'
+    printf '\n'
+    printf '    extra_labels = ["job_name", "task_group_name", "task_name", "namespace", "node_name", "short_alloc_id"]\n'
+    printf '  }\n'
+    printf '}\n'
+  } >"$tmp"
+
+  commit_managed_file "$DOCKER_CONFIG" "$tmp"
+  rm -f "$tmp"
+}
+
+doctor_check_print() {
+  local status="$1"
+  local message="$2"
+
+  printf '%-5s %s\n' "$status" "$message"
+}
+
+hcl_file_string_value() {
+  local path="$1"
+  local key="$2"
+
+  [ -f "$path" ] || return 1
+  sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\"\\([^\"]*\\)\".*/\\1/p" "$path" | head -n 1
+}
+
+hcl_file_bool_value() {
+  local path="$1"
+  local key="$2"
+
+  [ -f "$path" ] || return 1
+  sed -n "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*\\(true\\|false\\).*/\\1/p" "$path" | head -n 1
+}
+
+with_default_scheme() {
+  local address="$1"
+  local scheme="$2"
+
+  case "$address" in
+    http://* | https://*)
+      printf '%s\n' "$address"
+      ;;
+    *)
+      printf '%s://%s\n' "$scheme" "$address"
+      ;;
+  esac
+}
+
+doctor_config_file() {
+  local path="$1"
+  local label="$2"
+
+  if [ ! -e "$path" ]; then
+    doctor_check_print "WARN" "${label} config absent: ${path}"
+    return 2
+  fi
+
+  if is_managed_file "$path"; then
+    doctor_check_print "OK" "${label} config managed: ${path}"
+    return 0
+  fi
+
+  doctor_check_print "FAIL" "${label} config exists but is not managed: ${path}"
+  return 1
+}
+
+doctor_nomad_config() {
+  if [ ! -x "$BIN_PATH" ]; then
+    doctor_check_print "FAIL" "Nomad binary not found: ${BIN_PATH}"
+    return 1
+  fi
+
+  if [ ! -d "$CONFIG_DIR" ]; then
+    doctor_check_print "FAIL" "Nomad config directory missing: ${CONFIG_DIR}"
+    return 1
+  fi
+
+  if "$BIN_PATH" config validate "$CONFIG_DIR" >/dev/null 2>&1; then
+    doctor_check_print "OK" "Nomad config validates: ${CONFIG_DIR}"
+    return 0
+  fi
+
+  doctor_check_print "FAIL" "Nomad config validation failed: ${CONFIG_DIR}"
+  return 1
+}
+
+vault_doctor() {
+  local address=""
+  local namespace=""
+  local config_address=""
+  local config_namespace=""
+  local code
+  local failures=0
+  local health_url
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --address)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --address"
+        address="$1"
+        ;;
+      --namespace)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --namespace"
+        namespace="$1"
+        ;;
+      -h | --help)
+        vault_usage
+        exit 0
+        ;;
+      *)
+        fatal "Unknown vault doctor option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  if doctor_config_file "$VAULT_CONFIG" "Vault"; then
+    :
+  else
+    case "$?" in
+      1)
+        failures=$((failures + 1))
+        ;;
+    esac
+  fi
+  config_address="$(hcl_file_string_value "$VAULT_CONFIG" "address" || true)"
+  config_namespace="$(hcl_file_string_value "$VAULT_CONFIG" "namespace" || true)"
+  [ -n "$address" ] || address="$config_address"
+  [ -n "$namespace" ] || namespace="$config_namespace"
+
+  doctor_nomad_config || failures=$((failures + 1))
+
+  if command_exists vault; then
+    doctor_check_print "OK" "vault CLI found: $(command -v vault)"
+  else
+    doctor_check_print "WARN" "vault CLI not found; Nomad can still use a remote Vault address"
+  fi
+
+  if [ -z "$address" ]; then
+    doctor_check_print "FAIL" "Vault address missing; pass --address or run vault enable first"
+    failures=$((failures + 1))
+  elif command_exists curl; then
+    address="$(with_default_scheme "$address" "http")"
+    health_url="${address%/}/v1/sys/health"
+    if code="$(curl --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "$health_url" 2>/dev/null)"; then
+      case "$code" in
+        200 | 429 | 472 | 473)
+          doctor_check_print "OK" "Vault health endpoint reachable: ${health_url} (${code})"
+          ;;
+        501 | 503)
+          doctor_check_print "WARN" "Vault health endpoint reachable but not ready: ${health_url} (${code})"
+          ;;
+        *)
+          doctor_check_print "FAIL" "Vault health endpoint returned ${code}: ${health_url}"
+          failures=$((failures + 1))
+          ;;
+      esac
+    else
+      doctor_check_print "FAIL" "Vault health endpoint not reachable: ${health_url}"
+      failures=$((failures + 1))
+    fi
+
+    if command_exists vault; then
+      if [ -n "$namespace" ]; then
+        if VAULT_ADDR="$address" VAULT_NAMESPACE="$namespace" vault status >/dev/null 2>&1; then
+          doctor_check_print "OK" "vault status succeeded"
+        else
+          doctor_check_print "WARN" "vault status failed; check token, TLS and namespace"
+        fi
+      else
+        if VAULT_ADDR="$address" vault status >/dev/null 2>&1; then
+          doctor_check_print "OK" "vault status succeeded"
+        else
+          doctor_check_print "WARN" "vault status failed; check token and TLS"
+        fi
+      fi
+    fi
+  else
+    doctor_check_print "FAIL" "curl command not found; cannot check Vault health endpoint"
+    failures=$((failures + 1))
+  fi
+
+  return "$failures"
+}
+
+consul_doctor() {
+  local address=""
+  local config_address=""
+  local config_ssl=""
+  local ssl=""
+  local scheme="http"
+  local base_url
+  local code
+  local failures=0
+  local leader_url
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --address)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --address"
+        address="$1"
+        ;;
+      --ssl)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --ssl"
+        ssl="$(validate_bool "$1")"
+        ;;
+      -h | --help)
+        consul_usage
+        exit 0
+        ;;
+      *)
+        fatal "Unknown consul doctor option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  if doctor_config_file "$CONSUL_CONFIG" "Consul"; then
+    :
+  else
+    case "$?" in
+      1)
+        failures=$((failures + 1))
+        ;;
+    esac
+  fi
+  config_address="$(hcl_file_string_value "$CONSUL_CONFIG" "address" || true)"
+  config_ssl="$(hcl_file_bool_value "$CONSUL_CONFIG" "ssl" || true)"
+  [ -n "$address" ] || address="$config_address"
+  [ -n "$ssl" ] || ssl="${config_ssl:-false}"
+  [ "$ssl" = "false" ] || scheme="https"
+
+  doctor_nomad_config || failures=$((failures + 1))
+
+  if command_exists consul; then
+    doctor_check_print "OK" "consul CLI found: $(command -v consul)"
+  else
+    doctor_check_print "WARN" "consul CLI not found; Nomad can still use a remote Consul address"
+  fi
+
+  if [ -z "$address" ]; then
+    doctor_check_print "FAIL" "Consul address missing; pass --address or run consul enable first"
+    failures=$((failures + 1))
+  elif command_exists curl; then
+    base_url="$(with_default_scheme "$address" "$scheme")"
+    leader_url="${base_url%/}/v1/status/leader"
+    if code="$(curl --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "$leader_url" 2>/dev/null)" && [ "$code" = "200" ]; then
+      doctor_check_print "OK" "Consul leader endpoint reachable: ${leader_url}"
+    else
+      doctor_check_print "FAIL" "Consul leader endpoint not healthy: ${leader_url} (${code:-curl failed})"
+      failures=$((failures + 1))
+    fi
+
+    if command_exists consul; then
+      if CONSUL_HTTP_ADDR="$base_url" consul info >/dev/null 2>&1; then
+        doctor_check_print "OK" "consul info succeeded"
+      else
+        doctor_check_print "WARN" "consul info failed; check ACL token and TLS"
+      fi
+    fi
+  else
+    doctor_check_print "FAIL" "curl command not found; cannot check Consul endpoint"
+    failures=$((failures + 1))
+  fi
+
+  return "$failures"
+}
+
+docker_doctor() {
+  local denylist
+  local denied=0
+  local failures=0
+  local item
+  local -a items
+
+  [ "$#" -eq 0 ] || fatal "docker doctor does not accept arguments"
+
+  if doctor_config_file "$DOCKER_CONFIG" "Docker"; then
+    :
+  else
+    case "$?" in
+      1)
+        failures=$((failures + 1))
+        ;;
+    esac
+  fi
+
+  doctor_nomad_config || failures=$((failures + 1))
+
+  denylist="$(read_driver_denylist)"
+  IFS=',' read -r -a items <<<"$denylist"
+  for item in "${items[@]:-}"; do
+    if [ "$item" = "docker" ]; then
+      denied=1
+    fi
+  done
+
+  if [ "$denied" -eq 1 ]; then
+    doctor_check_print "FAIL" "Docker driver is denied by ${DRIVER_DENYLIST_CONFIG}"
+    failures=$((failures + 1))
+  else
+    doctor_check_print "OK" "Docker driver is not denied"
+  fi
+
+  if command_exists docker; then
+    doctor_check_print "OK" "docker CLI found: $(command -v docker)"
+    if docker info >/dev/null 2>&1; then
+      doctor_check_print "OK" "Docker daemon is reachable"
+    else
+      doctor_check_print "FAIL" "Docker daemon is not reachable by current user"
+      failures=$((failures + 1))
+    fi
+  else
+    doctor_check_print "FAIL" "docker CLI not found"
+    failures=$((failures + 1))
+  fi
+
+  if [ -S /var/run/docker.sock ]; then
+    doctor_check_print "OK" "Docker socket exists: /var/run/docker.sock"
+  else
+    doctor_check_print "WARN" "Docker socket not found at /var/run/docker.sock"
+  fi
+
+  return "$failures"
+}
+
+configure_raw_exec_enable() {
+  local tmp
+
+  tmp="$(mktemp)"
+  {
+    printf '%s\n' "$MANAGED_MARKER"
+    printf 'plugin "raw_exec" {\n'
+    printf '  config {\n'
+    printf '    enabled = true\n'
+    printf '  }\n'
+    printf '}\n'
+  } >"$tmp"
+
+  commit_managed_file "$RAW_EXEC_CONFIG" "$tmp"
+  rm -f "$tmp"
+}
+
+read_driver_denylist() {
+  local list=""
+
+  if [ -f "$DRIVER_DENYLIST_CONFIG" ] && is_managed_file "$DRIVER_DENYLIST_CONFIG"; then
+    list="$(sed -n 's/.*"driver.denylist"[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$DRIVER_DENYLIST_CONFIG" | head -n 1)"
+  fi
+
+  printf '%s\n' "$list"
+}
+
+write_driver_denylist() {
+  local list="$1"
+  local tmp
+
+  if [ -z "$list" ]; then
+    remove_managed_file "$DRIVER_DENYLIST_CONFIG"
+    return
+  fi
+
+  tmp="$(mktemp)"
+  {
+    printf '%s\n' "$MANAGED_MARKER"
+    printf 'client {\n'
+    printf '  options = {\n'
+    printf '    "driver.denylist" = %s\n' "$(hcl_string "$list")"
+    printf '  }\n'
+    printf '}\n'
+  } >"$tmp"
+
+  commit_managed_file "$DRIVER_DENYLIST_CONFIG" "$tmp"
+  rm -f "$tmp"
+}
+
+driver_deny() {
+  local driver="${1:-}"
+  local current
+  local item
+
+  [ -n "$driver" ] || fatal "driver deny requires DRIVER"
+  validate_name "$driver" "driver name"
+
+  current="$(read_driver_denylist)"
+  IFS=',' read -r -a items <<<"$current"
+  for item in "${items[@]:-}"; do
+    if [ "$item" = "$driver" ]; then
+      log_info "Driver already denied: ${driver}"
+      return
+    fi
+  done
+
+  if [ -n "$current" ]; then
+    current="${current},${driver}"
+  else
+    current="$driver"
+  fi
+  write_driver_denylist "$current"
+}
+
+driver_allow() {
+  local driver="${1:-}"
+  local current
+  local item
+  local next=""
+
+  [ -n "$driver" ] || fatal "driver allow requires DRIVER"
+  validate_name "$driver" "driver name"
+
+  current="$(read_driver_denylist)"
+  [ -n "$current" ] || {
+    log_info "Driver denylist already empty"
+    return
+  }
+
+  IFS=',' read -r -a items <<<"$current"
+  for item in "${items[@]:-}"; do
+    [ "$item" != "$driver" ] || continue
+    if [ -n "$next" ]; then
+      next="${next},${item}"
+    else
+      next="$item"
+    fi
+  done
+
+  write_driver_denylist "$next"
+}
+
+host_volume_add() {
+  local name="${1:-}"
+  local path=""
+  local read_only="false"
+  local create_path=0
+  local target
+  local tmp
+
+  [ -n "$name" ] || fatal "host-volume add requires NAME"
+  validate_name "$name" "host volume name"
+  shift
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --path)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --path"
+        path="$1"
+        ;;
+      --read-only)
+        read_only="true"
+        ;;
+      --read-write)
+        read_only="false"
+        ;;
+      --create)
+        create_path=1
+        ;;
+      -h | --help)
+        host_volume_usage
+        exit 0
+        ;;
+      *)
+        fatal "Unknown host-volume add option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  [ -n "$path" ] || fatal "host-volume add requires --path"
+  case "$path" in
+    /*)
+      ;;
+    *)
+      fatal "Host volume path must be absolute: ${path}"
+      ;;
+  esac
+
+  if [ "$create_path" -eq 1 ]; then
+    run_root install -d -m 0755 "$path"
+  elif [ ! -d "$path" ]; then
+    fatal "Host volume path does not exist: ${path}. Use --create to create it"
+  fi
+
+  target="$(host_volume_config_path "$name")"
+  tmp="$(mktemp)"
+  {
+    printf '%s\n' "$MANAGED_MARKER"
+    printf 'client {\n'
+    printf '  host_volume "%s" {\n' "$name"
+    printf '    path      = %s\n' "$(hcl_string "$path")"
+    printf '    read_only = %s\n' "$read_only"
+    printf '  }\n'
+    printf '}\n'
+  } >"$tmp"
+
+  commit_managed_file "$target" "$tmp"
+  rm -f "$tmp"
+}
+
+read_meta_pairs() {
+  if [ -f "$META_CONFIG" ] && is_managed_file "$META_CONFIG"; then
+    sed -n 's/^[[:space:]]*\([A-Za-z_][A-Za-z0-9_]*\)[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1=\2/p' "$META_CONFIG"
+  fi
+}
+
+write_meta_pairs() {
+  local pairs_file="$1"
+  local tmp
+  local key
+  local value
+
+  if [ ! -s "$pairs_file" ]; then
+    remove_managed_file "$META_CONFIG"
+    return
+  fi
+
+  tmp="$(mktemp)"
+  {
+    printf '%s\n' "$MANAGED_MARKER"
+    printf 'client {\n'
+    printf '  meta {\n'
+    while IFS='=' read -r key value; do
+      [ -n "$key" ] || continue
+      printf '    %s = %s\n' "$key" "$(hcl_string "$value")"
+    done <"$pairs_file"
+    printf '  }\n'
+    printf '}\n'
+  } >"$tmp"
+
+  commit_managed_file "$META_CONFIG" "$tmp"
+  rm -f "$tmp"
+}
+
+meta_set() {
+  local key="${1:-}"
+  local value="${2:-}"
+  local pairs
+  local next
+
+  [ -n "$key" ] || fatal "meta set requires KEY"
+  [ "$#" -ge 2 ] || fatal "meta set requires VALUE"
+  validate_hcl_key "$key"
+
+  pairs="$(mktemp)"
+  next="$(mktemp)"
+  read_meta_pairs >"$pairs"
+  awk -F= -v key="$key" '$1 != key {print}' "$pairs" >"$next"
+  printf '%s=%s\n' "$key" "$value" >>"$next"
+  sort "$next" -o "$next"
+  write_meta_pairs "$next"
+  rm -f "$pairs" "$next"
+}
+
+meta_unset() {
+  local key="${1:-}"
+  local pairs
+  local next
+
+  [ -n "$key" ] || fatal "meta unset requires KEY"
+  validate_hcl_key "$key"
+
+  pairs="$(mktemp)"
+  next="$(mktemp)"
+  read_meta_pairs >"$pairs"
+  awk -F= -v key="$key" '$1 != key {print}' "$pairs" >"$next"
+  write_meta_pairs "$next"
+  rm -f "$pairs" "$next"
+}
+
+vault_jwt_profile_path() {
+  local profile="$1"
+
+  validate_name "$profile" "vault-jwt profile"
+  printf '%s/%s.env\n' "$VAULT_JWT_PROFILE_DIR" "$profile"
+}
+
+vault_jwt_reset_values() {
+  VJ_PROFILE=""
+  VJ_VAULT_ADDR=""
+  VJ_VAULT_NAMESPACE=""
+  VJ_NOMAD_ADDR=""
+  VJ_NOMAD_JWKS_URL=""
+  VJ_AUTH_PATH="jwt-nomad"
+  VJ_ROLE="nomad-workloads"
+  VJ_POLICY="nomad-workloads"
+  VJ_AUD="vault.io"
+  VJ_TTL="1h"
+  VJ_SECRET_PATHS="kv/data/*"
+  VJ_SECRET_PATHS_SET=0
+  VJ_POLICY_FILE=""
+  VJ_FORCE=0
+  VJ_PROFILE_EXISTS=0
+}
+
+vault_jwt_load_profile() {
+  local profile="$1"
+  local path
+
+  path="$(vault_jwt_profile_path "$profile")"
+  [ -f "$path" ] || return 1
+  # shellcheck disable=SC1090
+  . "$path"
+  VJ_PROFILE="$profile"
+  VJ_VAULT_ADDR="${VAULT_ADDR:-}"
+  VJ_VAULT_NAMESPACE="${VAULT_NAMESPACE:-}"
+  VJ_NOMAD_ADDR="${NOMAD_ADDR_PROFILE:-}"
+  VJ_NOMAD_JWKS_URL="${NOMAD_JWKS_URL:-}"
+  VJ_AUTH_PATH="${VAULT_AUTH_PATH:-jwt-nomad}"
+  VJ_ROLE="${VAULT_ROLE:-nomad-workloads}"
+  VJ_POLICY="${VAULT_POLICY:-nomad-workloads}"
+  VJ_AUD="${AUDIENCE:-vault.io}"
+  VJ_TTL="${TTL:-1h}"
+  VJ_SECRET_PATHS="${SECRET_PATHS:-kv/data/*}"
+  VJ_POLICY_FILE="${POLICY_FILE:-}"
+  VJ_PROFILE_EXISTS=1
+  return 0
+}
+
+vault_jwt_first_pass_profile() {
+  local profile=""
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --profile)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --profile"
+        profile="$1"
+        ;;
+    esac
+    shift || true
+  done
+
+  [ -n "$profile" ] || fatal "vault-jwt requires --profile"
+  validate_name "$profile" "vault-jwt profile"
+  printf '%s\n' "$profile"
+}
+
+vault_jwt_prepare() {
+  local profile
+  local old_values
+  local new_values
+
+  vault_jwt_reset_values
+  profile="$(vault_jwt_first_pass_profile "$@")"
+  VJ_PROFILE="$profile"
+  vault_jwt_load_profile "$profile" || true
+  old_values="${VJ_VAULT_ADDR}|${VJ_VAULT_NAMESPACE}|${VJ_NOMAD_ADDR}|${VJ_NOMAD_JWKS_URL}|${VJ_AUTH_PATH}|${VJ_ROLE}|${VJ_POLICY}|${VJ_AUD}|${VJ_TTL}|${VJ_SECRET_PATHS}|${VJ_POLICY_FILE}"
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --profile)
+        shift
+        ;;
+      --vault-addr)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --vault-addr"
+        VJ_VAULT_ADDR="$1"
+        ;;
+      --vault-namespace)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --vault-namespace"
+        VJ_VAULT_NAMESPACE="$1"
+        ;;
+      --nomad-addr)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --nomad-addr"
+        VJ_NOMAD_ADDR="$1"
+        ;;
+      --nomad-jwks-url)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --nomad-jwks-url"
+        VJ_NOMAD_JWKS_URL="$1"
+        ;;
+      --auth-path)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --auth-path"
+        VJ_AUTH_PATH="$1"
+        ;;
+      --role)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --role"
+        VJ_ROLE="$1"
+        ;;
+      --policy)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --policy"
+        VJ_POLICY="$1"
+        ;;
+      --aud)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --aud"
+        VJ_AUD="$1"
+        ;;
+      --ttl)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --ttl"
+        VJ_TTL="$1"
+        ;;
+      --secret-path)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --secret-path"
+        if [ "$VJ_SECRET_PATHS_SET" -eq 0 ]; then
+          VJ_SECRET_PATHS="$1"
+          VJ_SECRET_PATHS_SET=1
+        else
+          VJ_SECRET_PATHS="${VJ_SECRET_PATHS},$1"
+        fi
+        ;;
+      --policy-file)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --policy-file"
+        VJ_POLICY_FILE="$1"
+        ;;
+      --force)
+        VJ_FORCE=1
+        ;;
+      -h | --help)
+        vault_jwt_usage
+        exit 0
+        ;;
+      *)
+        fatal "Unknown vault-jwt option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  if [ -z "$VJ_NOMAD_JWKS_URL" ] && [ -n "$VJ_NOMAD_ADDR" ]; then
+    VJ_NOMAD_JWKS_URL="${VJ_NOMAD_ADDR%/}/.well-known/jwks.json"
+  fi
+
+  [ -n "$VJ_VAULT_ADDR" ] || fatal "vault-jwt requires --vault-addr or an existing profile"
+  [ -n "$VJ_NOMAD_ADDR" ] || fatal "vault-jwt requires --nomad-addr or an existing profile"
+  [ -n "$VJ_NOMAD_JWKS_URL" ] || fatal "vault-jwt requires --nomad-jwks-url or --nomad-addr"
+  validate_name "$VJ_AUTH_PATH" "Vault auth path"
+  validate_name "$VJ_ROLE" "Vault role"
+  validate_name "$VJ_POLICY" "Vault policy"
+
+  new_values="${VJ_VAULT_ADDR}|${VJ_VAULT_NAMESPACE}|${VJ_NOMAD_ADDR}|${VJ_NOMAD_JWKS_URL}|${VJ_AUTH_PATH}|${VJ_ROLE}|${VJ_POLICY}|${VJ_AUD}|${VJ_TTL}|${VJ_SECRET_PATHS}|${VJ_POLICY_FILE}"
+  if [ "$VJ_PROFILE_EXISTS" -eq 1 ] && [ "$VJ_FORCE" -ne 1 ] && [ "$old_values" != "$new_values" ]; then
+    fatal "Profile ${VJ_PROFILE} already exists with different values. Use --force to replace it"
+  fi
+}
+
+vault_jwt_write_profile() {
+  local path
+  local tmp
+
+  path="$(vault_jwt_profile_path "$VJ_PROFILE")"
+  tmp="$(mktemp)"
+  {
+    printf '# Managed by tools/nomad/manager.sh vault-jwt\n'
+    printf 'VAULT_ADDR=%q\n' "$VJ_VAULT_ADDR"
+    printf 'VAULT_NAMESPACE=%q\n' "$VJ_VAULT_NAMESPACE"
+    printf 'NOMAD_ADDR_PROFILE=%q\n' "$VJ_NOMAD_ADDR"
+    printf 'NOMAD_JWKS_URL=%q\n' "$VJ_NOMAD_JWKS_URL"
+    printf 'VAULT_AUTH_PATH=%q\n' "$VJ_AUTH_PATH"
+    printf 'VAULT_ROLE=%q\n' "$VJ_ROLE"
+    printf 'VAULT_POLICY=%q\n' "$VJ_POLICY"
+    printf 'AUDIENCE=%q\n' "$VJ_AUD"
+    printf 'TTL=%q\n' "$VJ_TTL"
+    printf 'SECRET_PATHS=%q\n' "$VJ_SECRET_PATHS"
+    printf 'POLICY_FILE=%q\n' "$VJ_POLICY_FILE"
+  } >"$tmp"
+
+  run_root install -d -m 0700 "$VAULT_JWT_PROFILE_DIR"
+  run_root install -m 0600 "$tmp" "$path"
+  rm -f "$tmp"
+  log_info "Vault JWT profile saved: ${path}"
+}
+
+vault_cmd() {
+  if [ -n "$VJ_VAULT_NAMESPACE" ]; then
+    VAULT_ADDR="$VJ_VAULT_ADDR" VAULT_NAMESPACE="$VJ_VAULT_NAMESPACE" vault "$@"
+  else
+    VAULT_ADDR="$VJ_VAULT_ADDR" vault "$@"
+  fi
+}
+
+vault_auth_type() {
+  local json
+  local auth_key="${VJ_AUTH_PATH%/}/"
+
+  json="$(vault_cmd auth list -format=json 2>/dev/null)" || return 2
+  python3 - "$auth_key" "$json" <<'PY'
+import json
+import sys
+
+data = json.loads(sys.argv[2])
+key = sys.argv[1]
+print(data.get(key, {}).get("type", ""))
+PY
+}
+
+vault_jwt_profile_summary() {
+  cat <<EOF
+Profile:          ${VJ_PROFILE}
+Profile file:     $(vault_jwt_profile_path "$VJ_PROFILE")
+Vault address:    ${VJ_VAULT_ADDR}
+Vault namespace:  ${VJ_VAULT_NAMESPACE:-<none>}
+Nomad address:    ${VJ_NOMAD_ADDR}
+Nomad JWKS URL:   ${VJ_NOMAD_JWKS_URL}
+Auth path:        ${VJ_AUTH_PATH}
+Role:             ${VJ_ROLE}
+Policy:           ${VJ_POLICY}
+Audience:         ${VJ_AUD}
+TTL:              ${VJ_TTL}
+Secret paths:     ${VJ_SECRET_PATHS}
+Policy file:      ${VJ_POLICY_FILE:-<generated>}
+EOF
+}
+
+vault_jwt_plan() {
+  vault_jwt_prepare "$@"
+  vault_jwt_profile_summary
+  cat <<EOF
+
+Plan:
+  [1/7] Write Nomad vault config ${VAULT_CONFIG}
+  [2/7] Validate Nomad config and restart nomad.service
+  [3/7] Enable Vault JWT auth at auth/${VJ_AUTH_PATH} if missing
+  [4/7] Write Vault JWT config with jwks_url=${VJ_NOMAD_JWKS_URL}
+  [5/7] Write Vault policy ${VJ_POLICY}
+  [6/7] Write Vault role ${VJ_ROLE} with bound_audiences=${VJ_AUD} and mapped Nomad claims
+  [7/7] Save profile ${VAULT_JWT_PROFILE_DIR}/${VJ_PROFILE}.env
+
+Next:
+  $(basename "$0") vault-jwt apply --profile ${VJ_PROFILE}
+EOF
+}
+
+vault_jwt_generate_policy() {
+  local policy_file="$1"
+  local old_ifs
+  local secret_path
+  local metadata_path
+
+  if [ -n "$VJ_POLICY_FILE" ]; then
+    [ -f "$VJ_POLICY_FILE" ] || fatal "Policy file not found: ${VJ_POLICY_FILE}"
+    cp "$VJ_POLICY_FILE" "$policy_file"
+    return
+  fi
+
+  old_ifs="$IFS"
+  IFS=','
+  for secret_path in $VJ_SECRET_PATHS; do
+    [ -n "$secret_path" ] || continue
+    printf 'path %s {\n' "$(hcl_string "$secret_path")" >>"$policy_file"
+    cat >>"$policy_file" <<EOF
+  capabilities = ["read"]
+}
+
+EOF
+    if [[ "$secret_path" == */data/* ]]; then
+      metadata_path="${secret_path/\/data\//\/metadata\/}"
+      printf 'path %s {\n' "$(hcl_string "$metadata_path")" >>"$policy_file"
+      cat >>"$policy_file" <<EOF
+  capabilities = ["read", "list"]
+}
+
+EOF
+    fi
+  done
+  IFS="$old_ifs"
+}
+
+vault_jwt_generate_role_json() {
+  local role_file="$1"
+
+  AUDIENCE="$VJ_AUD" POLICY="$VJ_POLICY" TTL="$VJ_TTL" python3 - "$role_file" <<'PY'
+import json
+import os
+import sys
+
+audiences = [item.strip() for item in os.environ["AUDIENCE"].split(",") if item.strip()]
+if not audiences:
+    raise SystemExit("Missing audience")
+
+payload = {
+    "role_type": "jwt",
+    "bound_audiences": audiences,
+    "user_claim": "/nomad_job_id",
+    "user_claim_json_pointer": True,
+    "claim_mappings": {
+        "nomad_namespace": "nomad_namespace",
+        "nomad_job_id": "nomad_job_id",
+        "nomad_task": "nomad_task",
+    },
+    "token_type": "service",
+    "token_policies": [os.environ["POLICY"]],
+    "token_period": os.environ["TTL"],
+    "token_explicit_max_ttl": 0,
+}
+
+with open(sys.argv[1], "w", encoding="utf-8") as role:
+    json.dump(payload, role, indent=2, sort_keys=True)
+    role.write("\n")
+PY
+}
+
+vault_jwt_wait_for_jwks() {
+  local attempt=1
+
+  log_info "Waiting for Nomad JWKS URL: ${VJ_NOMAD_JWKS_URL}"
+  while [ "$attempt" -le 30 ]; do
+    if curl --noproxy '*' --fail --silent --max-time 5 "$VJ_NOMAD_JWKS_URL" >/dev/null 2>&1; then
+      return
+    fi
+
+    sleep 2
+    attempt=$((attempt + 1))
+  done
+
+  fatal "Timed out waiting for Nomad JWKS URL: ${VJ_NOMAD_JWKS_URL}"
+}
+
+vault_jwt_apply() {
+  local auth_type
+  local policy_tmp
+  local role_tmp
+
+  vault_jwt_prepare "$@"
+  require_command vault
+  require_command python3
+  require_command curl
+
+  configure_vault_enable \
+    --address "$VJ_VAULT_ADDR" \
+    --namespace "$VJ_VAULT_NAMESPACE" \
+    --jwt-auth-backend-path "$VJ_AUTH_PATH" \
+    --aud "$VJ_AUD" \
+    --ttl "$VJ_TTL"
+  vault_jwt_wait_for_jwks
+
+  auth_type="$(vault_auth_type || true)"
+  if [ -z "$auth_type" ]; then
+    log_info "Enabling Vault JWT auth: ${VJ_AUTH_PATH}"
+    vault_cmd auth enable -path="$VJ_AUTH_PATH" jwt
+  elif [ "$auth_type" != "jwt" ]; then
+    fatal "Vault auth path ${VJ_AUTH_PATH} already exists with type ${auth_type}"
+  else
+    log_info "Vault JWT auth already enabled: ${VJ_AUTH_PATH}"
+  fi
+
+  log_info "Writing Vault JWT auth config"
+  vault_cmd write "auth/${VJ_AUTH_PATH}/config" \
+    "jwks_url=${VJ_NOMAD_JWKS_URL}" \
+    "jwt_supported_algs=RS256,EdDSA" \
+    "default_role=${VJ_ROLE}"
+
+  policy_tmp="$(mktemp)"
+  vault_jwt_generate_policy "$policy_tmp"
+  log_info "Writing Vault policy: ${VJ_POLICY}"
+  vault_cmd policy write "$VJ_POLICY" "$policy_tmp"
+  rm -f "$policy_tmp"
+
+  log_info "Writing Vault JWT role: ${VJ_ROLE}"
+  role_tmp="$(mktemp)"
+  vault_jwt_generate_role_json "$role_tmp"
+  vault_cmd write "auth/${VJ_AUTH_PATH}/role/${VJ_ROLE}" "@${role_tmp}"
+  rm -f "$role_tmp"
+
+  vault_jwt_write_profile
+}
+
+vault_jwt_check_print() {
+  local status="$1"
+  local message="$2"
+
+  printf '%-5s %s\n' "$status" "$message"
+}
+
+vault_jwt_status_impl() {
+  local profile="$1"
+  local failures=0
+  local auth_type
+  local path
+
+  vault_jwt_reset_values
+  if ! vault_jwt_load_profile "$profile"; then
+    vault_jwt_check_print "FAIL" "profile missing: $(vault_jwt_profile_path "$profile")"
+    return 1
+  fi
+
+  vault_jwt_check_print "OK" "profile loaded: $(vault_jwt_profile_path "$profile")"
+  if [ -f "$VAULT_CONFIG" ] && grep -q "jwt_auth_backend_path = \"${VJ_AUTH_PATH}\"" "$VAULT_CONFIG" 2>/dev/null; then
+    vault_jwt_check_print "OK" "Nomad vault config uses auth path ${VJ_AUTH_PATH}"
+  else
+    vault_jwt_check_print "FAIL" "Nomad vault config missing or mismatched: ${VAULT_CONFIG}"
+    failures=$((failures + 1))
+  fi
+
+  if command_exists curl && curl --noproxy '*' --fail --silent --max-time 5 "$VJ_NOMAD_JWKS_URL" >/dev/null 2>&1; then
+    vault_jwt_check_print "OK" "Nomad JWKS URL reachable: ${VJ_NOMAD_JWKS_URL}"
+  else
+    vault_jwt_check_print "FAIL" "Nomad JWKS URL not reachable from this host: ${VJ_NOMAD_JWKS_URL}"
+    failures=$((failures + 1))
+  fi
+
+  if command_exists vault && command_exists python3; then
+    auth_type="$(vault_auth_type || true)"
+    if [ "$auth_type" = "jwt" ]; then
+      vault_jwt_check_print "OK" "Vault auth path ${VJ_AUTH_PATH} type jwt"
+    else
+      vault_jwt_check_print "FAIL" "Vault auth path ${VJ_AUTH_PATH} missing or not jwt"
+      failures=$((failures + 1))
+    fi
+
+    if vault_cmd policy read "$VJ_POLICY" >/dev/null 2>&1; then
+      vault_jwt_check_print "OK" "Vault policy exists: ${VJ_POLICY}"
+    else
+      vault_jwt_check_print "FAIL" "Vault policy missing: ${VJ_POLICY}"
+      failures=$((failures + 1))
+    fi
+
+    path="auth/${VJ_AUTH_PATH}/role/${VJ_ROLE}"
+    if vault_cmd read "$path" >/dev/null 2>&1; then
+      vault_jwt_check_print "OK" "Vault role exists: ${VJ_ROLE}"
+    else
+      vault_jwt_check_print "FAIL" "Vault role missing: ${VJ_ROLE}"
+      failures=$((failures + 1))
+    fi
+  else
+    vault_jwt_check_print "FAIL" "vault and python3 commands are required for Vault checks"
+    failures=$((failures + 1))
+  fi
+
+  return "$failures"
+}
+
+vault_jwt_status() {
+  local profile
+
+  profile="$(vault_jwt_first_pass_profile "$@")"
+  vault_jwt_status_impl "$profile"
+}
+
+vault_jwt_doctor() {
+  local profile
+
+  profile="$(vault_jwt_first_pass_profile "$@")"
+  if vault_jwt_status_impl "$profile"; then
+    printf '\nAll checks passed.\n'
+    return
+  fi
+
+  printf '\nFix:\n  %s vault-jwt apply --profile %s\n' "$(basename "$0")" "$profile"
+  return 1
+}
+
+vault_jwt_job_example() {
+  local profile=""
+  local job=""
+  local secret=""
+  local out="-"
+  local force=0
+  local image="alpine:3.20"
+  local tmp
+  local job_hcl
+  local image_hcl
+  local aud_hcl
+  local ttl_hcl
+  local role_hcl
+  local secret_hcl
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --profile)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --profile"
+        profile="$1"
+        ;;
+      --job)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --job"
+        job="$1"
+        ;;
+      --secret)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --secret"
+        secret="$1"
+        ;;
+      --out)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --out"
+        out="$1"
+        ;;
+      --image)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --image"
+        image="$1"
+        ;;
+      --force)
+        force=1
+        ;;
+      -h | --help)
+        vault_jwt_usage
+        exit 0
+        ;;
+      *)
+        fatal "Unknown vault-jwt job-example option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  [ -n "$profile" ] || fatal "job-example requires --profile"
+  [ -n "$job" ] || fatal "job-example requires --job"
+  [ -n "$secret" ] || fatal "job-example requires --secret"
+  validate_name "$job" "job name"
+  vault_jwt_reset_values
+  vault_jwt_load_profile "$profile" || fatal "Profile missing: $(vault_jwt_profile_path "$profile")"
+  job_hcl="$(hcl_string "$job")"
+  image_hcl="$(hcl_string "$image")"
+  aud_hcl="$(hcl_string "$VJ_AUD")"
+  ttl_hcl="$(hcl_string "$VJ_TTL")"
+  role_hcl="$(hcl_string "$VJ_ROLE")"
+  secret_hcl="$(hcl_string "$secret")"
+
+  tmp="$(mktemp)"
+  cat >"$tmp" <<EOF
+# Generated by installNomad.sh vault-jwt job-example
+job ${job_hcl} {
+  type        = "service"
+  datacenters = ["dc1"]
+
+  group ${job_hcl} {
+    count = 1
+
+    task ${job_hcl} {
+      driver = "docker"
+
+      config {
+        image   = ${image_hcl}
+        command = "sh"
+        args    = ["-c", "env | sort && sleep 3600"]
+      }
+
+      identity {
+        name = "vault_default"
+        aud  = [${aud_hcl}]
+        file = true
+        ttl  = ${ttl_hcl}
+      }
+
+      vault {
+        cluster = "default"
+        role    = ${role_hcl}
+      }
+
+      template {
+        destination = "secrets/vault.env"
+        env         = true
+        data = <<EOH
+SECRET_VALUE={{ with secret ${secret_hcl} }}{{ .Data.data.value }}{{ end }}
+EOH
+      }
+
+      resources {
+        cpu    = 100
+        memory = 128
+      }
+    }
+  }
+}
+EOF
+
+  if [ "$out" = "-" ]; then
+    cat "$tmp"
+  else
+    if [ -e "$out" ] && [ "$force" -ne 1 ]; then
+      rm -f "$tmp"
+      fatal "Output exists, use --force to overwrite: ${out}"
+    fi
+    mkdir -p "$(dirname "$out")"
+    install -m 0644 "$tmp" "$out"
+    log_info "Job example written: ${out}"
+  fi
+  rm -f "$tmp"
+}
+
+install_nomad() {
+  local requested_version=""
+  local version
+  local arch
+  local tmpdir
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --version)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --version"
+        requested_version="$1"
+        ;;
+      --no-acl-bootstrap)
+        BOOTSTRAP_ACL=0
+        ;;
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      -*)
+        fatal "Unknown install option: $1"
+        ;;
+      *)
+        if [ -n "$requested_version" ]; then
+          fatal "Unexpected argument: $1"
+        fi
+        requested_version="$1"
+        ;;
+    esac
+    shift
+  done
+
+  require_linux
+  require_command curl
+  require_command awk
+  require_command sed
+  require_command head
+  require_command mktemp
+  require_command install
+  require_command systemctl
+  require_command useradd
+  require_any_checksum_command
+  require_zip_extractor
+
+  version="$(resolve_version "$requested_version")"
+  arch="$(detect_arch)"
+  TMPDIR_TO_CLEAN="$(mktemp -d)"
+  tmpdir="$TMPDIR_TO_CLEAN"
+  trap cleanup EXIT
+
+  download_nomad "$version" "$arch" "$tmpdir"
+  install_binary "$tmpdir"
+  ensure_nomad_user
+  install_directories
+  write_systemd_service "$tmpdir"
+  write_nomad_config "$tmpdir"
+  write_default_managed_configs "$tmpdir"
+
+  log_info "Enabling Nomad service"
+  run_root systemctl daemon-reload
+  run_root systemctl enable nomad
+  run_root systemctl restart nomad
+  wait_for_nomad
+  bootstrap_acl
+
+  log_info "Nomad installation completed"
+}
+
+uninstall_nomad() {
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      *)
+        fatal "Unknown uninstall option: $1"
+        ;;
+    esac
+  done
+
+  require_linux
+  require_command systemctl
+
+  log_info "Stopping Nomad service"
+  run_root systemctl stop nomad 2>/dev/null || true
+  run_root systemctl disable nomad 2>/dev/null || true
+
+  log_info "Removing Nomad files"
+  safe_remove_path "$SYSTEMD_SERVICE"
+  safe_remove_path "$BIN_PATH"
+  safe_remove_path "$CONFIG_DIR"
+  safe_remove_path "$DATA_DIR"
+  remove_acl_token_file
+
+  run_root systemctl daemon-reload
+  run_root systemctl reset-failed nomad 2>/dev/null || true
+
+  if id "$NOMAD_USER" >/dev/null 2>&1; then
+    log_info "Removing system user: ${NOMAD_USER}"
+    run_root userdel "$NOMAD_USER" || log_warn "Failed to remove user: ${NOMAD_USER}"
+  fi
+
+  log_info "Nomad uninstallation completed"
+}
+
+dispatch_vault() {
+  local command="${1:-help}"
+
+  [ "$#" -eq 0 ] || shift
+  case "$command" in
+    enable)
+      configure_vault_enable "$@"
+      ;;
+    disable)
+      [ "$#" -eq 0 ] || fatal "vault disable does not accept arguments"
+      remove_managed_file "$VAULT_CONFIG"
+      ;;
+    doctor)
+      vault_doctor "$@"
+      ;;
+    help | -h | --help)
+      vault_usage
+      ;;
+    *)
+      vault_usage >&2
+      fatal "Unknown vault command: ${command}"
+      ;;
+  esac
+}
+
+dispatch_vault_jwt() {
+  local command="${1:-help}"
+
+  [ "$#" -eq 0 ] || shift
+  case "$command" in
+    plan)
+      vault_jwt_plan "$@"
+      ;;
+    apply)
+      vault_jwt_apply "$@"
+      ;;
+    status)
+      vault_jwt_status "$@"
+      ;;
+    doctor)
+      vault_jwt_doctor "$@"
+      ;;
+    job-example)
+      vault_jwt_job_example "$@"
+      ;;
+    help | -h | --help)
+      vault_jwt_usage
+      ;;
+    *)
+      vault_jwt_usage >&2
+      fatal "Unknown vault-jwt command: ${command}"
+      ;;
+  esac
+}
+
+dispatch_consul() {
+  local command="${1:-help}"
+
+  [ "$#" -eq 0 ] || shift
+  case "$command" in
+    enable)
+      configure_consul_enable "$@"
+      ;;
+    disable)
+      [ "$#" -eq 0 ] || fatal "consul disable does not accept arguments"
+      remove_managed_file "$CONSUL_CONFIG"
+      ;;
+    doctor)
+      consul_doctor "$@"
+      ;;
+    help | -h | --help)
+      consul_usage
+      ;;
+    *)
+      consul_usage >&2
+      fatal "Unknown consul command: ${command}"
+      ;;
+  esac
+}
+
+dispatch_telemetry() {
+  local command="${1:-help}"
+
+  [ "$#" -eq 0 ] || shift
+  case "$command" in
+    enable)
+      configure_telemetry_enable "$@"
+      ;;
+    disable)
+      [ "$#" -eq 0 ] || fatal "telemetry disable does not accept arguments"
+      remove_managed_file "$TELEMETRY_CONFIG"
+      ;;
+    help | -h | --help)
+      telemetry_usage
+      ;;
+    *)
+      telemetry_usage >&2
+      fatal "Unknown telemetry command: ${command}"
+      ;;
+  esac
+}
+
+dispatch_tls() {
+  local command="${1:-help}"
+
+  [ "$#" -eq 0 ] || shift
+  case "$command" in
+    enable)
+      configure_tls_enable "$@"
+      ;;
+    disable)
+      [ "$#" -eq 0 ] || fatal "tls disable does not accept arguments"
+      remove_managed_file "$TLS_CONFIG"
+      ;;
+    help | -h | --help)
+      tls_usage
+      ;;
+    *)
+      tls_usage >&2
+      fatal "Unknown tls command: ${command}"
+      ;;
+  esac
+}
+
+dispatch_ui() {
+  local command="${1:-help}"
+
+  [ "$#" -eq 0 ] || shift
+  case "$command" in
+    enable)
+      configure_ui_enable "$@"
+      ;;
+    disable)
+      [ "$#" -eq 0 ] || fatal "ui disable does not accept arguments"
+      remove_managed_file "$UI_CONFIG"
+      ;;
+    help | -h | --help)
+      ui_usage
+      ;;
+    *)
+      ui_usage >&2
+      fatal "Unknown ui command: ${command}"
+      ;;
+  esac
+}
+
+dispatch_docker() {
+  local command="${1:-help}"
+
+  [ "$#" -eq 0 ] || shift
+  case "$command" in
+    enable)
+      configure_docker_enable "$@"
+      ;;
+    disable)
+      [ "$#" -eq 0 ] || fatal "docker disable does not accept arguments"
+      remove_managed_file "$DOCKER_CONFIG"
+      ;;
+    disable-driver)
+      [ "$#" -eq 0 ] || fatal "docker disable-driver does not accept arguments"
+      driver_deny "docker"
+      ;;
+    enable-driver)
+      [ "$#" -eq 0 ] || fatal "docker enable-driver does not accept arguments"
+      driver_allow "docker"
+      ;;
+    doctor)
+      docker_doctor "$@"
+      ;;
+    help | -h | --help)
+      docker_usage
+      ;;
+    *)
+      docker_usage >&2
+      fatal "Unknown docker command: ${command}"
+      ;;
+  esac
+}
+
+dispatch_raw_exec() {
+  local command="${1:-help}"
+
+  [ "$#" -eq 0 ] || shift
+  case "$command" in
+    enable)
+      [ "$#" -eq 0 ] || fatal "raw-exec enable does not accept arguments"
+      configure_raw_exec_enable
+      ;;
+    disable)
+      [ "$#" -eq 0 ] || fatal "raw-exec disable does not accept arguments"
+      remove_managed_file "$RAW_EXEC_CONFIG"
+      ;;
+    help | -h | --help)
+      raw_exec_usage
+      ;;
+    *)
+      raw_exec_usage >&2
+      fatal "Unknown raw-exec command: ${command}"
+      ;;
+  esac
+}
+
+dispatch_driver() {
+  local command="${1:-help}"
+  local driver="${2:-}"
+
+  case "$command" in
+    deny)
+      [ "$#" -eq 2 ] || fatal "driver deny requires exactly one DRIVER"
+      driver_deny "$driver"
+      ;;
+    allow)
+      [ "$#" -eq 2 ] || fatal "driver allow requires exactly one DRIVER"
+      driver_allow "$driver"
+      ;;
+    help | -h | --help)
+      driver_usage
+      ;;
+    *)
+      driver_usage >&2
+      fatal "Unknown driver command: ${command}"
+      ;;
+  esac
+}
+
+dispatch_host_volume() {
+  local command="${1:-help}"
+
+  [ "$#" -eq 0 ] || shift
+  case "$command" in
+    add)
+      host_volume_add "$@"
+      ;;
+    remove)
+      [ "$#" -eq 1 ] || fatal "host-volume remove requires exactly one NAME"
+      remove_managed_file "$(host_volume_config_path "$1")"
+      ;;
+    help | -h | --help)
+      host_volume_usage
+      ;;
+    *)
+      host_volume_usage >&2
+      fatal "Unknown host-volume command: ${command}"
+      ;;
+  esac
+}
+
+dispatch_meta() {
+  local command="${1:-help}"
+
+  [ "$#" -eq 0 ] || shift
+  case "$command" in
+    set)
+      [ "$#" -eq 2 ] || fatal "meta set requires exactly KEY and VALUE"
+      meta_set "$@"
+      ;;
+    unset)
+      [ "$#" -eq 1 ] || fatal "meta unset requires exactly KEY"
+      meta_unset "$1"
+      ;;
+    help | -h | --help)
+      meta_usage
+      ;;
+    *)
+      meta_usage >&2
+      fatal "Unknown meta command: ${command}"
+      ;;
+  esac
+}
+
+main() {
+  local command="${1:-help}"
+
+  if [ "$#" -gt 0 ]; then
+    shift
+  fi
+
+  case "$command" in
+    install)
+      install_nomad "$@"
+      ;;
+    uninstall)
+      uninstall_nomad "$@"
+      ;;
+    vault)
+      dispatch_vault "$@"
+      ;;
+    vault-jwt)
+      dispatch_vault_jwt "$@"
+      ;;
+    consul)
+      dispatch_consul "$@"
+      ;;
+    telemetry)
+      dispatch_telemetry "$@"
+      ;;
+    tls)
+      dispatch_tls "$@"
+      ;;
+    ui)
+      dispatch_ui "$@"
+      ;;
+    docker)
+      dispatch_docker "$@"
+      ;;
+    raw-exec)
+      dispatch_raw_exec "$@"
+      ;;
+    driver)
+      dispatch_driver "$@"
+      ;;
+    host-volume)
+      dispatch_host_volume "$@"
+      ;;
+    meta)
+      dispatch_meta "$@"
+      ;;
+    help | -h | --help)
+      usage
+      ;;
+    *)
+      usage >&2
+      fatal "Unknown command: ${command}"
+      ;;
+  esac
+}
+
+main "$@"

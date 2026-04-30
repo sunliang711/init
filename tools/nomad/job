@@ -1,0 +1,1009 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
+log_info() {
+  printf '[INFO] %s\n' "$*" >&2
+}
+
+log_warn() {
+  printf '[WARN] %s\n' "$*" >&2
+}
+
+log_error() {
+  printf '[ERROR] %s\n' "$*" >&2
+}
+
+fatal() {
+  log_error "$*"
+  exit 1
+}
+
+command_exists() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+require_command() {
+  if ! command_exists "$1"; then
+    fatal "Required command not found: $1"
+  fi
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  nomad-job scaffold docker [options]
+  nomad-job compose convert COMPOSE_FILE [options]
+  nomad-job validate JOB_FILE
+  nomad-job plan JOB_FILE [-- NOMAD_JOB_PLAN_ARGS...]
+  nomad-job apply JOB_FILE [--auto-approve] [--detach] [--check-index INDEX]
+  nomad-job status [JOB]
+  nomad-job stop JOB [--purge]
+  nomad-job help
+
+Scaffold docker job:
+  Required:
+    --job NAME
+    --image IMAGE
+
+  Common options:
+    --out FILE                 Output file, use - for stdout
+    --force                    Overwrite output file
+    --type service|batch       Nomad job type, default: service
+    --datacenters dc1,dc2      Datacenter list, default: dc1
+    --namespace NAME           Nomad namespace
+    --region NAME              Nomad region
+    --group NAME               Group name, default: job name
+    --task NAME                Task name, default: group name
+    --count N                  Group count, default: 1
+    --cpu MHz                  CPU resource, default: 500
+    --memory MB                Memory resource, default: 256
+    --command CMD              Docker command
+    --arg ARG                  Docker arg, repeatable
+    --env KEY=VALUE            Environment variable, repeatable
+    --env-file FILE            Read KEY=VALUE env file, repeatable
+    --port SPEC                Port mapping, repeatable
+                               SPEC: name:to or name:static:to, e.g. http:8080:80
+    --mount SPEC               Docker mount, repeatable
+                               SPEC: bind:/host:/container[:ro|rw]
+                               SPEC: volume:name:/container[:ro|rw]
+                               SPEC: tmpfs:/container[:ro|rw]
+    --host-volume SPEC         Nomad host volume mount, repeatable
+                               SPEC: volume_name:/container[:ro|rw]
+    --service-name NAME        Register service name, default: job name
+    --no-service               Do not emit service block
+    --check-http PATH          HTTP health check path
+    --check-tcp                TCP health check
+    --check-interval DURATION  Health check interval, default: 10s
+    --check-timeout DURATION   Health check timeout, default: 2s
+    --vault-role ROLE          Emit task vault block with role
+    --vault-cluster NAME       Vault cluster, default: default
+    --identity-aud CSV         Emit workload identity audiences
+    --identity-ttl DURATION    Workload identity TTL, default: 1h
+    --template-file SPEC       Template file, repeatable
+                               SPEC: source:destination[:env]
+
+Compose conversion:
+  nomad-job compose convert docker-compose.yml --out jobs/app.nomad.hcl
+
+  Options:
+    --out FILE                 Output file, use - for stdout
+    --force                    Overwrite output file
+    --job NAME                 Job name, default: compose project/name
+    --type service|batch       Job type, default: service
+    --datacenters dc1,dc2      Datacenter list, default: dc1
+    --namespace NAME           Nomad namespace
+    --region NAME              Nomad region
+    --volume-root PATH         Map named volumes to bind paths under PATH
+    --cpu-default MHz          CPU when Compose omits deploy resources, default: 500
+    --memory-default MB        Memory when Compose omits deploy resources, default: 256
+
+Safety:
+  apply always runs "nomad job validate" and "nomad job plan" first.
+  apply asks for confirmation unless --auto-approve is provided.
+EOF
+}
+
+scaffold_docker() {
+  require_command python3
+  python3 - "$@" <<'PY'
+import argparse
+import os
+import re
+import shlex
+import sys
+import tempfile
+from pathlib import Path
+
+
+def hcl_string(value):
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def hcl_list(values):
+    return "[" + ", ".join(hcl_string(v) for v in values) + "]"
+
+
+def parse_csv(value):
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def valid_name(value, label):
+    if not re.match(r"^[A-Za-z0-9_.-]+$", value):
+        raise SystemExit(f"[ERROR] Invalid {label}: {value}")
+    return value
+
+
+def parse_key_value(value, label):
+    if "=" not in value:
+        raise SystemExit(f"[ERROR] Invalid {label}, expected KEY=VALUE: {value}")
+    key, val = value.split("=", 1)
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+        raise SystemExit(f"[ERROR] Invalid env key: {key}")
+    return key, val
+
+
+def read_env_file(path):
+    env = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].strip()
+            env.append(parse_key_value(line, f"env file entry in {path}"))
+    return env
+
+
+def parse_port(value, index):
+    parts = value.rsplit("/", 1)
+    proto = parts[1] if len(parts) == 2 else "tcp"
+    spec = parts[0]
+    fields = spec.split(":")
+    if len(fields) == 2:
+        name, to = fields
+        static = None
+    elif len(fields) == 3:
+        name, static, to = fields
+    else:
+        raise SystemExit(f"[ERROR] Invalid port spec: {value}")
+    name = valid_name(name or f"p{index}", "port name")
+    return {"name": name, "static": int(static) if static else None, "to": int(to), "protocol": proto}
+
+
+def parse_mount(value):
+    fields = value.split(":")
+    if not fields:
+        raise SystemExit(f"[ERROR] Invalid mount spec: {value}")
+    mount_type = fields[0]
+    readonly = False
+    if fields[-1] in ("ro", "rw"):
+        readonly = fields[-1] == "ro"
+        fields = fields[:-1]
+    if mount_type in ("bind", "volume"):
+        if len(fields) != 3:
+            raise SystemExit(f"[ERROR] Invalid {mount_type} mount spec: {value}")
+        return {"type": mount_type, "source": fields[1], "target": fields[2], "readonly": readonly}
+    if mount_type == "tmpfs":
+        if len(fields) != 2:
+            raise SystemExit(f"[ERROR] Invalid tmpfs mount spec: {value}")
+        return {"type": "tmpfs", "target": fields[1], "readonly": readonly}
+    raise SystemExit(f"[ERROR] Unsupported mount type: {mount_type}")
+
+
+def parse_host_volume(value):
+    fields = value.split(":")
+    readonly = False
+    if fields[-1] in ("ro", "rw"):
+        readonly = fields[-1] == "ro"
+        fields = fields[:-1]
+    if len(fields) != 2:
+        raise SystemExit(f"[ERROR] Invalid host volume spec: {value}")
+    return {"name": valid_name(fields[0], "host volume name"), "destination": fields[1], "readonly": readonly}
+
+
+def parse_template_file(value):
+    fields = value.split(":")
+    env = False
+    if fields[-1] == "env":
+        env = True
+        fields = fields[:-1]
+    if len(fields) != 2:
+        raise SystemExit(f"[ERROR] Invalid template-file spec: {value}")
+    source = fields[0]
+    destination = fields[1]
+    with open(source, "r", encoding="utf-8") as handle:
+        data = handle.read()
+    return {"source": source, "destination": destination, "env": env, "data": data}
+
+
+def write_output(path, content, force):
+    if path == "-":
+        print(content, end="")
+        return
+    target = Path(path)
+    if target.exists() and not force:
+        raise SystemExit(f"[ERROR] Output exists, use --force to overwrite: {path}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(target.parent)) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    os.replace(tmp_path, target)
+
+
+def emit_task(lines, args, ports, env_items, mounts, host_volumes, templates):
+    indent = "    "
+    lines.append(f'{indent}task {hcl_string(args.task)} {{')
+    lines.append(f'{indent}  driver = "docker"')
+    lines.append("")
+    lines.append(f'{indent}  config {{')
+    lines.append(f'{indent}    image = {hcl_string(args.image)}')
+    if args.command:
+        lines.append(f'{indent}    command = {hcl_string(args.command)}')
+    if args.arg:
+        lines.append(f'{indent}    args = {hcl_list(args.arg)}')
+    if ports:
+        lines.append(f'{indent}    ports = {hcl_list([p["name"] for p in ports])}')
+    for mount in mounts:
+        lines.append("")
+        lines.append(f'{indent}    mount {{')
+        lines.append(f'{indent}      type = {hcl_string(mount["type"])}')
+        if "source" in mount:
+            lines.append(f'{indent}      source = {hcl_string(mount["source"])}')
+        lines.append(f'{indent}      target = {hcl_string(mount["target"])}')
+        lines.append(f'{indent}      readonly = {str(mount["readonly"]).lower()}')
+        lines.append(f'{indent}    }}')
+    lines.append(f'{indent}  }}')
+    if env_items:
+        lines.append("")
+        lines.append(f'{indent}  env {{')
+        for key, val in sorted(env_items):
+            lines.append(f'{indent}    {key} = {hcl_string(val)}')
+        lines.append(f'{indent}  }}')
+    if args.identity_aud:
+        lines.append("")
+        lines.append(f'{indent}  identity {{')
+        lines.append(f'{indent}    name = "vault_default"')
+        lines.append(f'{indent}    aud  = {hcl_list(parse_csv(args.identity_aud))}')
+        lines.append(f'{indent}    file = true')
+        lines.append(f'{indent}    ttl  = {hcl_string(args.identity_ttl)}')
+        lines.append(f'{indent}  }}')
+    if args.vault_role:
+        lines.append("")
+        lines.append(f'{indent}  vault {{')
+        lines.append(f'{indent}    cluster = {hcl_string(args.vault_cluster)}')
+        lines.append(f'{indent}    role    = {hcl_string(args.vault_role)}')
+        lines.append(f'{indent}  }}')
+    for template in templates:
+        lines.append("")
+        lines.append(f'{indent}  template {{')
+        lines.append(f'{indent}    destination = {hcl_string(template["destination"])}')
+        lines.append(f'{indent}    env         = {str(template["env"]).lower()}')
+        lines.append(f'{indent}    data = <<EOH')
+        lines.append(template["data"].rstrip("\n"))
+        lines.append("EOH")
+        lines.append(f'{indent}  }}')
+    for volume in host_volumes:
+        lines.append("")
+        lines.append(f'{indent}  volume_mount {{')
+        lines.append(f'{indent}    volume      = {hcl_string(volume["name"])}')
+        lines.append(f'{indent}    destination = {hcl_string(volume["destination"])}')
+        lines.append(f'{indent}    read_only   = {str(volume["readonly"]).lower()}')
+        lines.append(f'{indent}  }}')
+    lines.append("")
+    lines.append(f'{indent}  resources {{')
+    lines.append(f'{indent}    cpu    = {args.cpu}')
+    lines.append(f'{indent}    memory = {args.memory}')
+    lines.append(f'{indent}  }}')
+    if args.emit_service and ports:
+        service_port = ports[0]["name"]
+        lines.append("")
+        lines.append(f'{indent}  service {{')
+        lines.append(f'{indent}    name = {hcl_string(args.service_name or args.job)}')
+        lines.append(f'{indent}    port = {hcl_string(service_port)}')
+        if args.check_http:
+            lines.append("")
+            lines.append(f'{indent}    check {{')
+            lines.append(f'{indent}      type     = "http"')
+            lines.append(f'{indent}      path     = {hcl_string(args.check_http)}')
+            lines.append(f'{indent}      interval = {hcl_string(args.check_interval)}')
+            lines.append(f'{indent}      timeout  = {hcl_string(args.check_timeout)}')
+            lines.append(f'{indent}    }}')
+        elif args.check_tcp:
+            lines.append("")
+            lines.append(f'{indent}    check {{')
+            lines.append(f'{indent}      type     = "tcp"')
+            lines.append(f'{indent}      interval = {hcl_string(args.check_interval)}')
+            lines.append(f'{indent}      timeout  = {hcl_string(args.check_timeout)}')
+            lines.append(f'{indent}    }}')
+        lines.append(f'{indent}  }}')
+    lines.append(f'{indent}}}')
+
+
+def build_hcl(args):
+    valid_name(args.job, "job name")
+    valid_name(args.group, "group name")
+    valid_name(args.task, "task name")
+    ports = [parse_port(value, index + 1) for index, value in enumerate(args.port or [])]
+    mounts = [parse_mount(value) for value in args.mount or []]
+    host_volumes = [parse_host_volume(value) for value in args.host_volume or []]
+    templates = [parse_template_file(value) for value in args.template_file or []]
+    env_items = []
+    for path in args.env_file or []:
+        env_items.extend(read_env_file(path))
+    for item in args.env or []:
+        env_items.append(parse_key_value(item, "env"))
+    lines = [
+        "# Generated by nomad-job scaffold docker",
+        f'job {hcl_string(args.job)} {{',
+        f'  type = {hcl_string(args.type)}',
+        f'  datacenters = {hcl_list(parse_csv(args.datacenters))}',
+    ]
+    if args.namespace:
+        lines.append(f'  namespace = {hcl_string(args.namespace)}')
+    if args.region:
+        lines.append(f'  region = {hcl_string(args.region)}')
+    lines.extend([
+        "",
+        "  update {",
+        "    max_parallel     = 1",
+        '    min_healthy_time = "10s"',
+        '    healthy_deadline = "3m"',
+        "    auto_revert      = true",
+        "  }",
+        "",
+        f'  group {hcl_string(args.group)} {{',
+        f'    count = {args.count}',
+    ])
+    if ports:
+        lines.append("")
+        lines.append("    network {")
+        for port in ports:
+            lines.append(f'      port {hcl_string(port["name"])} {{')
+            if port["static"] is not None:
+                lines.append(f'        static = {port["static"]}')
+            lines.append(f'        to = {port["to"]}')
+            lines.append("      }")
+        lines.append("    }")
+    for volume in host_volumes:
+        lines.append("")
+        lines.append(f'    volume {hcl_string(volume["name"])} {{')
+        lines.append('      type      = "host"')
+        lines.append(f'      source    = {hcl_string(volume["name"])}')
+        lines.append(f'      read_only = {str(volume["readonly"]).lower()}')
+        lines.append("    }")
+    lines.append("")
+    emit_task(lines, args, ports, env_items, mounts, host_volumes, templates)
+    lines.append("  }")
+    lines.append("}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+parser = argparse.ArgumentParser(prog="nomad-job scaffold docker")
+parser.add_argument("--job", required=True)
+parser.add_argument("--image", required=True)
+parser.add_argument("--out", default="-")
+parser.add_argument("--force", action="store_true")
+parser.add_argument("--type", choices=["service", "batch"], default="service")
+parser.add_argument("--datacenters", default="dc1")
+parser.add_argument("--namespace")
+parser.add_argument("--region")
+parser.add_argument("--group")
+parser.add_argument("--task")
+parser.add_argument("--count", type=int, default=1)
+parser.add_argument("--cpu", type=int, default=500)
+parser.add_argument("--memory", type=int, default=256)
+parser.add_argument("--command")
+parser.add_argument("--arg", action="append")
+parser.add_argument("--env", action="append")
+parser.add_argument("--env-file", action="append")
+parser.add_argument("--port", action="append")
+parser.add_argument("--mount", action="append")
+parser.add_argument("--host-volume", action="append")
+parser.add_argument("--service-name")
+parser.add_argument("--no-service", dest="emit_service", action="store_false")
+parser.set_defaults(emit_service=True)
+parser.add_argument("--check-http")
+parser.add_argument("--check-tcp", action="store_true")
+parser.add_argument("--check-interval", default="10s")
+parser.add_argument("--check-timeout", default="2s")
+parser.add_argument("--vault-role")
+parser.add_argument("--vault-cluster", default="default")
+parser.add_argument("--identity-aud")
+parser.add_argument("--identity-ttl", default="1h")
+parser.add_argument("--template-file", action="append")
+args = parser.parse_args()
+args.group = args.group or args.job
+args.task = args.task or args.group
+write_output(args.out, build_hcl(args), args.force)
+PY
+}
+
+compose_convert() {
+  require_command python3
+  python3 - "$@" <<'PY'
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+
+WARNINGS = []
+
+
+def warn(message):
+    WARNINGS.append(message)
+
+
+def hcl_string(value):
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def hcl_list(values):
+    return "[" + ", ".join(hcl_string(v) for v in values) + "]"
+
+
+def parse_csv(value):
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def sanitize_name(value):
+    value = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(value).strip())
+    value = value.strip("-")
+    return value or "app"
+
+
+def parse_memory(value, default):
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return max(1, int(value) // (1024 * 1024))
+    text = str(value).strip().lower()
+    match = re.match(r"^([0-9.]+)\s*([kmgt]?i?b?)?$", text)
+    if not match:
+        warn(f"unsupported memory value {value!r}, using {default} MB")
+        return default
+    number = float(match.group(1))
+    unit = match.group(2) or "b"
+    factor = {
+        "b": 1 / (1024 * 1024),
+        "k": 1 / 1024,
+        "kb": 1 / 1024,
+        "ki": 1 / 1024,
+        "kib": 1 / 1024,
+        "m": 1,
+        "mb": 1,
+        "mi": 1,
+        "mib": 1,
+        "g": 1024,
+        "gb": 1024,
+        "gi": 1024,
+        "gib": 1024,
+        "t": 1024 * 1024,
+        "tb": 1024 * 1024,
+        "ti": 1024 * 1024,
+        "tib": 1024 * 1024,
+    }.get(unit, 1 / (1024 * 1024))
+    return max(1, int(number * factor))
+
+
+def parse_cpu(value, default):
+    if value is None:
+        return default
+    try:
+        return max(1, int(float(value) * 1000))
+    except Exception:
+        warn(f"unsupported cpu value {value!r}, using {default} MHz")
+        return default
+
+
+def load_compose(path):
+    if path.endswith(".json"):
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    try:
+        result = subprocess.run(
+            ["docker", "compose", "-f", path, "config", "--format", "json"],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        return json.loads(result.stdout)
+    except Exception as exc:
+        warn(f"docker compose config failed, fallback to Python YAML parser: {exc}")
+    try:
+        import yaml  # type: ignore
+    except Exception as exc:
+        raise SystemExit("[ERROR] compose convert requires Docker Compose or Python PyYAML") from exc
+    with open(path, "r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
+
+
+def normalize_environment(value):
+    env = {}
+    if value is None:
+        return env
+    if isinstance(value, dict):
+        for key, val in value.items():
+            env[str(key)] = "" if val is None else str(val)
+        return env
+    if isinstance(value, list):
+        for item in value:
+            if "=" in str(item):
+                key, val = str(item).split("=", 1)
+                env[key] = val
+        return env
+    warn(f"unsupported environment format: {value!r}")
+    return env
+
+
+def read_env_file(base_dir, item):
+    path = Path(item)
+    if not path.is_absolute():
+        path = base_dir / path
+    env = {}
+    if not path.exists():
+        warn(f"env_file not found: {path}")
+        return env
+    with open(path, "r", encoding="utf-8") as handle:
+        for raw in handle:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("export "):
+                line = line[7:].strip()
+            if "=" in line:
+                key, val = line.split("=", 1)
+                env[key] = val
+    return env
+
+
+def env_from_service(base_dir, service):
+    env = {}
+    env_file = service.get("env_file")
+    if isinstance(env_file, str):
+        env.update(read_env_file(base_dir, env_file))
+    elif isinstance(env_file, list):
+        for item in env_file:
+            if isinstance(item, dict):
+                path = item.get("path")
+            else:
+                path = item
+            if path:
+                env.update(read_env_file(base_dir, path))
+    env.update(normalize_environment(service.get("environment")))
+    return env
+
+
+def normalize_command(value):
+    if value is None:
+        return None, []
+    if isinstance(value, list):
+        if not value:
+            return None, []
+        return str(value[0]), [str(item) for item in value[1:]]
+    return None, [str(value)]
+
+
+def parse_port_item(item, index):
+    if isinstance(item, dict):
+        target = item.get("target")
+        published = item.get("published")
+        protocol = item.get("protocol", "tcp")
+    else:
+        text = str(item)
+        protocol = "tcp"
+        if "/" in text:
+            text, protocol = text.rsplit("/", 1)
+        pieces = text.split(":")
+        if len(pieces) == 1:
+            target = pieces[0]
+            published = None
+        elif len(pieces) == 2:
+            published, target = pieces
+        else:
+            published, target = pieces[-2], pieces[-1]
+    if target is None:
+        warn(f"skip unsupported port item: {item!r}")
+        return None
+    target_int = int(str(target))
+    name = "http" if target_int in (80, 8080) and index == 1 else f"p{target_int}"
+    return {
+        "name": sanitize_name(name),
+        "to": target_int,
+        "static": int(str(published)) if published not in (None, "") else None,
+        "protocol": protocol,
+    }
+
+
+def parse_volume_item(item, service_name, volume_root):
+    readonly = False
+    source = None
+    target = None
+    mount_type = "volume"
+    if isinstance(item, dict):
+        mount_type = item.get("type", "volume")
+        source = item.get("source")
+        target = item.get("target")
+        readonly = bool(item.get("read_only", False))
+    else:
+        text = str(item)
+        fields = text.split(":")
+        if len(fields) < 2:
+            warn(f"skip unsupported volume item in {service_name}: {item!r}")
+            return None
+        source, target = fields[0], fields[1]
+        if len(fields) >= 3:
+            readonly = "ro" in fields[2].split(",")
+        mount_type = "bind" if source.startswith("/") or source.startswith(".") else "volume"
+    if not target:
+        warn(f"skip volume without target in {service_name}: {item!r}")
+        return None
+    if mount_type == "bind":
+        return {"type": "bind", "source": source or "", "target": target, "readonly": readonly}
+    if volume_root and source:
+        return {"type": "bind", "source": str(Path(volume_root) / source), "target": target, "readonly": readonly}
+    if source:
+        return {"type": "volume", "source": source, "target": target, "readonly": readonly}
+    warn(f"skip anonymous volume in {service_name}: {item!r}")
+    return None
+
+
+def resources_from_service(service, cpu_default, memory_default):
+    deploy = service.get("deploy") or {}
+    resources = deploy.get("resources") or {}
+    limits = resources.get("limits") or {}
+    cpus = limits.get("cpus") or service.get("cpus")
+    memory = limits.get("memory") or service.get("mem_limit")
+    return parse_cpu(cpus, cpu_default), parse_memory(memory, memory_default)
+
+
+def emit_service_group(lines, name, service, base_dir, args):
+    group = sanitize_name(name)
+    image = service.get("image")
+    if not image:
+        warn(f"service {name} has no image; build-only services are not converted")
+        return
+    replicas = ((service.get("deploy") or {}).get("replicas") or 1)
+    ports = []
+    for index, item in enumerate(service.get("ports") or [], 1):
+        port = parse_port_item(item, index)
+        if port:
+            ports.append(port)
+    volumes = []
+    for item in service.get("volumes") or []:
+        volume = parse_volume_item(item, name, args.volume_root)
+        if volume:
+            volumes.append(volume)
+    env = env_from_service(base_dir, service)
+    command, command_args = normalize_command(service.get("command"))
+    entrypoint = service.get("entrypoint")
+    cpu, memory = resources_from_service(service, args.cpu_default, args.memory_default)
+    if service.get("depends_on"):
+        warn(f"service {name}: depends_on is not converted; rely on service checks and application retries")
+    if service.get("healthcheck"):
+        warn(f"service {name}: healthcheck is not automatically converted")
+    if service.get("build"):
+        warn(f"service {name}: build is ignored; build and push image before running Nomad job")
+    lines.append("")
+    lines.append(f'  group {hcl_string(group)} {{')
+    lines.append(f"    count = {int(replicas)}")
+    if ports:
+        lines.append("")
+        lines.append("    network {")
+        for port in ports:
+            lines.append(f'      port {hcl_string(port["name"])} {{')
+            if port["static"] is not None:
+                lines.append(f'        static = {port["static"]}')
+            lines.append(f'        to = {port["to"]}')
+            lines.append("      }")
+        lines.append("    }")
+    lines.append("")
+    lines.append(f'    task {hcl_string(group)} {{')
+    lines.append('      driver = "docker"')
+    lines.append("")
+    lines.append("      config {")
+    lines.append(f"        image = {hcl_string(image)}")
+    if isinstance(entrypoint, list) and entrypoint:
+        lines.append(f"        entrypoint = {hcl_list([str(x) for x in entrypoint])}")
+    elif isinstance(entrypoint, str):
+        lines.append(f"        entrypoint = {hcl_list([entrypoint])}")
+    if command:
+        lines.append(f"        command = {hcl_string(command)}")
+    if command_args:
+        lines.append(f"        args = {hcl_list(command_args)}")
+    if ports:
+        lines.append(f"        ports = {hcl_list([p['name'] for p in ports])}")
+    for volume in volumes:
+        lines.append("")
+        lines.append("        mount {")
+        lines.append(f"          type = {hcl_string(volume['type'])}")
+        lines.append(f"          source = {hcl_string(volume['source'])}")
+        lines.append(f"          target = {hcl_string(volume['target'])}")
+        lines.append(f"          readonly = {str(volume['readonly']).lower()}")
+        lines.append("        }")
+    lines.append("      }")
+    if env:
+        lines.append("")
+        lines.append("      env {")
+        for key, value in sorted(env.items()):
+            if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", key):
+                lines.append(f"        {key} = {hcl_string(value)}")
+            else:
+                warn(f"service {name}: skip invalid env key {key!r}")
+        lines.append("      }")
+    lines.append("")
+    lines.append("      resources {")
+    lines.append(f"        cpu    = {cpu}")
+    lines.append(f"        memory = {memory}")
+    lines.append("      }")
+    if ports:
+        lines.append("")
+        lines.append("      service {")
+        lines.append(f"        name = {hcl_string(group)}")
+        lines.append(f"        port = {hcl_string(ports[0]['name'])}")
+        lines.append("      }")
+    lines.append("    }")
+    lines.append("  }")
+
+
+def build_hcl(compose, path, args):
+    services = compose.get("services") or {}
+    if not services:
+        raise SystemExit("[ERROR] Compose file has no services")
+    job_name = sanitize_name(args.job or compose.get("name") or Path(path).resolve().parent.name)
+    lines = [
+        "# Generated by nomad-job compose convert",
+        "# Review warnings below before applying.",
+        f'job {hcl_string(job_name)} {{',
+        f'  type = {hcl_string(args.type)}',
+        f'  datacenters = {hcl_list(parse_csv(args.datacenters))}',
+    ]
+    if args.namespace:
+        lines.append(f'  namespace = {hcl_string(args.namespace)}')
+    if args.region:
+        lines.append(f'  region = {hcl_string(args.region)}')
+    lines.extend([
+        "",
+        "  update {",
+        "    max_parallel     = 1",
+        '    min_healthy_time = "10s"',
+        '    healthy_deadline = "3m"',
+        "    auto_revert      = true",
+        "  }",
+    ])
+    base_dir = Path(path).resolve().parent
+    for name, service in services.items():
+        emit_service_group(lines, name, service or {}, base_dir, args)
+    lines.append("}")
+    lines.append("")
+    if WARNINGS:
+        warning_lines = ["# Warnings:"]
+        warning_lines.extend(f"# - {item}" for item in WARNINGS)
+        warning_lines.append("")
+        lines = warning_lines + lines
+    return "\n".join(lines)
+
+
+def write_output(path, content, force):
+    if path == "-":
+        print(content, end="")
+        return
+    target = Path(path)
+    if target.exists() and not force:
+        raise SystemExit(f"[ERROR] Output exists, use --force to overwrite: {path}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=str(target.parent)) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    os.replace(tmp_path, target)
+
+
+parser = argparse.ArgumentParser(prog="nomad-job compose convert")
+parser.add_argument("compose_file")
+parser.add_argument("--out", default="-")
+parser.add_argument("--force", action="store_true")
+parser.add_argument("--job")
+parser.add_argument("--type", choices=["service", "batch"], default="service")
+parser.add_argument("--datacenters", default="dc1")
+parser.add_argument("--namespace")
+parser.add_argument("--region")
+parser.add_argument("--volume-root")
+parser.add_argument("--cpu-default", type=int, default=500)
+parser.add_argument("--memory-default", type=int, default=256)
+args = parser.parse_args()
+compose = load_compose(args.compose_file)
+write_output(args.out, build_hcl(compose, args.compose_file, args), args.force)
+for item in WARNINGS:
+    print(f"[WARN] {item}", file=sys.stderr)
+PY
+}
+
+validate_job_file() {
+  local file="${1:-}"
+
+  [ -n "$file" ] || fatal "Missing JOB_FILE"
+  [ -f "$file" ] || fatal "JOB_FILE not found: $file"
+  require_command nomad
+  nomad job validate "$file"
+}
+
+plan_job_file() {
+  local file="${1:-}"
+
+  [ -n "$file" ] || fatal "Missing JOB_FILE"
+  [ -f "$file" ] || fatal "JOB_FILE not found: $file"
+  shift || true
+  if [ "${1:-}" = "--" ]; then
+    shift
+  fi
+  require_command nomad
+  nomad job plan "$@" "$file"
+}
+
+apply_job_file() {
+  local auto_approve=0
+  local detach=0
+  local check_index=""
+  local file=""
+  local answer
+  local run_args=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --auto-approve)
+        auto_approve=1
+        ;;
+      --detach)
+        detach=1
+        ;;
+      --check-index)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --check-index"
+        check_index="$1"
+        ;;
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      -*)
+        fatal "Unknown apply option: $1"
+        ;;
+      *)
+        if [ -n "$file" ]; then
+          fatal "Unexpected argument: $1"
+        fi
+        file="$1"
+        ;;
+    esac
+    shift
+  done
+
+  [ -n "$file" ] || fatal "Missing JOB_FILE"
+  validate_job_file "$file"
+  plan_job_file "$file"
+  if [ "$auto_approve" -ne 1 ]; then
+    printf 'Run nomad job run for %s? Type yes to continue: ' "$file" >&2
+    read -r answer
+    [ "$answer" = "yes" ] || fatal "Apply cancelled"
+  fi
+  [ "$detach" -eq 0 ] || run_args+=("-detach")
+  [ -z "$check_index" ] || run_args+=("-check-index=${check_index}")
+  nomad job run "${run_args[@]}" "$file"
+}
+
+status_job() {
+  require_command nomad
+  if [ "$#" -eq 0 ]; then
+    nomad job status
+  else
+    nomad job status "$1"
+  fi
+}
+
+stop_job() {
+  local purge=0
+  local job=""
+  local args=()
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --purge)
+        purge=1
+        ;;
+      -*)
+        fatal "Unknown stop option: $1"
+        ;;
+      *)
+        job="$1"
+        ;;
+    esac
+    shift
+  done
+  [ -n "$job" ] || fatal "Missing JOB"
+  require_command nomad
+  [ "$purge" -eq 0 ] || args+=("-purge")
+  nomad job stop "${args[@]}" "$job"
+}
+
+dispatch_scaffold() {
+  local command="${1:-help}"
+
+  [ "$#" -eq 0 ] || shift
+  case "$command" in
+    docker)
+      scaffold_docker "$@"
+      ;;
+    help | -h | --help)
+      usage
+      ;;
+    *)
+      usage >&2
+      fatal "Unknown scaffold command: ${command}"
+      ;;
+  esac
+}
+
+dispatch_compose() {
+  local command="${1:-help}"
+
+  [ "$#" -eq 0 ] || shift
+  case "$command" in
+    convert)
+      compose_convert "$@"
+      ;;
+    help | -h | --help)
+      usage
+      ;;
+    *)
+      usage >&2
+      fatal "Unknown compose command: ${command}"
+      ;;
+  esac
+}
+
+main() {
+  local command="${1:-help}"
+
+  [ "$#" -eq 0 ] || shift
+  case "$command" in
+    scaffold)
+      dispatch_scaffold "$@"
+      ;;
+    compose)
+      dispatch_compose "$@"
+      ;;
+    validate)
+      validate_job_file "$@"
+      ;;
+    plan)
+      plan_job_file "$@"
+      ;;
+    apply)
+      apply_job_file "$@"
+      ;;
+    status)
+      status_job "$@"
+      ;;
+    stop)
+      stop_job "$@"
+      ;;
+    help | -h | --help)
+      usage
+      ;;
+    *)
+      usage >&2
+      fatal "Unknown command: ${command}"
+      ;;
+  esac
+}
+
+main "$@"
