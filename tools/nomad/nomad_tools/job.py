@@ -33,6 +33,81 @@ from .common import (
 NOMAD_ROOT_DIR = Path("/opt/nomad")
 TOOL_LOG_DIR = NOMAD_ROOT_DIR / "log" / "nomad-init-tools"
 AUDIT_LOG_FILE = TOOL_LOG_DIR / "job.audit.log"
+MIN_PORT = 1
+MAX_PORT = 65535
+SUPPORTED_PORT_PROTOCOLS = {"tcp", "udp"}
+
+
+def parse_positive_int_argument(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid positive integer: {value}") from exc
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"expected a positive integer, got {value}")
+    return number
+
+
+def validate_positive_int(value: int, label: str) -> int:
+    if value < 1:
+        raise CLIError(f"Invalid {label}: {value} (expected a positive integer)")
+    return value
+
+
+def parse_port_number(value: object, label: str) -> int:
+    try:
+        number = int(str(value))
+    except ValueError as exc:
+        raise CLIError(f"Invalid {label}: {value} (expected an integer)") from exc
+    if number < MIN_PORT or number > MAX_PORT:
+        raise CLIError(f"Invalid {label}: {value} (expected {MIN_PORT}-{MAX_PORT})")
+    return number
+
+
+def parse_port_number_or_warn(value: object, label: str, warnings: list[str]) -> int | None:
+    try:
+        return parse_port_number(value, label)
+    except CLIError as exc:
+        warn(warnings, str(exc))
+        return None
+
+
+def parse_port_protocol(value: object, label: str) -> str:
+    protocol = str(value).lower()
+    if protocol not in SUPPORTED_PORT_PROTOCOLS:
+        raise CLIError(f"Invalid {label}: {value} (expected tcp or udp)")
+    return protocol
+
+
+def parse_port_protocol_or_warn(value: object, label: str, warnings: list[str]) -> str | None:
+    try:
+        return parse_port_protocol(value, label)
+    except CLIError as exc:
+        warn(warnings, str(exc))
+        return None
+
+
+def parse_non_negative_int_or_warn(value: object, label: str, default: int, warnings: list[str]) -> int:
+    try:
+        number = int(str(value))
+    except ValueError:
+        warn(warnings, f"invalid {label} {value!r}, using {default}")
+        return default
+    if number < 0:
+        warn(warnings, f"invalid {label} {value!r}, using {default}")
+        return default
+    return number
+
+
+def heredoc_delimiter(data: str, base: str = "EOH") -> str:
+    used = {line.strip() for line in data.splitlines()}
+    if base not in used:
+        return base
+    for index in range(1, 100):
+        candidate = f"{base}_{index}"
+        if candidate not in used:
+            return candidate
+    raise CLIError("Template content conflicts with heredoc delimiters")
 
 
 def parse_key_value(value: str, label: str) -> tuple[str, str]:
@@ -59,7 +134,7 @@ def read_env_file(path: str) -> list[tuple[str, str]]:
 
 def parse_port(value: str, index: int) -> dict[str, Any]:
     pieces = value.rsplit("/", 1)
-    proto = pieces[1] if len(pieces) == 2 else "tcp"
+    proto = parse_port_protocol(pieces[1] if len(pieces) == 2 else "tcp", "port protocol")
     fields = pieces[0].split(":")
     if len(fields) == 2:
         name, to = fields
@@ -70,8 +145,8 @@ def parse_port(value: str, index: int) -> dict[str, Any]:
         raise CLIError(f"Invalid port spec: {value}")
     return {
         "name": validate_name(name or f"p{index}", "port name"),
-        "static": int(static) if static else None,
-        "to": int(to),
+        "static": parse_port_number(static, "static port") if static else None,
+        "to": parse_port_number(to, "target port"),
         "protocol": proto,
     }
 
@@ -173,13 +248,14 @@ def emit_task(
         lines.append(f"{indent}    role    = {hcl_string(args.vault_role)}")
         lines.append(f"{indent}  }}")
     for template in templates:
+        delimiter = heredoc_delimiter(str(template["data"]))
         lines.append("")
         lines.append(f"{indent}  template {{")
         lines.append(f"{indent}    destination = {hcl_string(template['destination'])}")
         lines.append(f"{indent}    env         = {hcl_bool(template['env'])}")
-        lines.append(f"{indent}    data = <<EOH")
+        lines.append(f"{indent}    data = <<{delimiter}")
         lines.append(str(template["data"]).rstrip("\n"))
-        lines.append("EOH")
+        lines.append(delimiter)
         lines.append(f"{indent}  }}")
     for volume in host_volumes:
         lines.append("")
@@ -223,6 +299,9 @@ def build_scaffold_hcl(args: argparse.Namespace) -> str:
     validate_name(args.job, "job name")
     validate_name(args.group, "group name")
     validate_name(args.task, "task name")
+    validate_positive_int(args.count, "group count")
+    validate_positive_int(args.cpu, "CPU reservation")
+    validate_positive_int(args.memory, "memory reservation")
     ports = [parse_port(value, index + 1) for index, value in enumerate(args.port or [])]
     mounts = [parse_mount(value) for value in args.mount or []]
     host_volumes = [parse_host_volume(value) for value in args.host_volume or []]
@@ -288,7 +367,204 @@ def write_output(path: str, content: str, force: bool) -> None:
     atomic_write_text(path, content, force=force)
 
 
+def require_scaffold_argument(value: str | None, option: str) -> str:
+    if not value:
+        raise CLIError(f"Missing required argument: {option} (or use --interactive)", exit_code=2)
+    return value
+
+
+def require_interactive_terminal() -> None:
+    if not sys.stdin.isatty() or not sys.stderr.isatty():
+        raise CLIError("Interactive mode requires a terminal")
+
+
+def read_interactive_line(prompt: str) -> str:
+    print(prompt, end="", file=sys.stderr, flush=True)
+    value = sys.stdin.readline()
+    if value == "":
+        raise CLIError("Interactive input ended")
+    return value.strip()
+
+
+def prompt_text(label: str, default: str | None = None, *, required: bool = False) -> str | None:
+    while True:
+        suffix = f" [{default}]" if default not in (None, "") else ""
+        value = read_interactive_line(f"{label}{suffix}: ")
+        if value:
+            return value
+        if default not in (None, ""):
+            return default
+        if not required:
+            return None
+        log_warn("Value is required")
+
+
+def prompt_yes_no(label: str, default: bool = False) -> bool:
+    suffix = " [Y/n]" if default else " [y/N]"
+    while True:
+        value = read_interactive_line(f"{label}{suffix}: ").lower()
+        if not value:
+            return default
+        if value in {"y", "yes"}:
+            return True
+        if value in {"n", "no"}:
+            return False
+        log_warn("Enter yes or no")
+
+
+def prompt_choice(label: str, choices: list[str], default: str) -> str:
+    choice_text = "/".join(choices)
+    while True:
+        value = prompt_text(f"{label} ({choice_text})", default, required=True)
+        assert value is not None
+        value = value.lower()
+        if value in choices:
+            return value
+        log_warn(f"Enter one of: {', '.join(choices)}")
+
+
+def prompt_positive_int(label: str, default: int) -> int:
+    while True:
+        value = prompt_text(label, str(default), required=True)
+        assert value is not None
+        try:
+            return parse_positive_int_argument(value)
+        except argparse.ArgumentTypeError as exc:
+            log_warn(str(exc))
+
+
+def prompt_name(label: str, default: str | None, name_label: str, *, required: bool = False) -> str | None:
+    while True:
+        value = prompt_text(label, default, required=required)
+        if value is None:
+            return None
+        try:
+            return validate_name(value, name_label)
+        except CLIError as exc:
+            log_warn(str(exc))
+
+
+def prompt_repeat(label: str, item_label: str, current: list[str] | None, validator) -> list[str] | None:
+    values = list(current or [])
+    if values:
+        print(f"Current {label}: {len(values)} item(s)", file=sys.stderr)
+    while prompt_yes_no(f"Add {label}?", False):
+        while True:
+            value = prompt_text(item_label, required=True)
+            assert value is not None
+            try:
+                validator(value)
+                values.append(value)
+                break
+            except CLIError as exc:
+                log_warn(str(exc))
+    return values or None
+
+
+def validate_env_file_prompt(value: str) -> None:
+    if not Path(value).is_file():
+        raise CLIError(f"Env file not found: {value}")
+
+
+def validate_template_file_prompt(value: str) -> None:
+    try:
+        parse_template_file(value)
+    except OSError as exc:
+        raise CLIError(f"Template file is not readable: {value}") from exc
+
+
+def scaffold_summary(args: argparse.Namespace) -> list[str]:
+    return [
+        f"  Job: {args.job}",
+        f"  Image: {args.image}",
+        f"  Type: {args.type}",
+        f"  Datacenters: {args.datacenters}",
+        f"  Group/task: {args.group}/{args.task}",
+        f"  Count: {args.count}",
+        f"  Resources: cpu={args.cpu} memory={args.memory}",
+        f"  Ports: {', '.join(args.port or []) if args.port else 'none'}",
+        f"  Service: {'yes' if args.emit_service and args.port else 'no'}",
+        f"  Env entries: {len(args.env or [])}",
+        f"  Env files: {', '.join(args.env_file or []) if args.env_file else 'none'}",
+        f"  Mounts: {len(args.mount or [])}",
+        f"  Host volumes: {len(args.host_volume or [])}",
+        f"  Templates: {len(args.template_file or [])}",
+        f"  Output: {args.out}",
+    ]
+
+
+def run_scaffold_docker_interactive(args: argparse.Namespace) -> None:
+    require_interactive_terminal()
+    print("Nomad Docker job interactive scaffold", file=sys.stderr)
+    args.job = prompt_name("Job name", args.job, "job name", required=True)
+    args.image = prompt_text("Docker image", args.image, required=True)
+    args.type = prompt_choice("Job type", ["service", "batch"], args.type)
+    args.datacenters = prompt_text("Datacenters", args.datacenters, required=True)
+    args.namespace = prompt_text("Namespace", args.namespace)
+    args.region = prompt_text("Region", args.region)
+    args.group = prompt_name("Group name", args.group or args.job, "group name", required=True)
+    args.task = prompt_name("Task name", args.task or args.group, "task name", required=True)
+    args.count = prompt_positive_int("Group count", args.count)
+    args.cpu = prompt_positive_int("CPU reservation in MHz", args.cpu)
+    args.memory = prompt_positive_int("Memory reservation in MB", args.memory)
+
+    if prompt_yes_no("Configure Docker command override?", bool(args.command or args.arg)):
+        args.command = prompt_text("Docker command", args.command)
+        args.arg = prompt_repeat("Docker command argument", "Argument", args.arg, lambda _: None)
+
+    args.port = prompt_repeat("port mapping", "Port spec name:to[/proto] or name:static:to[/proto]", args.port, lambda value: parse_port(value, 1))
+    args.emit_service = prompt_yes_no("Emit service block?", bool(args.emit_service))
+    if args.emit_service and not args.port:
+        log_warn("Service block requires at least one port; no service block will be emitted")
+    if args.emit_service and args.port:
+        args.service_name = prompt_name("Service name", args.service_name or args.job, "service name")
+        args.service_provider = prompt_choice("Service provider", ["nomad", "consul"], args.service_provider)
+        if args.check_http:
+            check_default = "http"
+        elif args.check_tcp:
+            check_default = "tcp"
+        else:
+            check_default = "none"
+        check_type = prompt_choice("Health check", ["none", "http", "tcp"], check_default)
+        args.check_http = None
+        args.check_tcp = False
+        if check_type == "http":
+            args.check_http = prompt_text("HTTP check path", "/health", required=True)
+        elif check_type == "tcp":
+            args.check_tcp = True
+        if check_type != "none":
+            args.check_interval = prompt_text("Health check interval", args.check_interval, required=True)
+            args.check_timeout = prompt_text("Health check timeout", args.check_timeout, required=True)
+
+    args.env = prompt_repeat("environment variable", "Environment variable KEY=VALUE", args.env, lambda value: parse_key_value(value, "env"))
+    args.env_file = prompt_repeat("environment file", "Env file path", args.env_file, validate_env_file_prompt)
+    args.mount = prompt_repeat("Docker mount", "Mount spec bind:source:target[:ro|rw], volume:name:target[:ro|rw], or tmpfs:target[:ro|rw]", args.mount, parse_mount)
+    args.host_volume = prompt_repeat("host volume", "Host volume spec name:destination[:ro|rw]", args.host_volume, parse_host_volume)
+    args.template_file = prompt_repeat("template file", "Template spec source:destination[:env]", args.template_file, validate_template_file_prompt)
+
+    if prompt_yes_no("Configure Vault role?", bool(args.vault_role)):
+        args.vault_role = prompt_text("Vault role", args.vault_role, required=True)
+        args.vault_cluster = prompt_text("Vault cluster", args.vault_cluster, required=True)
+    if prompt_yes_no("Configure workload identity?", bool(args.identity_aud)):
+        args.identity_aud = prompt_text("Workload identity audiences", args.identity_aud, required=True)
+        args.identity_ttl = prompt_text("Workload identity token TTL", args.identity_ttl, required=True)
+
+    default_out = args.out or f"jobs/{args.job}.nomad.hcl"
+    args.out = prompt_text("Output path, or '-' for stdout", default_out, required=True)
+    print("Scaffold summary:", file=sys.stderr)
+    for item in scaffold_summary(args):
+        print(item, file=sys.stderr)
+    if not prompt_yes_no("Generate this Nomad job file?", True):
+        raise CLIError("Interactive scaffold cancelled")
+
+
 def cmd_scaffold_docker(args: argparse.Namespace) -> int:
+    if args.interactive:
+        run_scaffold_docker_interactive(args)
+    else:
+        args.job = require_scaffold_argument(args.job, "--job")
+        args.image = require_scaffold_argument(args.image, "--image")
+        args.out = args.out or "-"
     args.group = args.group or args.job
     args.task = args.task or args.group
     write_output(args.out, build_scaffold_hcl(args), args.force)
@@ -447,12 +723,20 @@ def parse_port_item(item: object, index: int, warnings: list[str]) -> dict[str, 
     if target is None:
         warn(warnings, f"skip unsupported port item: {item!r}")
         return None
-    target_int = int(str(target))
+    protocol = parse_port_protocol_or_warn(protocol, f"port protocol in {item!r}", warnings)
+    target_int = parse_port_number_or_warn(target, f"target port in {item!r}", warnings)
+    if protocol is None or target_int is None:
+        return None
+    static_int = None
+    if published not in (None, ""):
+        static_int = parse_port_number_or_warn(published, f"published port in {item!r}", warnings)
+        if static_int is None:
+            return None
     name = "http" if target_int in (80, 8080) and index == 1 else f"p{target_int}"
     return {
         "name": sanitize_name(name),
         "to": target_int,
-        "static": int(str(published)) if published not in (None, "") else None,
+        "static": static_int,
         "protocol": protocol,
     }
 
@@ -511,7 +795,10 @@ def emit_compose_service_group(
     if not image:
         warn(warnings, f"service {name} has no image; build-only services are not converted")
         return
-    replicas = ((service.get("deploy") or {}).get("replicas") or 1)
+    replicas = (service.get("deploy") or {}).get("replicas")
+    if replicas is None:
+        replicas = 1
+    replicas = parse_non_negative_int_or_warn(replicas, f"replicas for service {name}", 1, warnings)
     ports = [port for index, item in enumerate(service.get("ports") or [], 1) if (port := parse_port_item(item, index, warnings))]
     volumes = [volume for item in service.get("volumes") or [] if (volume := parse_volume_item(item, name, args.volume_root, warnings))]
     env = env_from_service(base_dir, service, warnings)
@@ -619,10 +906,15 @@ def build_compose_hcl(compose: dict[str, Any], path: str, args: argparse.Namespa
 
 def cmd_compose_convert(args: argparse.Namespace) -> int:
     warnings: list[str] = []
+    validate_positive_int(args.cpu_default, "default CPU reservation")
+    validate_positive_int(args.memory_default, "default memory reservation")
     compose = load_compose(args.compose_file, warnings)
-    write_output(args.out, build_compose_hcl(compose, args.compose_file, args, warnings), args.force)
+    content = build_compose_hcl(compose, args.compose_file, args, warnings)
     for item in warnings:
         log_warn(item)
+    if args.strict and warnings:
+        raise CLIError("Compose conversion has warnings; rerun without --strict to emit best-effort HCL")
+    write_output(args.out, content, args.force)
     return 0
 
 
@@ -656,20 +948,30 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_plan(args: argparse.Namespace) -> int:
-    validate_job_file(args.job_file)
-    extra = args.nomad_args or []
+def normalize_nomad_args(nomad_args: list[str] | None) -> list[str]:
+    extra = list(nomad_args or [])
     if extra and extra[0] == "--":
         extra = extra[1:]
-    log_nomad_target(args.job_file)
-    log_info(f"Planning Nomad job file: {args.job_file}")
-    result = run(["nomad", "job", "plan", *extra, args.job_file], check=False)
+    return extra
+
+
+def run_plan(job_file: str, nomad_args: list[str] | None, *, validate: bool) -> int:
+    if validate:
+        validate_job_file(job_file)
+    extra = normalize_nomad_args(nomad_args)
+    log_nomad_target(job_file)
+    log_info(f"Planning Nomad job file: {job_file}")
+    result = run(["nomad", "job", "plan", *extra, job_file], check=False)
     return 0 if result.returncode in (0, 1) else result.returncode
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    return run_plan(args.job_file, args.nomad_args, validate=True)
 
 
 def cmd_apply(args: argparse.Namespace) -> int:
     validate_job_file(args.job_file)
-    plan_result = cmd_plan(argparse.Namespace(job_file=args.job_file, nomad_args=[]))
+    plan_result = run_plan(args.job_file, getattr(args, "nomad_args", []), validate=False)
     if plan_result != 0:
         return plan_result
     if not args.auto_approve:
@@ -799,11 +1101,13 @@ def build_parser() -> argparse.ArgumentParser:
   --mount bind:/srv/app:/app:ro
   --host-volume logs:/var/log/app:rw
   --template-file app.ctmpl:secrets/app.env:env
+  --interactive              prompt for missing and common options
 """,
     )
-    docker.add_argument("--job", required=True, help="Nomad job name")
-    docker.add_argument("--image", required=True, help="Docker image reference")
-    docker.add_argument("--out", default="-", help="Output HCL path, or '-' for stdout")
+    docker.add_argument("--interactive", action="store_true", help="Prompt for missing and common scaffold options")
+    docker.add_argument("--job", help="Nomad job name")
+    docker.add_argument("--image", help="Docker image reference")
+    docker.add_argument("--out", help="Output HCL path, or '-' for stdout")
     docker.add_argument("--force", action="store_true", help="Overwrite an existing output file")
     docker.add_argument("--type", choices=["service", "batch"], default="service", help="Nomad job type")
     docker.add_argument("--datacenters", default="dc1", help="Comma-separated Nomad datacenters")
@@ -811,9 +1115,9 @@ def build_parser() -> argparse.ArgumentParser:
     docker.add_argument("--region", help="Nomad region to write into the job file")
     docker.add_argument("--group", help="Task group name; defaults to --job")
     docker.add_argument("--task", help="Task name; defaults to --group")
-    docker.add_argument("--count", type=int, default=1, help="Task group count")
-    docker.add_argument("--cpu", type=int, default=500, help="CPU reservation in MHz")
-    docker.add_argument("--memory", type=int, default=256, help="Memory reservation in MB")
+    docker.add_argument("--count", type=parse_positive_int_argument, default=1, help="Task group count")
+    docker.add_argument("--cpu", type=parse_positive_int_argument, default=500, help="CPU reservation in MHz")
+    docker.add_argument("--memory", type=parse_positive_int_argument, default=256, help="Memory reservation in MB")
     docker.add_argument("--command", help="Docker command override")
     docker.add_argument("--arg", action="append", help="Docker command argument; repeat for multiple args")
     docker.add_argument("--env", action="append", help="Environment variable in KEY=VALUE format")
@@ -852,9 +1156,10 @@ def build_parser() -> argparse.ArgumentParser:
     convert.add_argument("--namespace", help="Nomad namespace to write into the job file")
     convert.add_argument("--region", help="Nomad region to write into the job file")
     convert.add_argument("--volume-root", help="Directory used to map named Compose volumes into bind mounts")
-    convert.add_argument("--cpu-default", type=int, default=500, help="Default CPU reservation in MHz")
-    convert.add_argument("--memory-default", type=int, default=256, help="Default memory reservation in MB")
+    convert.add_argument("--cpu-default", type=parse_positive_int_argument, default=500, help="Default CPU reservation in MHz")
+    convert.add_argument("--memory-default", type=parse_positive_int_argument, default=256, help="Default memory reservation in MB")
     convert.add_argument("--service-provider", choices=["nomad", "consul"], default="nomad", help="Service registration provider")
+    convert.add_argument("--strict", action="store_true", help="Fail if conversion emits warnings")
     convert.set_defaults(func=cmd_compose_convert)
 
     validate = subparsers.add_parser("validate", help="Run nomad job validate")
@@ -866,12 +1171,19 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("nomad_args", nargs=argparse.REMAINDER, help="Extra arguments passed to 'nomad job plan' after '--'")
     plan.set_defaults(func=cmd_plan)
 
-    apply = subparsers.add_parser("apply", help="Validate, plan and run a Nomad job")
+    apply = subparsers.add_parser(
+        "apply",
+        help="Validate, plan and run a Nomad job",
+        epilog="""Examples:
+  nomad-job apply jobs/web.nomad.hcl --auto-approve
+  nomad-job apply jobs/web.nomad.hcl -- -namespace default
+""",
+    )
     apply.add_argument("job_file", help="Nomad HCL job file")
     apply.add_argument("--auto-approve", action="store_true", help="Skip the interactive confirmation")
     apply.add_argument("--detach", action="store_true", help="Pass -detach to 'nomad job run'")
     apply.add_argument("--check-index", help="Pass -check-index to 'nomad job run'")
-    apply.set_defaults(func=cmd_apply)
+    apply.set_defaults(func=cmd_apply, nomad_args=[])
 
     status = subparsers.add_parser("status", help="Show job status")
     status.add_argument("job", nargs="?", help="Optional job ID")
@@ -895,7 +1207,15 @@ def dispatch(argv: list[str]) -> int:
     parser = build_parser()
     if argv and argv[0] == "help":
         argv = ["--help", *argv[1:]]
-    args = parser.parse_args(argv)
+    nomad_args: list[str] | None = None
+    parse_argv = argv
+    if argv and argv[0] == "apply" and "--" in argv:
+        delimiter_index = argv.index("--")
+        parse_argv = argv[:delimiter_index]
+        nomad_args = argv[delimiter_index + 1 :]
+    args = parser.parse_args(parse_argv)
+    if nomad_args is not None:
+        args.nomad_args = nomad_args
     return int(args.func(args))
 
 

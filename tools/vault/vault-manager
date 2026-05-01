@@ -2913,7 +2913,6 @@ run_with_audit() {
         ;;
     esac
   fi
-  [ "$quiet_help" -eq 1 ] || log_info "Starting vault-manager command: ${command_line}"
   audit_record "started" 0 "$@"
 
   set -E

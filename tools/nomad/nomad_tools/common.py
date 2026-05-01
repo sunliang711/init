@@ -426,8 +426,6 @@ def is_quiet_help(argv: Sequence[str]) -> bool:
 def run_with_audit(config: AuditConfig, argv: Sequence[str], callback) -> int:
     quiet = is_quiet_help(argv)
     command_line = redacted_command_line(argv)
-    if not quiet:
-        log_info(f"Starting {config.tool} command: {command_line}")
     audit_record(config, "started", 0, argv)
     try:
         result = callback(list(argv))
