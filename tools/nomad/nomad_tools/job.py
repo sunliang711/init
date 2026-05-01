@@ -497,6 +497,52 @@ def validate_template_file_prompt(value: str) -> None:
         raise CLIError(f"Template file is not readable: {value}") from exc
 
 
+def print_template_file_examples() -> None:
+    print(
+        """Template file format:
+  source:destination[:env]
+
+Examples:
+  templates/app.env.ctmpl:secrets/app.env:env
+    Source file example:
+      APP_ENV=prod
+      LOG_LEVEL=info
+      DB_HOST={{ with secret "kv/data/app/config" }}{{ .Data.data.db_host }}{{ end }}
+      DB_USER={{ with secret "kv/data/app/config" }}{{ .Data.data.db_user }}{{ end }}
+      DB_PASSWORD={{ with secret "kv/data/app/config" }}{{ .Data.data.db_password }}{{ end }}
+
+  templates/app.conf.ctmpl:local/app.conf
+    Render an application config file.
+
+  templates/nginx.conf.ctmpl:local/nginx.conf
+    Render a web server or sidecar config file.
+
+  templates/bootstrap.sh.ctmpl:local/bootstrap.sh
+    Render a startup script used by the task command.
+""",
+        file=sys.stderr,
+    )
+
+
+def prompt_template_files(current: list[str] | None) -> list[str] | None:
+    values = list(current or [])
+    if values:
+        print(f"Current template file: {len(values)} item(s)", file=sys.stderr)
+    while prompt_yes_no("Add template file?", False):
+        print_template_file_examples()
+        while True:
+            value = prompt_text("Template spec source:destination[:env] (empty to skip)")
+            if value is None:
+                return values or None
+            try:
+                validate_template_file_prompt(value)
+                values.append(value)
+                break
+            except CLIError as exc:
+                log_warn(str(exc))
+    return values or None
+
+
 def default_host_volume_path(name: str) -> str:
     return str(HOST_VOLUME_DIR / name)
 
@@ -707,7 +753,7 @@ def run_scaffold_docker_interactive(args: argparse.Namespace) -> None:
     args.host_volume = prompt_repeat("host volume", "Host volume spec name:destination[:ro|rw]", args.host_volume, parse_host_volume)
     if args.host_volume:
         prompt_host_volume_paths(args)
-    args.template_file = prompt_repeat("template file", "Template spec source:destination[:env]", args.template_file, validate_template_file_prompt)
+    args.template_file = prompt_template_files(args.template_file)
 
     if prompt_yes_no("Configure Vault role?", bool(args.vault_role)):
         args.vault_role = prompt_text("Vault role", args.vault_role, required=True)
