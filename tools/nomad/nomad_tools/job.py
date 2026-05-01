@@ -633,25 +633,21 @@ def log_consul_service_guidance() -> None:
 def vault_setup_commands(args: argparse.Namespace) -> list[str]:
     role = args.vault_role or "nomad-workloads"
     aud = args.identity_aud or "vault.io"
+    common_args = [
+        "--profile",
+        "default",
+        "--vault-addr",
+        "http://127.0.0.1:8200",
+        "--nomad-addr",
+        "http://127.0.0.1:4646",
+        "--role",
+        role,
+        "--aud",
+        aud,
+    ]
     return [
-        shell_command(
-            [
-                "nomad-manager",
-                "vault-jwt",
-                "plan",
-                "--profile",
-                "default",
-                "--vault-addr",
-                "http://127.0.0.1:8200",
-                "--nomad-addr",
-                "http://127.0.0.1:4646",
-                "--role",
-                role,
-                "--aud",
-                aud,
-            ]
-        ),
-        "nomad-manager vault-jwt apply --profile default",
+        shell_command(["nomad-manager", "vault-jwt", "plan", *common_args]),
+        shell_command(["nomad-manager", "vault-jwt", "apply", *common_args]),
     ]
 
 

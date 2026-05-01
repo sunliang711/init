@@ -1597,7 +1597,7 @@ def cmd_tutor(args: argparse.Namespace) -> int:
 """,
         "vault-secret-job": f"""Run a Vault-backed job workflow:
   {NOMAD_MANAGER_CMD} vault-jwt plan --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://127.0.0.1:4646 --secret-path kv/data/app/*
-  {NOMAD_MANAGER_CMD} vault-jwt apply --profile default
+  {NOMAD_MANAGER_CMD} vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://127.0.0.1:4646 --secret-path kv/data/app/*
   {NOMAD_MANAGER_CMD} vault-jwt job-example --profile default --job web --secret kv/data/app/config --out jobs/web.nomad.hcl
   nomad-job validate jobs/web.nomad.hcl
   nomad-job plan jobs/web.nomad.hcl
