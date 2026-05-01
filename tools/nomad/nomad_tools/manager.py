@@ -15,9 +15,15 @@ from typing import Any
 
 from .common import (
     AuditConfig,
+    COLOR_GREEN,
+    COLOR_RED,
+    COLOR_YELLOW,
+    CLIArgumentParser,
     CLIError,
+    add_bool_argument,
     atomic_write_text,
     command_exists,
+    color_text,
     current_script_dir,
     detect_arch,
     download_file,
@@ -31,7 +37,9 @@ from .common import (
     install_text,
     log_error,
     log_info,
+    log_success,
     log_warn,
+    missing_subcommand,
     parse_bool,
     parse_csv,
     require_command,
@@ -41,6 +49,7 @@ from .common import (
     run_with_audit,
     safe_remove_path,
     sha256_file,
+    terminal_status_prefix,
     validate_hcl_key,
     validate_name,
     wait_http,
@@ -118,7 +127,7 @@ def resolve_version(requested: str | None) -> str:
         return normalize_version(requested)
     try:
         latest = fetch_latest_version()
-        log_info(f"Resolved latest Nomad version: {latest}")
+        log_success(f"Resolved latest Nomad version: {latest}")
         return latest
     except Exception:
         log_warn(f"Failed to resolve latest Nomad version, fallback to {DEFAULT_NOMAD_VERSION}")
@@ -202,7 +211,7 @@ def commit_managed_file(target: Path, content: str) -> None:
         try:
             if target.read_text(encoding="utf-8") == content:
                 backup.unlink(missing_ok=True)
-                log_info(f"No config change: {target}")
+                log_success(f"No config change: {target}")
                 return
         except OSError:
             pass
@@ -217,13 +226,13 @@ def commit_managed_file(target: Path, content: str) -> None:
         raise CLIError(f"Nomad config apply failed, rollback completed: {exc}") from exc
     if backup:
         backup.unlink(missing_ok=True)
-    log_info(f"Config applied: {target}")
+    log_success(f"Config applied: {target}")
 
 
 def remove_managed_file(target: Path) -> None:
     require_config_environment()
     if not target.exists():
-        log_info(f"Config already absent: {target}")
+        log_success(f"Config already absent: {target}")
         return
     ensure_managed_or_absent(target)
     backup_handle = tempfile.NamedTemporaryFile(delete=False)
@@ -239,7 +248,7 @@ def remove_managed_file(target: Path) -> None:
         raise CLIError(f"Nomad config removal failed, rollback completed: {exc}") from exc
     finally:
         backup.unlink(missing_ok=True)
-    log_info(f"Config removed: {target}")
+    log_success(f"Config removed: {target}")
 
 
 def managed_config(body: str) -> str:
@@ -421,7 +430,7 @@ def cmd_driver_deny(args: argparse.Namespace) -> int:
     driver = validate_name(args.driver, "driver name")
     items = read_driver_denylist()
     if driver in items:
-        log_info(f"Driver already denied: {driver}")
+        log_success(f"Driver already denied: {driver}")
         return 0
     write_driver_denylist([*items, driver])
     return 0
@@ -499,7 +508,13 @@ def cmd_meta_unset(args: argparse.Namespace) -> int:
 
 
 def doctor_check(status: str, message: str) -> None:
-    print(f"{status:<5} {message}")
+    labels = {
+        "OK": (terminal_status_prefix(), COLOR_GREEN),
+        "WARN": ("WARN", COLOR_YELLOW),
+        "FAIL": ("FAIL", COLOR_RED),
+    }
+    label, color = labels.get(status, (status, ""))
+    print(f"{color_text(f'{label:<5}', color)} {message}")
 
 
 def hcl_file_string_value(path: Path, key: str) -> str:
@@ -640,6 +655,56 @@ def cmd_docker_doctor(_: argparse.Namespace) -> int:
     return failures
 
 
+def cmd_doctor(args: argparse.Namespace) -> int:
+    failures = 0
+    doctor_check("OK" if sys.platform.startswith("linux") else "FAIL", f"platform: {sys.platform}")
+    if not sys.platform.startswith("linux"):
+        failures += 1
+    if command_exists("systemctl"):
+        doctor_check("OK", f"systemctl found: {shutil.which('systemctl')}")
+        if run(["systemctl", "is-active", "--quiet", "nomad"], check=False).returncode == 0:
+            doctor_check("OK", "nomad.service is active")
+        else:
+            doctor_check("FAIL", "nomad.service is not active")
+            failures += 1
+    else:
+        doctor_check("FAIL", "systemctl not found")
+        failures += 1
+    if BIN_PATH.is_file():
+        doctor_check("OK", f"Nomad binary found: {BIN_PATH}")
+    else:
+        doctor_check("FAIL", f"Nomad binary missing: {BIN_PATH}")
+        failures += 1
+    if BIN_ENTRY.exists() or BIN_ENTRY.is_symlink():
+        doctor_check("OK", f"Nomad entry exists: {BIN_ENTRY}")
+    else:
+        doctor_check("WARN", f"Nomad entry missing: {BIN_ENTRY}")
+    if SYSTEMD_SERVICE.is_file():
+        doctor_check("OK", f"systemd service file found: {SYSTEMD_SERVICE}")
+    else:
+        doctor_check("FAIL", f"systemd service file missing: {SYSTEMD_SERVICE}")
+        failures += 1
+    failures += doctor_nomad_config()
+    code = http_status(f"{NOMAD_ADDR}/v1/status/leader")
+    if code == 200:
+        doctor_check("OK", f"Nomad HTTP API reachable: {NOMAD_ADDR}")
+    else:
+        doctor_check("FAIL", f"Nomad HTTP API not reachable: {NOMAD_ADDR} ({code})")
+        failures += 1
+    if args.integrations or DOCKER_CONFIG.is_file():
+        print("\nDocker checks:")
+        failures += cmd_docker_doctor(argparse.Namespace())
+    if args.integrations or VAULT_CONFIG.is_file():
+        print("\nVault checks:")
+        failures += cmd_vault_doctor(argparse.Namespace(address=None, namespace=None))
+    if args.integrations or CONSUL_CONFIG.is_file():
+        print("\nConsul checks:")
+        failures += cmd_consul_doctor(argparse.Namespace(address=None, ssl=None))
+    if failures == 0:
+        print("\nAll checks passed.")
+    return 0 if failures == 0 else 1
+
+
 def profile_path(profile: str) -> Path:
     validate_name(profile, "vault-jwt profile")
     return VAULT_JWT_PROFILE_DIR / f"{profile}.json"
@@ -730,7 +795,7 @@ def cmd_vault_jwt_plan(args: argparse.Namespace) -> int:
 def write_profile(data: dict[str, Any]) -> None:
     run_root(["install", "-d", "-m", "0700", str(VAULT_JWT_PROFILE_DIR)])
     install_text(profile_path(data["profile"]), json.dumps(data, indent=2, sort_keys=True) + "\n", mode="0600")
-    log_info(f"Vault JWT profile saved: {profile_path(data['profile'])}")
+    log_success(f"Vault JWT profile saved: {profile_path(data['profile'])}")
 
 
 def vault_env(data: dict[str, Any]) -> dict[str, str]:
@@ -819,7 +884,7 @@ def cmd_vault_jwt_apply(args: argparse.Namespace) -> int:
     elif auth_type != "jwt":
         raise CLIError(f"Vault auth path {data['auth_path']} already exists with type {auth_type}")
     else:
-        log_info(f"Vault JWT auth already enabled: {data['auth_path']}")
+        log_success(f"Vault JWT auth already enabled: {data['auth_path']}")
     log_info("Writing Vault JWT auth config")
     vault_cmd(data, ["write", f"auth/{data['auth_path']}/config", f"jwks_url={data['nomad_jwks_url']}", "jwt_supported_algs=RS256,EdDSA", f"default_role={data['role']}"])
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as policy:
@@ -948,7 +1013,7 @@ EOH
         print(content, end="")
     else:
         atomic_write_text(args.out, content, force=args.force)
-        log_info(f"Job example written: {args.out}")
+        log_success(f"Job example written: {args.out}")
     return 0
 
 
@@ -973,7 +1038,7 @@ def verify_checksum(zip_file: Path, sums_file: Path) -> None:
     actual = sha256_file(zip_file)
     if expected != actual:
         raise CLIError(f"Checksum mismatch for {zip_file.name}")
-    log_info(f"Checksum verified: {zip_file.name}")
+    log_success(f"Checksum verified: {zip_file.name}")
 
 
 def download_nomad(version: str, arch: str, tmpdir: Path) -> None:
@@ -1116,7 +1181,7 @@ def install_binary(tmpdir: Path) -> None:
     run_root(["install", "-m", "0755", "-o", "root", "-g", "root", str(tmpdir / "extract" / "nomad"), str(BIN_PATH)])
     run_root(["install", "-d", "-m", "0755", "-o", "root", "-g", "root", str(BIN_ENTRY.parent)])
     run_root(["ln", "-sfn", str(BIN_PATH), str(BIN_ENTRY)])
-    log_info(f"Nomad binary entry installed: {BIN_ENTRY}")
+    log_success(f"Nomad binary entry installed: {BIN_ENTRY}")
     run([str(BIN_PATH), "version"])
 
 
@@ -1192,8 +1257,8 @@ def install_tool_snapshot(version: str, script_dir: Path) -> None:
         safe_remove_path(LEGACY_TOOL_ENTRY)
     if LEGACY_JOB_ENTRY.is_symlink():
         safe_remove_path(LEGACY_JOB_ENTRY)
-    log_info(f"Nomad manager entry installed: {TOOL_ENTRY}")
-    log_info(f"Nomad job entry installed: {JOB_ENTRY}")
+    log_success(f"Nomad manager entry installed: {TOOL_ENTRY}")
+    log_success(f"Nomad job entry installed: {JOB_ENTRY}")
 
 
 def target_token_file() -> Path:
@@ -1224,7 +1289,7 @@ def write_acl_token_file(output: str) -> None:
             os.chown(token_file, user_info.pw_uid, user_info.pw_gid)
         except Exception:
             pass
-    log_info(f"ACL token saved to {token_file}")
+    log_success(f"ACL token saved to {token_file}")
 
 
 def remove_acl_token_file() -> None:
@@ -1236,7 +1301,7 @@ def remove_acl_token_file() -> None:
         log_warn(f"Skip removing ACL token file without generated marker: {token_file}")
         return
     token_file.unlink()
-    log_info(f"Removed ACL token file: {token_file}")
+    log_success(f"Removed ACL token file: {token_file}")
 
 
 def bootstrap_acl(enabled: bool) -> None:
@@ -1283,13 +1348,13 @@ def cmd_install(args: argparse.Namespace) -> int:
         bootstrap_acl(not args.no_acl_bootstrap)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
-    log_info("Nomad installation completed")
+    log_success("Nomad installation completed")
     return 0
 
 
 def remove_tool_snapshot() -> None:
     log_info("Removing Nomad init tools")
-    for path in (TOOL_ENTRY, JOB_ENTRY, LEGACY_TOOL_ENTRY, LEGACY_JOB_ENTRY, TOOL_PATH, JOB_PATH, TOOL_DIR):
+    for path in uninstall_tool_paths():
         if Path(path).exists() or Path(path).is_symlink():
             safe_remove_path(path)
 
@@ -1300,14 +1365,63 @@ def purge_tool_state() -> None:
     safe_remove_path(TOOL_LOG_DIR)
 
 
+def uninstall_runtime_paths() -> list[Path]:
+    return [SYSTEMD_SERVICE, BIN_ENTRY, BIN_PATH, CONFIG_DIR, DATA_DIR]
+
+
+def uninstall_tool_paths() -> list[Path]:
+    return [TOOL_ENTRY, JOB_ENTRY, LEGACY_TOOL_ENTRY, LEGACY_JOB_ENTRY, TOOL_PATH, JOB_PATH, TOOL_DIR]
+
+
+def print_uninstall_plan(args: argparse.Namespace) -> None:
+    print("Nomad uninstall plan:")
+    print("  Stop and disable service:")
+    print("    - nomad.service")
+    print("  Remove runtime paths:")
+    for path in uninstall_runtime_paths():
+        print(f"    - {path}")
+    print("  Remove generated ACL token if present:")
+    print(f"    - {target_token_file()}")
+    if args.remove_tools or args.purge:
+        print("  Remove tool paths:")
+        for path in uninstall_tool_paths():
+            print(f"    - {path}")
+    else:
+        print("  Preserve tool paths:")
+        print(f"    - {TOOL_DIR}")
+    if args.purge:
+        print("  Purge tool state:")
+        print(f"    - {TOOL_STATE_DIR}")
+        print(f"    - {TOOL_LOG_DIR}")
+    else:
+        print("  Preserve tool state:")
+        print(f"    - {TOOL_STATE_DIR}")
+        print(f"    - {TOOL_LOG_DIR}")
+
+
+def confirm_uninstall(args: argparse.Namespace) -> None:
+    if args.yes:
+        return
+    try:
+        answer = input("Proceed with uninstall? Type yes to continue: ")
+    except EOFError as exc:
+        raise CLIError("Uninstall requires confirmation. Re-run with --yes for non-interactive use") from exc
+    if answer != "yes":
+        raise CLIError("Uninstall cancelled")
+
+
 def cmd_uninstall(args: argparse.Namespace) -> int:
+    print_uninstall_plan(args)
+    if args.dry_run:
+        return 0
+    confirm_uninstall(args)
     require_linux()
     require_command("systemctl")
     log_info("Stopping Nomad service")
     run_root(["systemctl", "stop", "nomad"], check=False)
     run_root(["systemctl", "disable", "nomad"], check=False)
     log_info("Removing Nomad files")
-    for path in (SYSTEMD_SERVICE, BIN_ENTRY, BIN_PATH, CONFIG_DIR, DATA_DIR):
+    for path in uninstall_runtime_paths():
         if Path(path).exists() or Path(path).is_symlink():
             safe_remove_path(path)
     remove_acl_token_file()
@@ -1325,23 +1439,59 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     if run(["id", NOMAD_USER], check=False, capture=True).returncode == 0:
         log_info(f"Removing system user: {NOMAD_USER}")
         run_root(["userdel", NOMAD_USER], check=False)
-    log_info("Nomad uninstallation completed")
+    log_success("Nomad uninstallation completed")
+    return 0
+
+
+def cmd_quickstart(_: argparse.Namespace) -> int:
+    print(
+        f"""Nomad manager quickstart:
+  1. Install a single-node Nomad:
+     {NOMAD_MANAGER_CMD} install --version {DEFAULT_NOMAD_VERSION}
+
+  2. Check node health:
+     {NOMAD_MANAGER_CMD} doctor
+
+  3. Enable Docker settings when needed:
+     {NOMAD_MANAGER_CMD} docker enable --allow-privileged --volumes --image-gc
+
+  4. Generate and apply a job:
+     nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --out jobs/web.nomad.hcl
+     nomad-job validate jobs/web.nomad.hcl
+     nomad-job plan jobs/web.nomad.hcl
+     nomad-job apply jobs/web.nomad.hcl
+
+  5. Review destructive actions before removal:
+     {NOMAD_MANAGER_CMD} uninstall --dry-run
+"""
+    )
     return 0
 
 
 def cmd_tutor(args: argparse.Namespace) -> int:
     topic = args.topic or "overview"
     topics = {
-        "overview": "nomad-manager manages node setup and integrations. Use nomad-job for job files.",
-        "install": f"Install a single node with: {NOMAD_MANAGER_CMD} install --version {DEFAULT_NOMAD_VERSION}",
-        "docker": f"Enable Docker support with: {NOMAD_MANAGER_CMD} docker enable --allow-privileged true --volumes true",
-        "vault": f"Point Nomad at Vault with: {NOMAD_MANAGER_CMD} vault enable --address http://127.0.0.1:8200",
-        "vault-jwt": f"Link workload identity with: {NOMAD_MANAGER_CMD} vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://127.0.0.1:4646",
-        "consul": f"Point Nomad at Consul with: {NOMAD_MANAGER_CMD} consul enable --address 127.0.0.1:8500",
-        "ui": f"Enable UI settings with: {NOMAD_MANAGER_CMD} ui enable",
-        "job": "Use nomad-job scaffold docker, validate, plan and apply for job workflows.",
-        "uninstall": f"Remove runtime files with: {NOMAD_MANAGER_CMD} uninstall; add --purge only for full cleanup.",
-        "troubleshoot": "Run docker doctor, vault doctor, consul doctor and inspect systemctl status nomad.",
+        "overview": f"""Nomad manager tutor:
+  Purpose:
+    Manage single-node Nomad setup, node config and integrations.
+
+  Common path:
+    {NOMAD_MANAGER_CMD} quickstart
+    {NOMAD_MANAGER_CMD} doctor
+    nomad-job quickstart
+
+  Topics:
+    install, docker, vault, vault-jwt, consul, ui, job, uninstall, troubleshoot
+""",
+        "install": f"Install a single node:\n  {NOMAD_MANAGER_CMD} install --version {DEFAULT_NOMAD_VERSION}",
+        "docker": f"Enable Docker support:\n  {NOMAD_MANAGER_CMD} docker enable --allow-privileged --volumes",
+        "vault": f"Point Nomad at Vault:\n  {NOMAD_MANAGER_CMD} vault enable --address http://127.0.0.1:8200",
+        "vault-jwt": f"Link workload identity:\n  {NOMAD_MANAGER_CMD} vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://127.0.0.1:4646",
+        "consul": f"Point Nomad at Consul:\n  {NOMAD_MANAGER_CMD} consul enable --address 127.0.0.1:8500",
+        "ui": f"Enable UI settings:\n  {NOMAD_MANAGER_CMD} ui enable",
+        "job": "Use nomad-job for job workflows:\n  nomad-job scaffold docker ...\n  nomad-job validate jobs/web.nomad.hcl\n  nomad-job plan jobs/web.nomad.hcl\n  nomad-job apply jobs/web.nomad.hcl",
+        "uninstall": f"Preview removal before changing the node:\n  {NOMAD_MANAGER_CMD} uninstall --dry-run\n  {NOMAD_MANAGER_CMD} uninstall --yes",
+        "troubleshoot": f"Start with the aggregate check:\n  {NOMAD_MANAGER_CMD} doctor\n  {NOMAD_MANAGER_CMD} docker doctor\n  {NOMAD_MANAGER_CMD} vault doctor\n  {NOMAD_MANAGER_CMD} consul doctor",
     }
     if topic not in topics:
         raise CLIError(f"Unknown tutor topic: {topic}")
@@ -1350,202 +1500,233 @@ def cmd_tutor(args: argparse.Namespace) -> int:
 
 
 def add_common_vault_jwt_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--profile", required=True)
-    parser.add_argument("--vault-addr")
-    parser.add_argument("--vault-namespace")
-    parser.add_argument("--nomad-addr")
-    parser.add_argument("--nomad-jwks-url")
-    parser.add_argument("--auth-path")
-    parser.add_argument("--role")
-    parser.add_argument("--policy")
-    parser.add_argument("--aud")
-    parser.add_argument("--ttl")
-    parser.add_argument("--secret-path", action="append")
-    parser.add_argument("--policy-file")
-    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--profile", required=True, help="Local profile name")
+    parser.add_argument("--vault-addr", help="Vault address, for example http://127.0.0.1:8200")
+    parser.add_argument("--vault-namespace", help="Vault Enterprise namespace")
+    parser.add_argument("--nomad-addr", help="Nomad address used to derive the JWKS URL")
+    parser.add_argument("--nomad-jwks-url", help="Explicit Nomad JWKS URL")
+    parser.add_argument("--auth-path", help="Vault JWT auth mount path")
+    parser.add_argument("--role", help="Vault role name")
+    parser.add_argument("--policy", help="Vault policy name")
+    parser.add_argument("--aud", help="Comma-separated JWT audiences")
+    parser.add_argument("--ttl", help="Vault token TTL")
+    parser.add_argument("--secret-path", action="append", help="Vault secret path allowed by the generated policy; repeat for multiple paths")
+    parser.add_argument("--policy-file", help="Use an existing Vault policy HCL file")
+    parser.add_argument("--force", action="store_true", help="Replace an existing profile with different values")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog=NOMAD_MANAGER_CMD, description="Install and manage a single-node Nomad setup.")
+    parser = CLIArgumentParser(
+        prog=NOMAD_MANAGER_CMD,
+        description="Install and manage a single-node Nomad setup.",
+        epilog=f"""Examples:
+  {NOMAD_MANAGER_CMD} quickstart
+  {NOMAD_MANAGER_CMD} install --version {DEFAULT_NOMAD_VERSION}
+  {NOMAD_MANAGER_CMD} doctor
+  {NOMAD_MANAGER_CMD} docker enable --allow-privileged --volumes
+  {NOMAD_MANAGER_CMD} uninstall --dry-run
+""",
+    )
     sub = parser.add_subparsers(dest="command")
+    parser.set_defaults(func=lambda _: missing_subcommand(parser, NOMAD_MANAGER_CMD))
 
-    install = sub.add_parser("install", help="Install Nomad")
-    install.add_argument("version_pos", nargs="?")
-    install.add_argument("--version", dest="version_opt")
-    install.add_argument("--no-acl-bootstrap", action="store_true")
+    install = sub.add_parser("install", help="Install Nomad", description="Install Nomad, write managed config and start nomad.service.")
+    install.add_argument("version_pos", nargs="?", help="Nomad version, for example 2.0.0 or latest")
+    install.add_argument("--version", dest="version_opt", help="Nomad version; overrides the positional version")
+    install.add_argument("--no-acl-bootstrap", action="store_true", help="Skip automatic ACL bootstrap after install")
     install.set_defaults(func=lambda args: cmd_install(argparse.Namespace(version=args.version_opt or args.version_pos, no_acl_bootstrap=args.no_acl_bootstrap)))
 
-    uninstall = sub.add_parser("uninstall", help="Uninstall Nomad")
-    uninstall.add_argument("--remove-tools", action="store_true")
-    uninstall.add_argument("--purge", action="store_true")
+    uninstall = sub.add_parser("uninstall", help="Uninstall Nomad", description="Stop Nomad and remove runtime files after showing a removal plan.")
+    uninstall.add_argument("--remove-tools", action="store_true", help="Also remove nomad-manager and nomad-job from the managed install")
+    uninstall.add_argument("--purge", action="store_true", help="Remove runtime files, tools, metadata and audit logs")
+    uninstall.add_argument("--dry-run", action="store_true", help="Print the uninstall plan without changing files")
+    uninstall.add_argument("--yes", action="store_true", help="Skip the interactive confirmation")
     uninstall.set_defaults(func=cmd_uninstall)
+
+    doctor = sub.add_parser("doctor", help="Run node and integration checks", description="Check the managed Nomad install, service status and detected integrations.")
+    doctor.add_argument("--integrations", action="store_true", help="Run Docker, Vault and Consul checks even if their managed configs are absent")
+    doctor.set_defaults(func=cmd_doctor)
+
+    quickstart = sub.add_parser("quickstart", help="Show a copyable setup workflow")
+    quickstart.set_defaults(func=cmd_quickstart)
 
     vault = sub.add_parser("vault", help="Manage Vault integration")
     vault_sub = vault.add_subparsers(dest="vault_command")
-    vault_enable = vault_sub.add_parser("enable")
-    vault_enable.add_argument("--address", required=True)
-    vault_enable.add_argument("--ca-file", default="")
-    vault_enable.add_argument("--ca-path", default="")
-    vault_enable.add_argument("--cert-file", default="")
-    vault_enable.add_argument("--key-file", default="")
-    vault_enable.add_argument("--namespace", default="")
-    vault_enable.add_argument("--jwt-auth-backend-path", default="jwt-nomad")
-    vault_enable.add_argument("--aud", default="vault.io")
-    vault_enable.add_argument("--ttl", default="1h")
-    vault_enable.add_argument("--env", type=bool_arg, default=False)
-    vault_enable.add_argument("--file", type=bool_arg, default=True)
+    vault.set_defaults(func=lambda _: missing_subcommand(vault, f"{NOMAD_MANAGER_CMD} vault"))
+    vault_enable = vault_sub.add_parser("enable", help="Write Nomad Vault integration config")
+    vault_enable.add_argument("--address", required=True, help="Vault address, for example http://127.0.0.1:8200")
+    vault_enable.add_argument("--ca-file", default="", help="Vault CA certificate file")
+    vault_enable.add_argument("--ca-path", default="", help="Vault CA certificate directory")
+    vault_enable.add_argument("--cert-file", default="", help="Vault client certificate file")
+    vault_enable.add_argument("--key-file", default="", help="Vault client key file")
+    vault_enable.add_argument("--namespace", default="", help="Vault Enterprise namespace")
+    vault_enable.add_argument("--jwt-auth-backend-path", default="jwt-nomad", help="Vault JWT auth mount path")
+    vault_enable.add_argument("--aud", default="vault.io", help="Comma-separated workload identity audiences")
+    vault_enable.add_argument("--ttl", default="1h", help="Default workload identity token TTL")
+    add_bool_argument(vault_enable, "--env", default=False, help_text="Expose workload identity token through environment variables", no_help="Do not expose workload identity token through environment variables")
+    add_bool_argument(vault_enable, "--file", default=True, help_text="Write workload identity token to a file", no_help="Do not write workload identity token to a file")
     vault_enable.set_defaults(func=cmd_vault_enable)
-    vault_disable = vault_sub.add_parser("disable")
+    vault_disable = vault_sub.add_parser("disable", help="Remove managed Vault config")
     vault_disable.set_defaults(func=lambda _: remove_managed_file(VAULT_CONFIG) or 0)
-    vault_doctor = vault_sub.add_parser("doctor")
-    vault_doctor.add_argument("--address")
-    vault_doctor.add_argument("--namespace")
+    vault_doctor = vault_sub.add_parser("doctor", help="Check Vault integration")
+    vault_doctor.add_argument("--address", help="Override Vault address for the check")
+    vault_doctor.add_argument("--namespace", help="Override Vault namespace for the check")
     vault_doctor.set_defaults(func=cmd_vault_doctor)
 
     consul = sub.add_parser("consul", help="Manage Consul integration")
     consul_sub = consul.add_subparsers(dest="consul_command")
-    consul_enable = consul_sub.add_parser("enable")
-    consul_enable.add_argument("--address", required=True)
-    consul_enable.add_argument("--grpc-address", default="")
-    consul_enable.add_argument("--ca-file", default="")
-    consul_enable.add_argument("--cert-file", default="")
-    consul_enable.add_argument("--key-file", default="")
-    consul_enable.add_argument("--ssl", type=bool_arg, default=False)
-    consul_enable.add_argument("--verify", type=bool_arg, default=True)
-    consul_enable.add_argument("--aud", default="consul.io")
-    consul_enable.add_argument("--ttl", default="1h")
+    consul.set_defaults(func=lambda _: missing_subcommand(consul, f"{NOMAD_MANAGER_CMD} consul"))
+    consul_enable = consul_sub.add_parser("enable", help="Write Nomad Consul integration config")
+    consul_enable.add_argument("--address", required=True, help="Consul HTTP address, for example 127.0.0.1:8500")
+    consul_enable.add_argument("--grpc-address", default="", help="Consul gRPC address")
+    consul_enable.add_argument("--ca-file", default="", help="Consul CA certificate file")
+    consul_enable.add_argument("--cert-file", default="", help="Consul client certificate file")
+    consul_enable.add_argument("--key-file", default="", help="Consul client key file")
+    add_bool_argument(consul_enable, "--ssl", default=False, help_text="Use HTTPS for Consul", no_help="Use HTTP for Consul")
+    add_bool_argument(consul_enable, "--verify", default=True, help_text="Verify Consul TLS certificates", no_help="Skip Consul TLS certificate verification")
+    consul_enable.add_argument("--aud", default="consul.io", help="Comma-separated service identity audiences")
+    consul_enable.add_argument("--ttl", default="1h", help="Service identity token TTL")
     consul_enable.set_defaults(func=cmd_consul_enable)
-    consul_disable = consul_sub.add_parser("disable")
+    consul_disable = consul_sub.add_parser("disable", help="Remove managed Consul config")
     consul_disable.set_defaults(func=lambda _: remove_managed_file(CONSUL_CONFIG) or 0)
-    consul_doctor = consul_sub.add_parser("doctor")
-    consul_doctor.add_argument("--address")
-    consul_doctor.add_argument("--ssl", type=bool_arg)
+    consul_doctor = consul_sub.add_parser("doctor", help="Check Consul integration")
+    consul_doctor.add_argument("--address", help="Override Consul address for the check")
+    consul_doctor.add_argument("--ssl", type=bool_arg, help="Override detected Consul TLS mode with true or false")
     consul_doctor.set_defaults(func=cmd_consul_doctor)
 
     telemetry = sub.add_parser("telemetry", help="Manage telemetry config")
     telemetry_sub = telemetry.add_subparsers(dest="telemetry_command")
-    telemetry_enable = telemetry_sub.add_parser("enable")
-    telemetry_enable.add_argument("--prometheus", type=bool_arg, default=True)
-    telemetry_enable.add_argument("--alloc", type=bool_arg, default=True)
-    telemetry_enable.add_argument("--node", type=bool_arg, default=True)
-    telemetry_enable.add_argument("--interval", default="1s")
-    telemetry_enable.add_argument("--disable-hostname", type=bool_arg, default=False)
+    telemetry.set_defaults(func=lambda _: missing_subcommand(telemetry, f"{NOMAD_MANAGER_CMD} telemetry"))
+    telemetry_enable = telemetry_sub.add_parser("enable", help="Write managed telemetry config")
+    add_bool_argument(telemetry_enable, "--prometheus", default=True, help_text="Enable Prometheus metrics", no_help="Disable Prometheus metrics")
+    add_bool_argument(telemetry_enable, "--alloc", default=True, help_text="Publish allocation metrics", no_help="Do not publish allocation metrics")
+    add_bool_argument(telemetry_enable, "--node", default=True, help_text="Publish node metrics", no_help="Do not publish node metrics")
+    telemetry_enable.add_argument("--interval", default="1s", help="Telemetry collection interval")
+    add_bool_argument(telemetry_enable, "--disable-hostname", default=False, help_text="Disable hostname labels in telemetry", no_help="Keep hostname labels in telemetry", no_option="--keep-hostname")
     telemetry_enable.set_defaults(func=cmd_telemetry_enable)
-    telemetry_disable = telemetry_sub.add_parser("disable")
+    telemetry_disable = telemetry_sub.add_parser("disable", help="Remove managed telemetry config")
     telemetry_disable.set_defaults(func=lambda _: remove_managed_file(TELEMETRY_CONFIG) or 0)
 
     tls = sub.add_parser("tls", help="Manage TLS config")
     tls_sub = tls.add_subparsers(dest="tls_command")
-    tls_enable = tls_sub.add_parser("enable")
-    tls_enable.add_argument("--ca-file", required=True)
-    tls_enable.add_argument("--cert-file", required=True)
-    tls_enable.add_argument("--key-file", required=True)
-    tls_enable.add_argument("--http", type=bool_arg, default=True)
-    tls_enable.add_argument("--rpc", type=bool_arg, default=True)
-    tls_enable.add_argument("--verify-server-hostname", type=bool_arg, default=False)
-    tls_enable.add_argument("--verify-https-client", type=bool_arg, default=False)
+    tls.set_defaults(func=lambda _: missing_subcommand(tls, f"{NOMAD_MANAGER_CMD} tls"))
+    tls_enable = tls_sub.add_parser("enable", help="Write managed TLS config")
+    tls_enable.add_argument("--ca-file", required=True, help="Nomad CA certificate file")
+    tls_enable.add_argument("--cert-file", required=True, help="Nomad certificate file")
+    tls_enable.add_argument("--key-file", required=True, help="Nomad private key file")
+    add_bool_argument(tls_enable, "--http", default=True, help_text="Enable TLS for the HTTP listener", no_help="Disable TLS for the HTTP listener")
+    add_bool_argument(tls_enable, "--rpc", default=True, help_text="Enable TLS for RPC", no_help="Disable TLS for RPC")
+    add_bool_argument(tls_enable, "--verify-server-hostname", default=False, help_text="Verify server hostnames", no_help="Do not verify server hostnames")
+    add_bool_argument(tls_enable, "--verify-https-client", default=False, help_text="Require and verify HTTPS client certificates", no_help="Do not require HTTPS client certificates")
     tls_enable.set_defaults(func=cmd_tls_enable)
-    tls_disable = tls_sub.add_parser("disable")
+    tls_disable = tls_sub.add_parser("disable", help="Remove managed TLS config")
     tls_disable.set_defaults(func=lambda _: remove_managed_file(TLS_CONFIG) or 0)
 
     ui = sub.add_parser("ui", help="Manage UI config")
     ui_sub = ui.add_subparsers(dest="ui_command")
-    ui_enable = ui_sub.add_parser("enable")
-    ui_enable.add_argument("--consul-url")
-    ui_enable.add_argument("--vault-url")
-    ui_enable.add_argument("--label")
-    ui_enable.add_argument("--label-background")
-    ui_enable.add_argument("--label-color")
-    ui_enable.add_argument("--show-cli-hints", type=bool_arg, default=True)
+    ui.set_defaults(func=lambda _: missing_subcommand(ui, f"{NOMAD_MANAGER_CMD} ui"))
+    ui_enable = ui_sub.add_parser("enable", help="Write managed UI config")
+    ui_enable.add_argument("--consul-url", help="Consul UI URL shown from the Nomad UI")
+    ui_enable.add_argument("--vault-url", help="Vault UI URL shown from the Nomad UI")
+    ui_enable.add_argument("--label", help="Nomad UI label text")
+    ui_enable.add_argument("--label-background", help="Nomad UI label background color")
+    ui_enable.add_argument("--label-color", help="Nomad UI label text color")
+    add_bool_argument(ui_enable, "--show-cli-hints", default=True, help_text="Show CLI hints in the Nomad UI", no_help="Hide CLI hints in the Nomad UI")
     ui_enable.set_defaults(func=cmd_ui_enable)
-    ui_disable = ui_sub.add_parser("disable")
+    ui_disable = ui_sub.add_parser("disable", help="Disable the Nomad UI")
     ui_disable.set_defaults(func=cmd_ui_disable)
-    ui_reset = ui_sub.add_parser("reset")
+    ui_reset = ui_sub.add_parser("reset", help="Remove managed UI config")
     ui_reset.set_defaults(func=lambda _: remove_managed_file(UI_CONFIG) or 0)
 
     docker = sub.add_parser("docker", help="Manage Docker driver config")
     docker_sub = docker.add_subparsers(dest="docker_command")
-    docker_enable = docker_sub.add_parser("enable")
-    docker_enable.add_argument("--allow-privileged", type=bool_arg, default=True)
-    docker_enable.add_argument("--volumes", type=bool_arg, default=True)
-    docker_enable.add_argument("--image-gc", type=bool_arg, default=True)
-    docker_enable.add_argument("--image-delay", default="100h")
-    docker_enable.add_argument("--auth-config")
+    docker.set_defaults(func=lambda _: missing_subcommand(docker, f"{NOMAD_MANAGER_CMD} docker"))
+    docker_enable = docker_sub.add_parser("enable", help="Write managed Docker driver config")
+    add_bool_argument(docker_enable, "--allow-privileged", default=True, help_text="Allow privileged Docker tasks", no_help="Disallow privileged Docker tasks")
+    add_bool_argument(docker_enable, "--volumes", default=True, help_text="Allow Docker volume mounts", no_help="Disallow Docker volume mounts")
+    add_bool_argument(docker_enable, "--image-gc", default=True, help_text="Enable Docker image garbage collection", no_help="Disable Docker image garbage collection")
+    docker_enable.add_argument("--image-delay", default="100h", help="Nomad Docker image GC delay")
+    docker_enable.add_argument("--auth-config", help="Docker auth config path for private registries")
     docker_enable.set_defaults(func=cmd_docker_enable)
-    docker_disable = docker_sub.add_parser("disable")
+    docker_disable = docker_sub.add_parser("disable", help="Remove managed Docker config")
     docker_disable.set_defaults(func=lambda _: remove_managed_file(DOCKER_CONFIG) or 0)
-    docker_disable_driver = docker_sub.add_parser("disable-driver")
+    docker_disable_driver = docker_sub.add_parser("disable-driver", help="Add docker to the Nomad driver denylist")
     docker_disable_driver.set_defaults(func=lambda _: cmd_driver_deny(argparse.Namespace(driver="docker")))
-    docker_enable_driver = docker_sub.add_parser("enable-driver")
+    docker_enable_driver = docker_sub.add_parser("enable-driver", help="Remove docker from the Nomad driver denylist")
     docker_enable_driver.set_defaults(func=lambda _: cmd_driver_allow(argparse.Namespace(driver="docker")))
-    docker_doctor = docker_sub.add_parser("doctor")
+    docker_doctor = docker_sub.add_parser("doctor", help="Check Docker integration")
     docker_doctor.set_defaults(func=cmd_docker_doctor)
 
     raw_exec = sub.add_parser("raw-exec", help="Manage raw_exec driver config")
     raw_sub = raw_exec.add_subparsers(dest="raw_exec_command")
-    raw_enable = raw_sub.add_parser("enable")
+    raw_exec.set_defaults(func=lambda _: missing_subcommand(raw_exec, f"{NOMAD_MANAGER_CMD} raw-exec"))
+    raw_enable = raw_sub.add_parser("enable", help="Enable raw_exec")
     raw_enable.set_defaults(func=cmd_raw_exec_enable)
-    raw_disable = raw_sub.add_parser("disable")
+    raw_disable = raw_sub.add_parser("disable", help="Remove managed raw_exec config")
     raw_disable.set_defaults(func=lambda _: remove_managed_file(RAW_EXEC_CONFIG) or 0)
 
     driver = sub.add_parser("driver", help="Manage driver denylist")
     driver_sub = driver.add_subparsers(dest="driver_command")
-    driver_deny = driver_sub.add_parser("deny")
-    driver_deny.add_argument("driver")
+    driver.set_defaults(func=lambda _: missing_subcommand(driver, f"{NOMAD_MANAGER_CMD} driver"))
+    driver_deny = driver_sub.add_parser("deny", help="Add a driver to the denylist")
+    driver_deny.add_argument("driver", help="Driver name")
     driver_deny.set_defaults(func=cmd_driver_deny)
-    driver_allow = driver_sub.add_parser("allow")
-    driver_allow.add_argument("driver")
+    driver_allow = driver_sub.add_parser("allow", help="Remove a driver from the denylist")
+    driver_allow.add_argument("driver", help="Driver name")
     driver_allow.set_defaults(func=cmd_driver_allow)
 
     host_volume = sub.add_parser("host-volume", help="Manage host volumes")
     hv_sub = host_volume.add_subparsers(dest="host_volume_command")
-    hv_add = hv_sub.add_parser("add")
-    hv_add.add_argument("name")
-    hv_add.add_argument("--path", required=True)
-    hv_add.add_argument("--read-only", action="store_true", dest="read_only")
-    hv_add.add_argument("--read-write", action="store_false", dest="read_only")
+    host_volume.set_defaults(func=lambda _: missing_subcommand(host_volume, f"{NOMAD_MANAGER_CMD} host-volume"))
+    hv_add = hv_sub.add_parser("add", help="Add a managed host volume config")
+    hv_add.add_argument("name", help="Host volume name")
+    hv_add.add_argument("--path", required=True, help="Absolute host path")
+    hv_add.add_argument("--read-only", action="store_true", dest="read_only", help="Mount the host volume read-only")
+    hv_add.add_argument("--read-write", action="store_false", dest="read_only", help="Mount the host volume read-write")
     hv_add.set_defaults(read_only=False)
-    hv_add.add_argument("--create", action="store_true")
+    hv_add.add_argument("--create", action="store_true", help="Create the host path if it does not exist")
     hv_add.set_defaults(func=cmd_host_volume_add)
-    hv_remove = hv_sub.add_parser("remove")
-    hv_remove.add_argument("name")
+    hv_remove = hv_sub.add_parser("remove", help="Remove a managed host volume config")
+    hv_remove.add_argument("name", help="Host volume name")
     hv_remove.set_defaults(func=lambda args: remove_managed_file(host_volume_config_path(args.name)) or 0)
 
     meta = sub.add_parser("meta", help="Manage client meta")
     meta_sub = meta.add_subparsers(dest="meta_command")
-    meta_set = meta_sub.add_parser("set")
-    meta_set.add_argument("key")
-    meta_set.add_argument("value")
+    meta.set_defaults(func=lambda _: missing_subcommand(meta, f"{NOMAD_MANAGER_CMD} meta"))
+    meta_set = meta_sub.add_parser("set", help="Set a client meta key")
+    meta_set.add_argument("key", help="Meta key")
+    meta_set.add_argument("value", help="Meta value")
     meta_set.set_defaults(func=cmd_meta_set)
-    meta_unset = meta_sub.add_parser("unset")
-    meta_unset.add_argument("key")
+    meta_unset = meta_sub.add_parser("unset", help="Remove a client meta key")
+    meta_unset.add_argument("key", help="Meta key")
     meta_unset.set_defaults(func=cmd_meta_unset)
 
     vault_jwt = sub.add_parser("vault-jwt", help="Manage Vault JWT workload identity")
     jwt_sub = vault_jwt.add_subparsers(dest="vault_jwt_command")
-    jwt_plan = jwt_sub.add_parser("plan")
+    vault_jwt.set_defaults(func=lambda _: missing_subcommand(vault_jwt, f"{NOMAD_MANAGER_CMD} vault-jwt"))
+    jwt_plan = jwt_sub.add_parser("plan", help="Preview Vault JWT workload identity changes")
     add_common_vault_jwt_args(jwt_plan)
     jwt_plan.set_defaults(func=cmd_vault_jwt_plan)
-    jwt_apply = jwt_sub.add_parser("apply")
+    jwt_apply = jwt_sub.add_parser("apply", help="Apply Vault JWT workload identity changes")
     add_common_vault_jwt_args(jwt_apply)
     jwt_apply.set_defaults(func=cmd_vault_jwt_apply)
-    jwt_status = jwt_sub.add_parser("status")
-    jwt_status.add_argument("--profile", required=True)
+    jwt_status = jwt_sub.add_parser("status", help="Check a Vault JWT profile")
+    jwt_status.add_argument("--profile", required=True, help="Local profile name")
     jwt_status.set_defaults(func=cmd_vault_jwt_status)
-    jwt_doctor = jwt_sub.add_parser("doctor")
-    jwt_doctor.add_argument("--profile", required=True)
+    jwt_doctor = jwt_sub.add_parser("doctor", help="Check and suggest fixes for a Vault JWT profile")
+    jwt_doctor.add_argument("--profile", required=True, help="Local profile name")
     jwt_doctor.set_defaults(func=cmd_vault_jwt_doctor)
-    jwt_job = jwt_sub.add_parser("job-example")
-    jwt_job.add_argument("--profile", required=True)
-    jwt_job.add_argument("--job", required=True)
-    jwt_job.add_argument("--secret", required=True)
-    jwt_job.add_argument("--out", default="-")
-    jwt_job.add_argument("--image", default="alpine:3.20")
-    jwt_job.add_argument("--force", action="store_true")
+    jwt_job = jwt_sub.add_parser("job-example", help="Generate an example job using Vault JWT")
+    jwt_job.add_argument("--profile", required=True, help="Local profile name")
+    jwt_job.add_argument("--job", required=True, help="Example Nomad job name")
+    jwt_job.add_argument("--secret", required=True, help="Vault secret path used by the example")
+    jwt_job.add_argument("--out", default="-", help="Output HCL path, or '-' for stdout")
+    jwt_job.add_argument("--image", default="alpine:3.20", help="Example Docker image")
+    jwt_job.add_argument("--force", action="store_true", help="Overwrite an existing output file")
     jwt_job.set_defaults(func=cmd_vault_jwt_job_example)
 
     tutor = sub.add_parser("tutor", help="Show short workflow guidance")
-    tutor.add_argument("topic", nargs="?")
+    tutor.add_argument("topic", nargs="?", help="Topic name")
     tutor.set_defaults(func=cmd_tutor)
     return parser
 
@@ -1555,9 +1736,6 @@ def dispatch(argv: list[str]) -> int:
     if argv and argv[0] == "help":
         argv = ["--help", *argv[1:]]
     args = parser.parse_args(argv)
-    if not hasattr(args, "func"):
-        parser.print_help()
-        return 0
     return int(args.func(args))
 
 

@@ -12,6 +12,7 @@ from typing import Any
 
 from .common import (
     AuditConfig,
+    CLIArgumentParser,
     CLIError,
     atomic_write_text,
     ensure_default_path,
@@ -24,6 +25,7 @@ from .common import (
     require_command,
     run,
     run_with_audit,
+    missing_subcommand,
     validate_name,
 )
 
@@ -624,6 +626,21 @@ def cmd_compose_convert(args: argparse.Namespace) -> int:
     return 0
 
 
+def nomad_target_summary() -> str:
+    address = os.environ.get("NOMAD_ADDR") or "http://127.0.0.1:4646 (default)"
+    namespace = os.environ.get("NOMAD_NAMESPACE") or "default"
+    region = os.environ.get("NOMAD_REGION") or "global"
+    token = "set" if os.environ.get("NOMAD_TOKEN") else "not set"
+    return f"address={address}, namespace={namespace}, region={region}, token={token}"
+
+
+def log_nomad_target(job_file: str | None = None) -> None:
+    message = f"Nomad target: {nomad_target_summary()}"
+    if job_file:
+        message += f", job_file={Path(job_file).resolve()}"
+    log_info(message)
+
+
 def validate_job_file(file_name: str) -> None:
     if not file_name:
         raise CLIError("Missing JOB_FILE")
@@ -644,6 +661,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
     extra = args.nomad_args or []
     if extra and extra[0] == "--":
         extra = extra[1:]
+    log_nomad_target(args.job_file)
     log_info(f"Planning Nomad job file: {args.job_file}")
     result = run(["nomad", "job", "plan", *extra, args.job_file], check=False)
     return 0 if result.returncode in (0, 1) else result.returncode
@@ -670,6 +688,7 @@ def cmd_apply(args: argparse.Namespace) -> int:
 
 def cmd_status(args: argparse.Namespace) -> int:
     require_command("nomad")
+    log_nomad_target()
     if args.job:
         log_info(f"Showing Nomad job status: {args.job}")
         run(["nomad", "job", "status", args.job])
@@ -685,25 +704,62 @@ def cmd_stop(args: argparse.Namespace) -> int:
     if args.purge:
         command.append("-purge")
     command.append(args.job)
+    log_nomad_target()
     log_info(f"Stopping Nomad job: {args.job}")
     run(command)
+    return 0
+
+
+def cmd_quickstart(_: argparse.Namespace) -> int:
+    print(
+        """Nomad job quickstart:
+  1. Generate a Docker job:
+     nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --out jobs/web.nomad.hcl
+
+  2. Review and validate:
+     nomad-job validate jobs/web.nomad.hcl
+
+  3. Preview the scheduler changes:
+     nomad-job plan jobs/web.nomad.hcl
+
+  4. Apply after review:
+     nomad-job apply jobs/web.nomad.hcl
+
+  5. Inspect and stop:
+     nomad-job status web
+     nomad-job stop web
+"""
+    )
     return 0
 
 
 def cmd_tutor(args: argparse.Namespace) -> int:
     topic = args.topic or "overview"
     topics = {
-        "overview": "Use scaffold/compose to generate HCL, validate and plan it, then apply reviewed jobs.",
-        "docker": "Start with: nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --out jobs/web.nomad.hcl",
-        "compose": "Use Docker Compose as an intermediate parser: nomad-job compose convert docker-compose.yml --out jobs/app.nomad.hcl",
-        "vault": "Use nomad-manager vault-jwt apply first, then add --vault-role and --template-file to generated jobs.",
-        "volume": "Use --mount for Docker mounts, or --host-volume after nomad-manager host-volume add.",
-        "lifecycle": "Run validate, plan, apply, status and stop as a review loop.",
-        "troubleshoot": "Inspect nomad job status, alloc status, alloc logs and node status.",
-        "web-service": "Generate an HTTP service with --port and --check-http, then validate, plan and apply it.",
-        "private-image": "Configure registry auth with nomad-manager docker enable --auth-config before running private images.",
-        "service-update": "Regenerate the HCL with a new image tag, run plan, then apply.",
-        "batch": "Use --type batch --no-service for one-shot tasks.",
+        "overview": """Nomad job tutor:
+  Purpose:
+    Generate, review and operate Nomad job files.
+
+  Common path:
+    nomad-job quickstart
+    nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --out jobs/web.nomad.hcl
+    nomad-job validate jobs/web.nomad.hcl
+    nomad-job plan jobs/web.nomad.hcl
+    nomad-job apply jobs/web.nomad.hcl
+
+  Topics:
+    docker, compose, vault, volume, lifecycle, troubleshoot, web-service, private-image, service-update, batch
+""",
+        "docker": "Start with a Docker job:\n  nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --out jobs/web.nomad.hcl",
+        "compose": "Use Docker Compose as an intermediate parser:\n  nomad-job compose convert docker-compose.yml --out jobs/app.nomad.hcl",
+        "vault": "Prepare workload identity first:\n  nomad-manager vault-jwt apply --profile default ...\n  nomad-job scaffold docker ... --vault-role nomad-workloads --template-file app.ctmpl:secrets/app.env:env",
+        "volume": "Use Docker mounts or managed host volumes:\n  nomad-manager host-volume add logs --path /var/log/app --create\n  nomad-job scaffold docker ... --host-volume logs:/var/log/app:rw",
+        "lifecycle": "Run a review loop:\n  nomad-job validate jobs/web.nomad.hcl\n  nomad-job plan jobs/web.nomad.hcl\n  nomad-job apply jobs/web.nomad.hcl\n  nomad-job status web",
+        "troubleshoot": "Inspect job and allocation state:\n  nomad-job status web\n  nomad alloc status <alloc-id>\n  nomad alloc logs <alloc-id>",
+        "web-service": "Generate an HTTP service:\n  nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --check-http /health --out jobs/web.nomad.hcl",
+        "private-image": "Configure registry auth before running private images:\n  nomad-manager docker enable --auth-config /root/.docker/config.json",
+        "service-update": "Regenerate the HCL with a new image tag, then review and apply:\n  nomad-job plan jobs/web.nomad.hcl\n  nomad-job apply jobs/web.nomad.hcl",
+        "batch": "Generate a one-shot task:\n  nomad-job scaffold docker --type batch --no-service --job backup --image alpine:3.20 --command sh --arg -c --arg 'echo ok'",
     }
     if topic not in topics:
         raise CLIError(f"Unknown tutor topic: {topic}")
@@ -712,90 +768,125 @@ def cmd_tutor(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="nomad-job", description="Generate, validate and run Nomad job files.")
+    parser = CLIArgumentParser(
+        prog="nomad-job",
+        description="Generate, validate and run Nomad job files.",
+        epilog="""Examples:
+  nomad-job quickstart
+  nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --out jobs/web.nomad.hcl
+  nomad-job validate jobs/web.nomad.hcl
+  nomad-job plan jobs/web.nomad.hcl -- -namespace default
+  nomad-job apply jobs/web.nomad.hcl
+""",
+    )
     subparsers = parser.add_subparsers(dest="command")
+    parser.set_defaults(func=lambda _: missing_subcommand(parser, "nomad-job"))
 
-    scaffold = subparsers.add_parser("scaffold", help="Generate Nomad job HCL")
+    scaffold = subparsers.add_parser(
+        "scaffold",
+        help="Generate Nomad job HCL",
+        description="Generate Nomad job HCL from explicit command-line options.",
+    )
     scaffold_sub = scaffold.add_subparsers(dest="scaffold_command")
-    docker = scaffold_sub.add_parser("docker", help="Generate a Docker task job")
-    docker.add_argument("--job", required=True)
-    docker.add_argument("--image", required=True)
-    docker.add_argument("--out", default="-")
-    docker.add_argument("--force", action="store_true")
-    docker.add_argument("--type", choices=["service", "batch"], default="service")
-    docker.add_argument("--datacenters", default="dc1")
-    docker.add_argument("--namespace")
-    docker.add_argument("--region")
-    docker.add_argument("--group")
-    docker.add_argument("--task")
-    docker.add_argument("--count", type=int, default=1)
-    docker.add_argument("--cpu", type=int, default=500)
-    docker.add_argument("--memory", type=int, default=256)
-    docker.add_argument("--command")
-    docker.add_argument("--arg", action="append")
-    docker.add_argument("--env", action="append")
-    docker.add_argument("--env-file", action="append")
-    docker.add_argument("--port", action="append")
-    docker.add_argument("--mount", action="append")
-    docker.add_argument("--host-volume", action="append")
-    docker.add_argument("--service-name")
-    docker.add_argument("--service-provider", choices=["nomad", "consul"], default="nomad")
-    docker.add_argument("--no-service", dest="emit_service", action="store_false")
+    scaffold.set_defaults(func=lambda _: missing_subcommand(scaffold, "nomad-job scaffold"))
+    docker = scaffold_sub.add_parser(
+        "docker",
+        help="Generate a Docker task job",
+        description="Generate a single-group Nomad job using the Docker driver.",
+        epilog="""Format examples:
+  --port http:8080:80        static host port 8080 to container port 80
+  --port http:80             dynamic host port to container port 80
+  --mount bind:/srv/app:/app:ro
+  --host-volume logs:/var/log/app:rw
+  --template-file app.ctmpl:secrets/app.env:env
+""",
+    )
+    docker.add_argument("--job", required=True, help="Nomad job name")
+    docker.add_argument("--image", required=True, help="Docker image reference")
+    docker.add_argument("--out", default="-", help="Output HCL path, or '-' for stdout")
+    docker.add_argument("--force", action="store_true", help="Overwrite an existing output file")
+    docker.add_argument("--type", choices=["service", "batch"], default="service", help="Nomad job type")
+    docker.add_argument("--datacenters", default="dc1", help="Comma-separated Nomad datacenters")
+    docker.add_argument("--namespace", help="Nomad namespace to write into the job file")
+    docker.add_argument("--region", help="Nomad region to write into the job file")
+    docker.add_argument("--group", help="Task group name; defaults to --job")
+    docker.add_argument("--task", help="Task name; defaults to --group")
+    docker.add_argument("--count", type=int, default=1, help="Task group count")
+    docker.add_argument("--cpu", type=int, default=500, help="CPU reservation in MHz")
+    docker.add_argument("--memory", type=int, default=256, help="Memory reservation in MB")
+    docker.add_argument("--command", help="Docker command override")
+    docker.add_argument("--arg", action="append", help="Docker command argument; repeat for multiple args")
+    docker.add_argument("--env", action="append", help="Environment variable in KEY=VALUE format")
+    docker.add_argument("--env-file", action="append", help="File containing KEY=VALUE environment lines")
+    docker.add_argument("--port", action="append", help="Port spec name:to[/proto] or name:static:to[/proto]")
+    docker.add_argument("--mount", action="append", help="Mount spec bind:source:target[:ro|rw], volume:name:target[:ro|rw], or tmpfs:target[:ro|rw]")
+    docker.add_argument("--host-volume", action="append", help="Host volume spec name:destination[:ro|rw]")
+    docker.add_argument("--service-name", help="Nomad service name; defaults to --job")
+    docker.add_argument("--service-provider", choices=["nomad", "consul"], default="nomad", help="Service registration provider")
+    docker.add_argument("--no-service", dest="emit_service", action="store_false", help="Do not emit a service block")
     docker.set_defaults(emit_service=True, func=cmd_scaffold_docker)
-    docker.add_argument("--check-http")
-    docker.add_argument("--check-tcp", action="store_true")
-    docker.add_argument("--check-interval", default="10s")
-    docker.add_argument("--check-timeout", default="2s")
-    docker.add_argument("--vault-role")
-    docker.add_argument("--vault-cluster", default="default")
-    docker.add_argument("--identity-aud")
-    docker.add_argument("--identity-ttl", default="1h")
-    docker.add_argument("--template-file", action="append")
+    docker.add_argument("--check-http", help="HTTP health check path, for example /health")
+    docker.add_argument("--check-tcp", action="store_true", help="Emit a TCP health check")
+    docker.add_argument("--check-interval", default="10s", help="Health check interval")
+    docker.add_argument("--check-timeout", default="2s", help="Health check timeout")
+    docker.add_argument("--vault-role", help="Vault role for Nomad workload identity")
+    docker.add_argument("--vault-cluster", default="default", help="Nomad Vault cluster name")
+    docker.add_argument("--identity-aud", help="Comma-separated workload identity audiences")
+    docker.add_argument("--identity-ttl", default="1h", help="Workload identity token TTL")
+    docker.add_argument("--template-file", action="append", help="Template spec source:destination[:env]")
 
-    compose = subparsers.add_parser("compose", help="Convert Docker Compose to Nomad HCL")
+    compose = subparsers.add_parser(
+        "compose",
+        help="Convert Docker Compose to Nomad HCL",
+        description="Convert Docker Compose services into Nomad HCL for review.",
+    )
     compose_sub = compose.add_subparsers(dest="compose_command")
+    compose.set_defaults(func=lambda _: missing_subcommand(compose, "nomad-job compose"))
     convert = compose_sub.add_parser("convert", help="Convert a Compose file")
-    convert.add_argument("compose_file")
-    convert.add_argument("--out", default="-")
-    convert.add_argument("--force", action="store_true")
-    convert.add_argument("--job")
-    convert.add_argument("--type", choices=["service", "batch"], default="service")
-    convert.add_argument("--datacenters", default="dc1")
-    convert.add_argument("--namespace")
-    convert.add_argument("--region")
-    convert.add_argument("--volume-root")
-    convert.add_argument("--cpu-default", type=int, default=500)
-    convert.add_argument("--memory-default", type=int, default=256)
-    convert.add_argument("--service-provider", choices=["nomad", "consul"], default="nomad")
+    convert.add_argument("compose_file", help="Docker Compose YAML or JSON file")
+    convert.add_argument("--out", default="-", help="Output HCL path, or '-' for stdout")
+    convert.add_argument("--force", action="store_true", help="Overwrite an existing output file")
+    convert.add_argument("--job", help="Nomad job name; defaults to compose name or directory name")
+    convert.add_argument("--type", choices=["service", "batch"], default="service", help="Nomad job type")
+    convert.add_argument("--datacenters", default="dc1", help="Comma-separated Nomad datacenters")
+    convert.add_argument("--namespace", help="Nomad namespace to write into the job file")
+    convert.add_argument("--region", help="Nomad region to write into the job file")
+    convert.add_argument("--volume-root", help="Directory used to map named Compose volumes into bind mounts")
+    convert.add_argument("--cpu-default", type=int, default=500, help="Default CPU reservation in MHz")
+    convert.add_argument("--memory-default", type=int, default=256, help="Default memory reservation in MB")
+    convert.add_argument("--service-provider", choices=["nomad", "consul"], default="nomad", help="Service registration provider")
     convert.set_defaults(func=cmd_compose_convert)
 
     validate = subparsers.add_parser("validate", help="Run nomad job validate")
-    validate.add_argument("job_file")
+    validate.add_argument("job_file", help="Nomad HCL job file")
     validate.set_defaults(func=cmd_validate)
 
     plan = subparsers.add_parser("plan", help="Run nomad job plan")
-    plan.add_argument("job_file")
-    plan.add_argument("nomad_args", nargs=argparse.REMAINDER)
+    plan.add_argument("job_file", help="Nomad HCL job file")
+    plan.add_argument("nomad_args", nargs=argparse.REMAINDER, help="Extra arguments passed to 'nomad job plan' after '--'")
     plan.set_defaults(func=cmd_plan)
 
     apply = subparsers.add_parser("apply", help="Validate, plan and run a Nomad job")
-    apply.add_argument("job_file")
-    apply.add_argument("--auto-approve", action="store_true")
-    apply.add_argument("--detach", action="store_true")
-    apply.add_argument("--check-index")
+    apply.add_argument("job_file", help="Nomad HCL job file")
+    apply.add_argument("--auto-approve", action="store_true", help="Skip the interactive confirmation")
+    apply.add_argument("--detach", action="store_true", help="Pass -detach to 'nomad job run'")
+    apply.add_argument("--check-index", help="Pass -check-index to 'nomad job run'")
     apply.set_defaults(func=cmd_apply)
 
     status = subparsers.add_parser("status", help="Show job status")
-    status.add_argument("job", nargs="?")
+    status.add_argument("job", nargs="?", help="Optional job ID")
     status.set_defaults(func=cmd_status)
 
     stop = subparsers.add_parser("stop", help="Stop a job")
-    stop.add_argument("job")
-    stop.add_argument("--purge", action="store_true")
+    stop.add_argument("job", help="Job ID to stop")
+    stop.add_argument("--purge", action="store_true", help="Purge the job from Nomad")
     stop.set_defaults(func=cmd_stop)
 
+    quickstart = subparsers.add_parser("quickstart", help="Show a copyable job workflow")
+    quickstart.set_defaults(func=cmd_quickstart)
+
     tutor = subparsers.add_parser("tutor", help="Show short workflow guidance")
-    tutor.add_argument("topic", nargs="?")
+    tutor.add_argument("topic", nargs="?", help="Topic name")
     tutor.set_defaults(func=cmd_tutor)
     return parser
 
@@ -805,9 +896,6 @@ def dispatch(argv: list[str]) -> int:
     if argv and argv[0] == "help":
         argv = ["--help", *argv[1:]]
     args = parser.parse_args(argv)
-    if not hasattr(args, "func"):
-        parser.print_help()
-        return 0
     return int(args.func(args))
 
 

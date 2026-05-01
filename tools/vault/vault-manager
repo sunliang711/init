@@ -13,6 +13,11 @@ BIN_PATH="${BIN_DIR}/vault"
 BIN_ENTRY="/usr/local/bin/vault"
 CONFIG_DIR="${VAULT_ROOT_DIR}/etc/vault.d"
 CONFIG_FILE="${CONFIG_DIR}/config.hcl"
+TLS_DIR="${CONFIG_DIR}/tls"
+TLS_CA_CERT_FILE="${TLS_DIR}/ca.crt"
+TLS_CERT_FILE="${TLS_DIR}/server.crt"
+TLS_KEY_FILE="${TLS_DIR}/server.key"
+CLIENT_ENV_FILE="${CONFIG_DIR}/client.env"
 STATE_DIR="${VAULT_ROOT_DIR}/data/vault"
 DATA_DIR="${STATE_DIR}/raft"
 INIT_DIR="${VAULT_ROOT_DIR}/init"
@@ -44,6 +49,8 @@ VC_ADDR="$DEFAULT_VAULT_ADDR"
 VC_CACERT=""
 VC_NAMESPACE=""
 VC_TOKEN_FILE=""
+INSTALL_TLS_DNS_NAMES=()
+INSTALL_TLS_IP_ADDRESSES=()
 
 cleanup() {
   if [ -n "${TMPDIR_TO_CLEAN:-}" ] && [ -d "$TMPDIR_TO_CLEAN" ]; then
@@ -285,9 +292,14 @@ Install options:
   --cluster-address <ADDR>   Listener cluster address, default: 0.0.0.0:8201
   --api-addr <URL>           Vault api_addr, default: ${DEFAULT_VAULT_ADDR}
   --cluster-addr <URL>       Vault cluster_addr, default: http://127.0.0.1:8201
-  --tls-disable <true|false> Disable listener TLS, default: true
+  --no-tls                   Disable listener TLS, default
+  --tls-auto                 Enable TLS and auto-generate a certificate
   --tls-cert-file <FILE>     Listener TLS certificate file
   --tls-key-file <FILE>      Listener TLS key file
+  --tls-ca-cert-file <FILE>  CA certificate used by client checks
+  --tls-dns <NAME>           Add DNS SAN for --tls-auto
+  --tls-ip <IP>              Add IP SAN for --tls-auto
+  --tls-common-name <NAME>   Certificate common name for --tls-auto, default: vault-server
 
 Uninstall options:
   --purge-data              Also remove ${STATE_DIR} and ${INIT_DIR}.
@@ -295,7 +307,7 @@ Uninstall options:
   --purge                   Remove runtime, Vault state, installed tools, metadata and audit logs.
 
 Vault options:
-  --addr <URL>               Vault address, default: ${DEFAULT_VAULT_ADDR}
+  --addr <URL>               Vault address, default: ${CLIENT_ENV_FILE} or ${DEFAULT_VAULT_ADDR}
   --ca-cert <FILE>           Vault CA certificate file
   --namespace <NAME>         Vault Enterprise namespace
   --token-file <FILE>        Read token from plain text or init JSON file
@@ -305,6 +317,7 @@ Common workflows:
     ${VAULT_MANAGER_CMD} install
     ${VAULT_MANAGER_CMD} install --version 2.0.0
     ${VAULT_MANAGER_CMD} install --api-addr http://10.2.37.64:8200 --cluster-addr http://10.2.37.64:8201
+    ${VAULT_MANAGER_CMD} install --tls-auto --tls-ip 10.2.37.64 --api-addr https://10.2.37.64:8200 --cluster-addr https://10.2.37.64:8201
     http_proxy=http://10.2.1.107:7190 https_proxy=http://10.2.1.107:7190 ${VAULT_MANAGER_CMD} install
 
   Initialize, unseal and check health:
@@ -326,6 +339,7 @@ Installed tool snapshot:
   ${TOOL_DIR}
   ${TOOL_PATH} -> ${TOOL_DIR}/vault-manager
   ${TOOL_ENTRY} -> ${TOOL_PATH}
+  ${CLIENT_ENV_FILE}
   ${INSTALL_METADATA_FILE}
   ${AUDIT_LOG_FILE}
 
@@ -343,6 +357,7 @@ Safety:
   install manages ${CONFIG_FILE} only when it is absent or starts with:
     ${MANAGED_MARKER}
   install configures single-node raft storage under ${DATA_DIR}.
+  install writes client defaults to ${CLIENT_ENV_FILE}.
   install copies this Vault manager to ${TOOL_DIR} so future management uses
   the script version installed with this node.
   uninstall removes service, binary and ${CONFIG_DIR}.
@@ -380,14 +395,28 @@ Options:
   --cluster-address <ADDR>   Listener cluster address, default: 0.0.0.0:8201
   --api-addr <URL>           Vault api_addr, default: ${DEFAULT_VAULT_ADDR}
   --cluster-addr <URL>       Vault cluster_addr, default: http://127.0.0.1:8201
-  --tls-disable <true|false> Disable listener TLS, default: true
+  --no-tls                   Disable listener TLS, default
+  --tls-auto                 Enable TLS and auto-generate a certificate
   --tls-cert-file <FILE>     Listener TLS certificate file
   --tls-key-file <FILE>      Listener TLS key file
+  --tls-ca-cert-file <FILE>  CA certificate used by client checks
+  --tls-dns <NAME>           Add DNS SAN for --tls-auto
+  --tls-ip <IP>              Add IP SAN for --tls-auto
+  --tls-common-name <NAME>   Certificate common name for --tls-auto, default: vault-server
+
+TLS modes:
+  Default and --no-tls disable listener TLS.
+  --tls-auto generates a CA and server certificate under ${TLS_DIR}.
+  --tls-cert-file and --tls-key-file use your existing certificate pair.
+  TLS modes change default api_addr and cluster_addr to https://127.0.0.1 ports.
 
 Examples:
   ${VAULT_MANAGER_CMD} install
   ${VAULT_MANAGER_CMD} install --version 2.0.0
   ${VAULT_MANAGER_CMD} install --api-addr http://10.2.37.64:8200 --cluster-addr http://10.2.37.64:8201
+  ${VAULT_MANAGER_CMD} install --tls-auto
+  ${VAULT_MANAGER_CMD} install --tls-auto --tls-ip 10.2.37.64 --api-addr https://10.2.37.64:8200 --cluster-addr https://10.2.37.64:8201
+  ${VAULT_MANAGER_CMD} install --tls-cert-file /etc/vault/tls/server.crt --tls-key-file /etc/vault/tls/server.key --tls-ca-cert-file /etc/vault/tls/ca.crt
 
 Temporary workspace:
   install downloads and extracts files under TMPDIR when set, otherwise /var/tmp.
@@ -433,7 +462,7 @@ Usage:
   ${VAULT_MANAGER_CMD} status [vault options]
 
 Vault options:
-  --addr <URL>               Vault address, default: ${DEFAULT_VAULT_ADDR}
+  --addr <URL>               Vault address, default: ${CLIENT_ENV_FILE} or ${DEFAULT_VAULT_ADDR}
   --ca-cert <FILE>           Vault CA certificate file
   --namespace <NAME>         Vault Enterprise namespace
   --token-file <FILE>        Read token from plain text or init JSON file
@@ -454,7 +483,7 @@ Checks:
   Vault binary, config file, vault.service state and health endpoint reachability.
 
 Vault options:
-  --addr <URL>               Vault address, default: ${DEFAULT_VAULT_ADDR}
+  --addr <URL>               Vault address, default: ${CLIENT_ENV_FILE} or ${DEFAULT_VAULT_ADDR}
   --ca-cert <FILE>           Vault CA certificate file
   --namespace <NAME>         Vault Enterprise namespace
   --token-file <FILE>        Read token from plain text or init JSON file
@@ -495,7 +524,7 @@ Options:
   --keys-file <FILE>         Init JSON file containing unseal keys
 
 Vault options:
-  --addr <URL>               Vault address, default: ${DEFAULT_VAULT_ADDR}
+  --addr <URL>               Vault address, default: ${CLIENT_ENV_FILE} or ${DEFAULT_VAULT_ADDR}
   --ca-cert <FILE>           Vault CA certificate file
   --namespace <NAME>         Vault Enterprise namespace
 
@@ -567,7 +596,10 @@ Before you start:
 3. Install with an address reachable by other nodes:
    ${VAULT_MANAGER_CMD} install --api-addr http://10.2.37.64:8200 --cluster-addr http://10.2.37.64:8201
 
-4. Check service and metadata:
+4. Install with listener TLS and an auto-generated certificate:
+   ${VAULT_MANAGER_CMD} install --tls-auto --tls-ip 10.2.37.64 --api-addr https://10.2.37.64:8200 --cluster-addr https://10.2.37.64:8201
+
+5. Check service and metadata:
    systemctl status vault
    ${VAULT_MANAGER_CMD} status
    cat ${INSTALL_METADATA_FILE}
@@ -581,9 +613,11 @@ Common failures:
   Release download blocked by network or proxy settings.
   Missing root privilege prevents service and file installation.
   api_addr points to localhost when other nodes need to reach Vault.
+  TLS certificates miss the IP or DNS name used in api_addr.
 
 Notes:
   install configures single-node raft storage under ${DATA_DIR}.
+  TLS installs client defaults under ${CLIENT_ENV_FILE}.
   Future management can use ${TOOL_ENTRY}, which points to the installed script snapshot.
 EOF
       ;;
@@ -1106,17 +1140,218 @@ hcl_string() {
   printf '"%s"' "$value"
 }
 
-validate_bool() {
+validate_tls_value() {
+  local name="$1"
+  local value="$2"
+
+  if [ -z "$value" ] || [[ "$value" == *$'\n'* ]] || [[ "$value" == *$'\r'* ]]; then
+    fatal "Invalid ${name}: ${value}"
+  fi
+}
+
+add_tls_dns_name() {
+  local value="$1"
+  local existing
+
+  validate_tls_value "TLS DNS SAN" "$value"
+  if [ "${#INSTALL_TLS_DNS_NAMES[@]}" -gt 0 ]; then
+    for existing in "${INSTALL_TLS_DNS_NAMES[@]}"; do
+      [ "$existing" != "$value" ] || return
+    done
+  fi
+  INSTALL_TLS_DNS_NAMES+=("$value")
+}
+
+add_tls_ip_address() {
+  local value="$1"
+  local existing
+
+  validate_tls_value "TLS IP SAN" "$value"
+  if [ "${#INSTALL_TLS_IP_ADDRESSES[@]}" -gt 0 ]; then
+    for existing in "${INSTALL_TLS_IP_ADDRESSES[@]}"; do
+      [ "$existing" != "$value" ] || return
+    done
+  fi
+  INSTALL_TLS_IP_ADDRESSES+=("$value")
+}
+
+looks_like_ip_address() {
   local value="$1"
 
-  case "$value" in
-    true | false)
-      printf '%s\n' "$value"
+  [[ "$value" == *:* ]] || [[ "$value" =~ ^[0-9.]+$ ]]
+}
+
+url_host() {
+  local url="$1"
+  local rest
+  local host
+
+  case "$url" in
+    *://*)
+      rest="${url#*://}"
       ;;
     *)
-      fatal "Invalid boolean value: ${value}"
+      return 1
       ;;
   esac
+
+  host="${rest%%/*}"
+  if [[ "$host" == \[*\] ]]; then
+    host="${host#\[}"
+    host="${host%\]}"
+  else
+    host="${host%%:*}"
+  fi
+
+  [ -n "$host" ] || return 1
+  printf '%s\n' "$host"
+}
+
+add_default_tls_sans() {
+  local api_addr="$1"
+  local cluster_addr="${2:-}"
+  local host_name
+  local host_fqdn
+  local api_host
+  local cluster_host
+
+  add_tls_dns_name "localhost"
+  add_tls_dns_name "vault-server"
+  host_name="$(hostname 2>/dev/null || true)"
+  [ -z "$host_name" ] || add_tls_dns_name "$host_name"
+  host_fqdn="$(hostname -f 2>/dev/null || true)"
+  [ -z "$host_fqdn" ] || add_tls_dns_name "$host_fqdn"
+  add_tls_ip_address "127.0.0.1"
+
+  if api_host="$(url_host "$api_addr")"; then
+    if looks_like_ip_address "$api_host"; then
+      add_tls_ip_address "$api_host"
+    else
+      add_tls_dns_name "$api_host"
+    fi
+  fi
+  if [ -n "$cluster_addr" ] && cluster_host="$(url_host "$cluster_addr")"; then
+    if looks_like_ip_address "$cluster_host"; then
+      add_tls_ip_address "$cluster_host"
+    else
+      add_tls_dns_name "$cluster_host"
+    fi
+  fi
+}
+
+install_self_signed_tls_cert() {
+  local tmpdir="$1"
+  local common_name="$2"
+  local tls_tmp="${tmpdir}/tls"
+  local ca_conf="${tls_tmp}/ca.conf"
+  local server_conf="${tls_tmp}/server.conf"
+  local server_ext_conf="${tls_tmp}/server-ext.conf"
+  local dns_index=1
+  local ip_index=1
+  local value
+
+  validate_tls_value "TLS common name" "$common_name"
+  require_command openssl
+  install -d -m 0700 "$tls_tmp"
+
+  cat >"$ca_conf" <<EOF
+[req]
+distinguished_name = dn
+x509_extensions = v3_ca
+prompt = no
+
+[dn]
+C = CN
+ST = HongKong
+L = HongKong
+O = Vault
+OU = Vault CA
+CN = vault-root-ca
+
+[v3_ca]
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid:always,issuer
+basicConstraints = critical, CA:true
+keyUsage = critical, keyCertSign, cRLSign
+EOF
+
+  # TLS 证书默认覆盖本机访问地址，额外 SAN 通过安装参数传入。
+  {
+    cat <<EOF
+[req]
+distinguished_name = dn
+req_extensions = v3_req
+prompt = no
+
+[dn]
+C = CN
+ST = HongKong
+L = HongKong
+O = Vault
+OU = Vault
+CN = ${common_name}
+
+[v3_req]
+basicConstraints = CA:false
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+EOF
+    if [ "${#INSTALL_TLS_DNS_NAMES[@]}" -gt 0 ]; then
+      for value in "${INSTALL_TLS_DNS_NAMES[@]}"; do
+        printf 'DNS.%s = %s\n' "$dns_index" "$value"
+        dns_index=$((dns_index + 1))
+      done
+    fi
+    if [ "${#INSTALL_TLS_IP_ADDRESSES[@]}" -gt 0 ]; then
+      for value in "${INSTALL_TLS_IP_ADDRESSES[@]}"; do
+        printf 'IP.%s = %s\n' "$ip_index" "$value"
+        ip_index=$((ip_index + 1))
+      done
+    fi
+  } >"$server_conf"
+
+  {
+    cat <<EOF
+authorityKeyIdentifier = keyid,issuer
+basicConstraints = CA:false
+keyUsage = critical, digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+EOF
+    dns_index=1
+    if [ "${#INSTALL_TLS_DNS_NAMES[@]}" -gt 0 ]; then
+      for value in "${INSTALL_TLS_DNS_NAMES[@]}"; do
+        printf 'DNS.%s = %s\n' "$dns_index" "$value"
+        dns_index=$((dns_index + 1))
+      done
+    fi
+    ip_index=1
+    if [ "${#INSTALL_TLS_IP_ADDRESSES[@]}" -gt 0 ]; then
+      for value in "${INSTALL_TLS_IP_ADDRESSES[@]}"; do
+        printf 'IP.%s = %s\n' "$ip_index" "$value"
+        ip_index=$((ip_index + 1))
+      done
+    fi
+  } >"$server_ext_conf"
+
+  log_info "Generating self-signed Vault TLS certificate"
+  openssl genrsa -out "${tls_tmp}/ca.key" 4096 >/dev/null 2>&1
+  openssl req -x509 -new -nodes -key "${tls_tmp}/ca.key" -days 3650 -out "${tls_tmp}/ca.crt" -config "$ca_conf" -extensions v3_ca >/dev/null 2>&1
+  openssl genrsa -out "${tls_tmp}/server.key" 4096 >/dev/null 2>&1
+  openssl req -new -key "${tls_tmp}/server.key" -out "${tls_tmp}/server.csr" -config "$server_conf" >/dev/null 2>&1
+  openssl x509 -req -in "${tls_tmp}/server.csr" -CA "${tls_tmp}/ca.crt" -CAkey "${tls_tmp}/ca.key" -CAcreateserial -out "${tls_tmp}/server.crt" -days 3650 -extfile "$server_ext_conf" >/dev/null 2>&1
+
+  run_root install -d -m 0755 -o root -g root "$TLS_DIR"
+  run_root install -m 0600 -o root -g root "${tls_tmp}/ca.key" "${TLS_DIR}/ca.key"
+  run_root install -m 0644 -o root -g root "${tls_tmp}/ca.crt" "$TLS_CA_CERT_FILE"
+  run_root install -m 0644 -o root -g root "${tls_tmp}/server.crt" "$TLS_CERT_FILE"
+  run_root install -m 0640 -o root -g "$VAULT_GROUP" "${tls_tmp}/server.key" "$TLS_KEY_FILE"
+  log_info "Vault TLS certificate installed: ${TLS_CERT_FILE}"
 }
 
 is_managed_file() {
@@ -1209,6 +1444,8 @@ write_install_metadata() {
     printf '  "vault_binary": %s,\n' "$(json_string "$BIN_PATH")"
     printf '  "vault_entry": %s,\n' "$(json_string "$BIN_ENTRY")"
     printf '  "config_file": %s,\n' "$(json_string "$CONFIG_FILE")"
+    printf '  "client_env_file": %s,\n' "$(json_string "$CLIENT_ENV_FILE")"
+    printf '  "tls_dir": %s,\n' "$(json_string "$TLS_DIR")"
     printf '  "data_dir": %s,\n' "$(json_string "$DATA_DIR")"
     printf '  "state_dir": %s,\n' "$(json_string "$STATE_DIR")"
     printf '  "service": %s,\n' "$(json_string "$SYSTEMD_SERVICE")"
@@ -1327,6 +1564,7 @@ install_directories() {
   run_root install -d -m 0755 -o root -g root "${VAULT_ROOT_DIR}/lib"
   run_root install -d -m 0750 -o root -g root "${VAULT_ROOT_DIR}/log"
   run_root install -d -m 0755 -o root -g root "$CONFIG_DIR"
+  run_root install -d -m 0755 -o root -g root "$TLS_DIR"
   run_root install -d -m 0750 -o "$VAULT_USER" -g "$VAULT_GROUP" "$STATE_DIR"
   run_root install -d -m 0750 -o "$VAULT_USER" -g "$VAULT_GROUP" "$DATA_DIR"
   run_root install -d -m 0700 -o root -g root "$INIT_DIR"
@@ -1382,8 +1620,8 @@ write_vault_config() {
   [ -n "$node_id" ] || node_id="vault-node"
 
   if [ "$tls_disable" = "false" ]; then
-    [ -n "$tls_cert_file" ] || fatal "install requires --tls-cert-file when --tls-disable false"
-    [ -n "$tls_key_file" ] || fatal "install requires --tls-key-file when --tls-disable false"
+    [ -n "$tls_cert_file" ] || fatal "install requires a TLS certificate file when TLS is enabled"
+    [ -n "$tls_key_file" ] || fatal "install requires a TLS key file when TLS is enabled"
   fi
 
   {
@@ -1409,6 +1647,21 @@ write_vault_config() {
 
   log_info "Installing Vault config: ${CONFIG_FILE}"
   run_root install -m 0640 -o root -g "$VAULT_GROUP" "$config_file" "$CONFIG_FILE"
+}
+
+write_client_env() {
+  local tmpdir="$1"
+  local api_addr="$2"
+  local tls_ca_cert_file="$3"
+  local client_env_file="${tmpdir}/client.env"
+
+  {
+    printf 'VAULT_ADDR=%s\n' "$api_addr"
+    [ -z "$tls_ca_cert_file" ] || printf 'VAULT_CACERT=%s\n' "$tls_ca_cert_file"
+  } >"$client_env_file"
+
+  log_info "Installing Vault client defaults: ${CLIENT_ENV_FILE}"
+  run_root install -m 0644 -o root -g root "$client_env_file" "$CLIENT_ENV_FILE"
 }
 
 write_systemd_service() {
@@ -1448,14 +1701,18 @@ EOF
 
 wait_for_vault_api() {
   local address="$1"
+  local ca_cert="${2:-}"
   local url="${address%/}/v1/sys/health"
   local attempt=1
   local code
+  local -a curl_args
 
   require_command curl
   log_info "Waiting for Vault HTTP API"
+  curl_args=(--noproxy '*' --silent --output /dev/null --write-out '%{http_code}' --max-time 3)
+  [ -z "$ca_cert" ] || curl_args+=(--cacert "$ca_cert")
   while [ "$attempt" -le 60 ]; do
-    code="$(curl --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' --max-time 3 "$url" 2>/dev/null || true)"
+    code="$(curl "${curl_args[@]}" "$url" 2>/dev/null || true)"
     case "$code" in
       200 | 429 | 472 | 473 | 501 | 503)
         return
@@ -1489,9 +1746,21 @@ install_vault() {
   local cluster_address="0.0.0.0:8201"
   local api_addr="$DEFAULT_VAULT_ADDR"
   local cluster_addr="http://127.0.0.1:8201"
+  local api_addr_set=0
+  local cluster_addr_set=0
+  local tls_mode="disabled"
+  local tls_no_tls_set=0
+  local tls_auto_set=0
+  local tls_custom_options_set=0
   local tls_disable="true"
   local tls_cert_file=""
   local tls_key_file=""
+  local tls_ca_cert_file=""
+  local tls_common_name="vault-server"
+  local tls_auto_options_set=0
+
+  INSTALL_TLS_DNS_NAMES=()
+  INSTALL_TLS_IP_ADDRESSES=()
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -1514,26 +1783,56 @@ install_vault() {
         shift
         [ "$#" -gt 0 ] || fatal "Missing value for --api-addr"
         api_addr="$1"
+        api_addr_set=1
         ;;
       --cluster-addr)
         shift
         [ "$#" -gt 0 ] || fatal "Missing value for --cluster-addr"
         cluster_addr="$1"
+        cluster_addr_set=1
         ;;
-      --tls-disable)
-        shift
-        [ "$#" -gt 0 ] || fatal "Missing value for --tls-disable"
-        tls_disable="$(validate_bool "$1")"
+      --no-tls)
+        tls_no_tls_set=1
+        ;;
+      --tls-auto)
+        tls_auto_set=1
         ;;
       --tls-cert-file)
         shift
         [ "$#" -gt 0 ] || fatal "Missing value for --tls-cert-file"
         tls_cert_file="$1"
+        tls_custom_options_set=1
         ;;
       --tls-key-file)
         shift
         [ "$#" -gt 0 ] || fatal "Missing value for --tls-key-file"
         tls_key_file="$1"
+        tls_custom_options_set=1
+        ;;
+      --tls-ca-cert-file)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --tls-ca-cert-file"
+        tls_ca_cert_file="$1"
+        tls_custom_options_set=1
+        ;;
+      --tls-dns)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --tls-dns"
+        add_tls_dns_name "$1"
+        tls_auto_options_set=1
+        ;;
+      --tls-ip)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --tls-ip"
+        add_tls_ip_address "$1"
+        tls_auto_options_set=1
+        ;;
+      --tls-common-name)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --tls-common-name"
+        validate_tls_value "TLS common name" "$1"
+        tls_common_name="$1"
+        tls_auto_options_set=1
         ;;
       -h | --help)
         install_usage
@@ -1551,6 +1850,55 @@ install_vault() {
     esac
     shift
   done
+
+  if [ "$tls_no_tls_set" -eq 1 ] && { [ "$tls_auto_set" -eq 1 ] || [ "$tls_custom_options_set" -eq 1 ] || [ "$tls_auto_options_set" -eq 1 ]; }; then
+    fatal "--no-tls cannot be used with TLS options"
+  fi
+  if [ "$tls_auto_set" -eq 1 ] && [ "$tls_custom_options_set" -eq 1 ]; then
+    fatal "--tls-auto cannot be used with custom TLS certificate options"
+  fi
+  if [ "$tls_auto_options_set" -eq 1 ] && [ "$tls_auto_set" -ne 1 ]; then
+    fatal "--tls-dns, --tls-ip and --tls-common-name require --tls-auto"
+  fi
+  if [ "$tls_auto_set" -eq 1 ]; then
+    tls_mode="auto"
+  elif [ "$tls_custom_options_set" -eq 1 ]; then
+    tls_mode="custom"
+  fi
+
+  if [ "$tls_mode" != "disabled" ]; then
+    tls_disable="false"
+    if [ "$api_addr_set" -eq 0 ]; then
+      api_addr="https://127.0.0.1:8200"
+    fi
+    if [ "$cluster_addr_set" -eq 0 ]; then
+      cluster_addr="https://127.0.0.1:8201"
+    fi
+    case "$api_addr" in
+      https://*)
+        ;;
+      *)
+        fatal "TLS is enabled; --api-addr must use https://"
+        ;;
+    esac
+    case "$cluster_addr" in
+      https://*)
+        ;;
+      *)
+        fatal "TLS is enabled; --cluster-addr must use https://"
+        ;;
+    esac
+    if [ "$tls_mode" = "custom" ] && { [ -z "$tls_cert_file" ] || [ -z "$tls_key_file" ]; }; then
+      fatal "TLS custom certificate requires both --tls-cert-file and --tls-key-file"
+    fi
+    if [ -n "$tls_cert_file" ]; then
+      [ -f "$tls_cert_file" ] || fatal "TLS certificate file not found: ${tls_cert_file}"
+      [ -f "$tls_key_file" ] || fatal "TLS key file not found: ${tls_key_file}"
+    fi
+    if [ -n "$tls_ca_cert_file" ]; then
+      [ -f "$tls_ca_cert_file" ] || fatal "TLS CA certificate file not found: ${tls_ca_cert_file}"
+    fi
+  fi
 
   require_linux
   require_command curl
@@ -1576,7 +1924,15 @@ install_vault() {
   install_binary "$tmpdir"
   ensure_vault_user
   install_directories
+  if [ "$tls_mode" = "auto" ]; then
+    add_default_tls_sans "$api_addr" "$cluster_addr"
+    install_self_signed_tls_cert "$tmpdir" "$tls_common_name"
+    tls_cert_file="$TLS_CERT_FILE"
+    tls_key_file="$TLS_KEY_FILE"
+    tls_ca_cert_file="$TLS_CA_CERT_FILE"
+  fi
   write_vault_config "$tmpdir" "$listen_address" "$cluster_address" "$api_addr" "$cluster_addr" "$tls_disable" "$tls_cert_file" "$tls_key_file"
+  write_client_env "$tmpdir" "$api_addr" "$tls_ca_cert_file"
   write_systemd_service "$tmpdir"
   install_tool_snapshot "$version" "$tmpdir"
 
@@ -1584,7 +1940,7 @@ install_vault() {
   run_root systemctl daemon-reload
   run_root systemctl enable vault
   run_root systemctl restart vault
-  wait_for_vault_api "$api_addr"
+  wait_for_vault_api "$api_addr" "$tls_ca_cert_file"
 
   log_info "Vault installation completed"
 }
@@ -1669,10 +2025,30 @@ uninstall_vault() {
 }
 
 reset_vault_cli_opts() {
-  VC_ADDR="${VAULT_ADDR:-$DEFAULT_VAULT_ADDR}"
-  VC_CACERT="${VAULT_CACERT:-}"
+  VC_ADDR="$DEFAULT_VAULT_ADDR"
+  VC_CACERT=""
   VC_NAMESPACE="${VAULT_NAMESPACE:-}"
   VC_TOKEN_FILE=""
+  load_client_env_defaults
+  VC_ADDR="${VAULT_ADDR:-$VC_ADDR}"
+  VC_CACERT="${VAULT_CACERT:-$VC_CACERT}"
+}
+
+load_client_env_defaults() {
+  local key
+  local value
+
+  [ -r "$CLIENT_ENV_FILE" ] || return 0
+  while IFS='=' read -r key value; do
+    case "$key" in
+      VAULT_ADDR)
+        [ -z "$value" ] || VC_ADDR="$value"
+        ;;
+      VAULT_CACERT)
+        [ -z "$value" ] || VC_CACERT="$value"
+        ;;
+    esac
+  done <"$CLIENT_ENV_FILE"
 }
 
 read_vault_token_file() {
@@ -1814,6 +2190,7 @@ doctor_vault() {
   local code
   local url
   local opt
+  local -a curl_args
 
   reset_vault_cli_opts
   while [ "$#" -gt 0 ]; do
@@ -1855,7 +2232,9 @@ doctor_vault() {
 
   if command_exists curl; then
     url="${VC_ADDR%/}/v1/sys/health"
-    code="$(curl --noproxy '*' --silent --output /dev/null --write-out '%{http_code}' --max-time 5 "$url" 2>/dev/null || true)"
+    curl_args=(--noproxy '*' --silent --output /dev/null --write-out '%{http_code}' --max-time 5)
+    [ -z "$VC_CACERT" ] || curl_args+=(--cacert "$VC_CACERT")
+    code="$(curl "${curl_args[@]}" "$url" 2>/dev/null || true)"
     case "$code" in
       200 | 429 | 472 | 473)
         doctor_check_print "OK" "Vault health endpoint reachable: ${url} (${code})"
@@ -2037,7 +2416,7 @@ Options for enable:
   --max-lease-ttl <DURATION>
 
 Vault options:
-  --addr <URL>                Vault address, default: ${DEFAULT_VAULT_ADDR}
+  --addr <URL>                Vault address, default: ${CLIENT_ENV_FILE} or ${DEFAULT_VAULT_ADDR}
   --ca-cert <FILE>            Vault CA certificate file
   --namespace <NAME>          Vault Enterprise namespace
   --token-file <FILE>         Read token from plain text or init JSON file
@@ -2082,7 +2461,7 @@ Policy commands:
   delete <NAME>        Delete policy <NAME>.
 
 Vault options:
-  --addr <URL>      Vault address, default: ${DEFAULT_VAULT_ADDR}
+  --addr <URL>      Vault address, default: ${CLIENT_ENV_FILE} or ${DEFAULT_VAULT_ADDR}
   --ca-cert <FILE>  Vault CA certificate file
   --namespace <NAME>  Vault Enterprise namespace
   --token-file <FILE> Read token from plain text or init JSON file

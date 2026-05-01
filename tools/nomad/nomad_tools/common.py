@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -29,6 +30,24 @@ SENSITIVE_OPTIONS = {
     "--password",
     "--client-secret",
 }
+COLOR_GREEN = "\033[32m"
+COLOR_YELLOW = "\033[33m"
+COLOR_RED = "\033[31m"
+COLOR_RESET = "\033[0m"
+
+
+class CLIHelpFormatter(argparse.RawDescriptionHelpFormatter):
+    pass
+
+
+class CLIArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        kwargs.setdefault("formatter_class", CLIHelpFormatter)
+        super().__init__(*args, **kwargs)
+
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        self.exit(2, color_text(f"{self.prog}: error: {message}", COLOR_RED) + "\n")
 
 
 class CLIError(Exception):
@@ -37,21 +56,91 @@ class CLIError(Exception):
         self.exit_code = exit_code
 
 
+def missing_subcommand(parser: argparse.ArgumentParser, command_name: str) -> int:
+    parser.print_help(sys.stderr)
+    print("\n" + color_text(f"error: missing subcommand for {command_name}", COLOR_RED), file=sys.stderr)
+    return 2
+
+
+def parse_bool_argument(value: str | bool) -> bool:
+    try:
+        return parse_bool(value)
+    except CLIError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def add_bool_argument(
+    parser: argparse.ArgumentParser,
+    option: str,
+    *,
+    default: bool,
+    help_text: str,
+    no_help: str,
+    no_option: str | None = None,
+) -> None:
+    if not option.startswith("--"):
+        raise ValueError(f"Boolean option must start with --: {option}")
+    dest = option[2:].replace("-", "_")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        option,
+        dest=dest,
+        nargs="?",
+        const=True,
+        default=argparse.SUPPRESS,
+        type=parse_bool_argument,
+        metavar="{true,false}",
+        help=f"{help_text} (default: {str(default).lower()})",
+    )
+    group.add_argument(no_option or f"--no-{option[2:]}", dest=dest, action="store_false", default=argparse.SUPPRESS, help=no_help)
+    parser.set_defaults(**{dest: default})
+
+
 def ensure_default_path() -> None:
     current = os.environ.get("PATH", "")
     os.environ["PATH"] = f"{DEFAULT_PATH}:{current}" if current else DEFAULT_PATH
+
+
+def color_enabled() -> bool:
+    value = os.environ.get("NOMAD_TOOLS_COLOR", "auto").lower()
+    if value in {"always", "1", "true", "yes"}:
+        return True
+    if value in {"never", "0", "false", "no"}:
+        return False
+    if os.environ.get("NO_COLOR") is not None or os.environ.get("CI") or os.environ.get("TERM") == "dumb":
+        return False
+    return sys.stderr.isatty()
+
+
+def terminal_supports_checkmark() -> bool:
+    encoding = sys.stderr.encoding or ""
+    return "utf" in encoding.lower()
+
+
+def terminal_status_prefix() -> str:
+    return "✓" if color_enabled() and terminal_supports_checkmark() else "[OK]"
+
+
+def color_text(message: str, color: str) -> str:
+    if not color_enabled():
+        return message
+    return f"{color}{message}{COLOR_RESET}"
 
 
 def log_info(message: str) -> None:
     print(f"[INFO] {message}", file=sys.stderr)
 
 
+def log_success(message: str) -> None:
+    print(color_text(f"{terminal_status_prefix()} {message}", COLOR_GREEN), file=sys.stderr)
+
+
 def log_warn(message: str) -> None:
-    print(f"[WARN] {message}", file=sys.stderr)
+    print(color_text(f"[WARN] {message}", COLOR_YELLOW), file=sys.stderr)
 
 
 def log_error(message: str) -> None:
-    print(f"[ERROR] {message}", file=sys.stderr)
+    print(color_text(f"[ERROR] {message}", COLOR_RED), file=sys.stderr)
 
 
 def is_sensitive_option(arg: str) -> bool:
@@ -324,9 +413,14 @@ def audit_record(config: AuditConfig, result: str, exit_code: int, argv: Sequenc
 def is_quiet_help(argv: Sequence[str]) -> bool:
     if not argv:
         return True
-    if argv[0] in {"tutor", "help", "-h", "--help"}:
+    if argv[0] in {"help", "-h", "--help"}:
         return True
-    return any(arg in {"help", "-h", "--help"} for arg in argv)
+    for arg in argv:
+        if arg == "--":
+            return False
+        if arg in {"-h", "--help"}:
+            return True
+    return False
 
 
 def run_with_audit(config: AuditConfig, argv: Sequence[str], callback) -> int:
@@ -364,7 +458,8 @@ def run_with_audit(config: AuditConfig, argv: Sequence[str], callback) -> int:
         return 1
     if exit_code == 0:
         if not quiet:
-            log_info(f"Completed {config.tool} command: {command_line}")
+            sys.stdout.flush()
+            log_success(f"Completed {config.tool} command: {command_line}")
         audit_record(config, "success", 0, argv)
     else:
         audit_record(config, "failed", exit_code, argv, f"Exited with {exit_code}")
