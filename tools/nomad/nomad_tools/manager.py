@@ -1478,10 +1478,9 @@ def cmd_tutor(args: argparse.Namespace) -> int:
   Common path:
     {NOMAD_MANAGER_CMD} quickstart
     {NOMAD_MANAGER_CMD} doctor
-    nomad-job quickstart
 
   Topics:
-    install, docker, vault, vault-jwt, consul, ui, job, uninstall, troubleshoot
+    install, docker, vault, vault-jwt, consul, ui, workflows, vault-secret-job, host-volume-job, private-image-job, web-service-job, uninstall, troubleshoot
 """,
         "install": f"Install a single node:\n  {NOMAD_MANAGER_CMD} install --version {DEFAULT_NOMAD_VERSION}",
         "docker": f"Enable Docker support:\n  {NOMAD_MANAGER_CMD} docker enable --allow-privileged --volumes",
@@ -1489,7 +1488,41 @@ def cmd_tutor(args: argparse.Namespace) -> int:
         "vault-jwt": f"Link workload identity:\n  {NOMAD_MANAGER_CMD} vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://127.0.0.1:4646",
         "consul": f"Point Nomad at Consul:\n  {NOMAD_MANAGER_CMD} consul enable --address 127.0.0.1:8500",
         "ui": f"Enable UI settings:\n  {NOMAD_MANAGER_CMD} ui enable",
-        "job": "Use nomad-job for job workflows:\n  nomad-job scaffold docker ...\n  nomad-job validate jobs/web.nomad.hcl\n  nomad-job plan jobs/web.nomad.hcl\n  nomad-job apply jobs/web.nomad.hcl",
+        "workflows": f"""Workflow topics:
+  {NOMAD_MANAGER_CMD} tutor vault-secret-job
+  {NOMAD_MANAGER_CMD} tutor host-volume-job
+  {NOMAD_MANAGER_CMD} tutor private-image-job
+  {NOMAD_MANAGER_CMD} tutor web-service-job
+""",
+        "vault-secret-job": f"""Run a Vault-backed job workflow:
+  {NOMAD_MANAGER_CMD} vault-jwt plan --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://127.0.0.1:4646 --secret-path kv/data/app/*
+  {NOMAD_MANAGER_CMD} vault-jwt apply --profile default
+  {NOMAD_MANAGER_CMD} vault-jwt job-example --profile default --job web --secret kv/data/app/config --out jobs/web.nomad.hcl
+  nomad-job validate jobs/web.nomad.hcl
+  nomad-job plan jobs/web.nomad.hcl
+  nomad-job apply jobs/web.nomad.hcl
+""",
+        "host-volume-job": f"""Run a job with a managed host volume:
+  {NOMAD_MANAGER_CMD} host-volume add data --path /opt/nomad/volumes/data --create
+  nomad-job scaffold docker --job web --image nginx:1.27 --host-volume data:/opt/data:rw --out jobs/web.nomad.hcl
+  nomad-job validate jobs/web.nomad.hcl
+  nomad-job plan jobs/web.nomad.hcl
+  nomad-job apply jobs/web.nomad.hcl
+""",
+        "private-image-job": f"""Run a job from a private registry:
+  {NOMAD_MANAGER_CMD} docker enable --auth-config /root/.docker/config.json
+  nomad-job scaffold docker --job private-web --image registry.example.com/app:1.0 --out jobs/private-web.nomad.hcl
+  nomad-job validate jobs/private-web.nomad.hcl
+  nomad-job plan jobs/private-web.nomad.hcl
+  nomad-job apply jobs/private-web.nomad.hcl
+""",
+        "web-service-job": f"""Run an HTTP service job:
+  {NOMAD_MANAGER_CMD} docker enable --volumes
+  nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --check-http / --out jobs/web.nomad.hcl
+  nomad-job validate jobs/web.nomad.hcl
+  nomad-job plan jobs/web.nomad.hcl
+  nomad-job apply jobs/web.nomad.hcl
+""",
         "uninstall": f"Preview removal before changing the node:\n  {NOMAD_MANAGER_CMD} uninstall --dry-run\n  {NOMAD_MANAGER_CMD} uninstall --yes",
         "troubleshoot": f"Start with the aggregate check:\n  {NOMAD_MANAGER_CMD} doctor\n  {NOMAD_MANAGER_CMD} docker doctor\n  {NOMAD_MANAGER_CMD} vault doctor\n  {NOMAD_MANAGER_CMD} consul doctor",
     }

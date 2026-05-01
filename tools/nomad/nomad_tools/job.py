@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -444,6 +445,15 @@ def prompt_name(label: str, default: str | None, name_label: str, *, required: b
             log_warn(str(exc))
 
 
+def prompt_absolute_path(label: str, default: str) -> str:
+    while True:
+        value = prompt_text(label, default, required=True)
+        assert value is not None
+        if Path(value).is_absolute():
+            return value
+        log_warn(f"Path must be absolute: {value}")
+
+
 def prompt_repeat(label: str, item_label: str, current: list[str] | None, validator) -> list[str] | None:
     values = list(current or [])
     if values:
@@ -473,8 +483,140 @@ def validate_template_file_prompt(value: str) -> None:
         raise CLIError(f"Template file is not readable: {value}") from exc
 
 
-def scaffold_summary(args: argparse.Namespace) -> list[str]:
+def default_host_volume_path(name: str) -> str:
+    return str(NOMAD_ROOT_DIR / "volumes" / name)
+
+
+def parse_unique_host_volumes(values: list[str] | None) -> list[dict[str, Any]]:
+    volumes: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for value in values or []:
+        volume = parse_host_volume(value)
+        name = str(volume["name"])
+        if name in seen:
+            continue
+        volumes.append(volume)
+        seen.add(name)
+    return volumes
+
+
+def prompt_host_volume_paths(args: argparse.Namespace) -> None:
+    paths = dict(getattr(args, "host_volume_paths", {}) or {})
+    for volume in parse_unique_host_volumes(args.host_volume):
+        name = str(volume["name"])
+        paths[name] = prompt_absolute_path(f'Host path for Nomad client volume "{name}"', paths.get(name) or default_host_volume_path(name))
+    args.host_volume_paths = paths
+
+
+def shell_command(args: list[str]) -> str:
+    return " ".join(shlex.quote(item) for item in args)
+
+
+def host_volume_setup_commands(args: argparse.Namespace) -> list[str]:
+    paths = getattr(args, "host_volume_paths", {}) or {}
+    commands: list[str] = []
+    for volume in parse_unique_host_volumes(args.host_volume):
+        command = [
+            "nomad-manager",
+            "host-volume",
+            "add",
+            str(volume["name"]),
+            "--path",
+            str(paths.get(str(volume["name"])) or "/path/on/host"),
+            "--create",
+        ]
+        if volume["readonly"]:
+            command.append("--read-only")
+        commands.append(shell_command(command))
+    return commands
+
+
+def log_host_volume_guidance(args: argparse.Namespace) -> None:
+    volumes = parse_unique_host_volumes(args.host_volume)
+    if not volumes:
+        return
+    names = [str(volume["name"]) for volume in volumes]
+    if len(names) == 1:
+        log_warn(f'Host volume "{names[0]}" must exist on Nomad clients before this job can run')
+        log_info("Configure it with:")
+    else:
+        log_warn(f"Host volumes must exist on Nomad clients before this job can run: {', '.join(names)}")
+        log_info("Configure them with:")
+    for command in host_volume_setup_commands(args):
+        print(f"  {command}", file=sys.stderr)
+
+
+def has_docker_host_mount(args: argparse.Namespace) -> bool:
+    for value in args.mount or []:
+        if parse_mount(value)["type"] in {"bind", "volume"}:
+            return True
+    return False
+
+
+def log_docker_mount_guidance() -> None:
+    log_warn("Docker bind or volume mounts require Docker driver volume support on Nomad clients")
+    log_info("Configure it with:")
+    print("  nomad-manager docker enable --volumes", file=sys.stderr)
+
+
+def log_consul_service_guidance() -> None:
+    log_warn("Consul service registration requires Nomad Consul integration before service discovery works")
+    log_info("Configure it with:")
+    print("  nomad-manager consul enable --address 127.0.0.1:8500", file=sys.stderr)
+
+
+def vault_setup_commands(args: argparse.Namespace) -> list[str]:
+    role = args.vault_role or "nomad-workloads"
+    aud = args.identity_aud or "vault.io"
     return [
+        shell_command(
+            [
+                "nomad-manager",
+                "vault-jwt",
+                "plan",
+                "--profile",
+                "default",
+                "--vault-addr",
+                "http://127.0.0.1:8200",
+                "--nomad-addr",
+                "http://127.0.0.1:4646",
+                "--role",
+                role,
+                "--aud",
+                aud,
+            ]
+        ),
+        "nomad-manager vault-jwt apply --profile default",
+    ]
+
+
+def log_vault_guidance(args: argparse.Namespace) -> None:
+    if not args.vault_role:
+        return
+    log_warn(f'Vault role "{args.vault_role}" must exist before this job can read Vault secrets')
+    log_info("Configure workload identity with:")
+    for command in vault_setup_commands(args):
+        print(f"  {command}", file=sys.stderr)
+
+
+def log_scaffold_guidance(args: argparse.Namespace) -> None:
+    log_host_volume_guidance(args)
+    if has_docker_host_mount(args):
+        log_docker_mount_guidance()
+    if args.emit_service and args.port and args.service_provider == "consul":
+        log_consul_service_guidance()
+    log_vault_guidance(args)
+
+
+def log_compose_guidance(content: str) -> None:
+    if "\n        mount {\n" in content:
+        log_docker_mount_guidance()
+    if f"provider = {hcl_string('consul')}" in content:
+        log_consul_service_guidance()
+
+
+def scaffold_summary(args: argparse.Namespace) -> list[str]:
+    lines = [
         f"  Job: {args.job}",
         f"  Image: {args.image}",
         f"  Type: {args.type}",
@@ -491,6 +633,10 @@ def scaffold_summary(args: argparse.Namespace) -> list[str]:
         f"  Templates: {len(args.template_file or [])}",
         f"  Output: {args.out}",
     ]
+    paths = getattr(args, "host_volume_paths", {}) or {}
+    if paths:
+        lines.append(f"  Host volume setup: {', '.join(f'{name}={path}' for name, path in sorted(paths.items()))}")
+    return lines
 
 
 def run_scaffold_docker_interactive(args: argparse.Namespace) -> None:
@@ -540,6 +686,8 @@ def run_scaffold_docker_interactive(args: argparse.Namespace) -> None:
     args.env_file = prompt_repeat("environment file", "Env file path", args.env_file, validate_env_file_prompt)
     args.mount = prompt_repeat("Docker mount", "Mount spec bind:source:target[:ro|rw], volume:name:target[:ro|rw], or tmpfs:target[:ro|rw]", args.mount, parse_mount)
     args.host_volume = prompt_repeat("host volume", "Host volume spec name:destination[:ro|rw]", args.host_volume, parse_host_volume)
+    if args.host_volume:
+        prompt_host_volume_paths(args)
     args.template_file = prompt_repeat("template file", "Template spec source:destination[:env]", args.template_file, validate_template_file_prompt)
 
     if prompt_yes_no("Configure Vault role?", bool(args.vault_role)):
@@ -568,6 +716,8 @@ def cmd_scaffold_docker(args: argparse.Namespace) -> int:
     args.group = args.group or args.job
     args.task = args.task or args.group
     write_output(args.out, build_scaffold_hcl(args), args.force)
+    sys.stdout.flush()
+    log_scaffold_guidance(args)
     return 0
 
 
@@ -915,6 +1065,8 @@ def cmd_compose_convert(args: argparse.Namespace) -> int:
     if args.strict and warnings:
         raise CLIError("Compose conversion has warnings; rerun without --strict to emit best-effort HCL")
     write_output(args.out, content, args.force)
+    sys.stdout.flush()
+    log_compose_guidance(content)
     return 0
 
 
