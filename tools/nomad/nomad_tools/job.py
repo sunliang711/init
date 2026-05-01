@@ -32,6 +32,7 @@ from .common import (
 
 
 NOMAD_ROOT_DIR = Path("/opt/nomad")
+HOST_VOLUME_DIR = NOMAD_ROOT_DIR / "volumes"
 TOOL_LOG_DIR = NOMAD_ROOT_DIR / "log" / "nomad-init-tools"
 AUDIT_LOG_FILE = TOOL_LOG_DIR / "job.audit.log"
 MIN_PORT = 1
@@ -445,13 +446,25 @@ def prompt_name(label: str, default: str | None, name_label: str, *, required: b
             log_warn(str(exc))
 
 
-def prompt_absolute_path(label: str, default: str) -> str:
+def resolve_host_volume_prompt_path(value: str) -> str:
+    path = Path(value)
+    if path.is_absolute():
+        return str(path)
+    base = HOST_VOLUME_DIR.resolve(strict=False)
+    target = (base / path).resolve(strict=False)
+    if target != base and base not in target.parents:
+        raise CLIError(f"Host volume path escapes base directory {HOST_VOLUME_DIR}: {value}")
+    return str(target)
+
+
+def prompt_host_volume_path(label: str, default: str) -> str:
     while True:
         value = prompt_text(label, default, required=True)
         assert value is not None
-        if Path(value).is_absolute():
-            return value
-        log_warn(f"Path must be absolute: {value}")
+        try:
+            return resolve_host_volume_prompt_path(value)
+        except CLIError as exc:
+            log_warn(str(exc))
 
 
 def prompt_repeat(label: str, item_label: str, current: list[str] | None, validator) -> list[str] | None:
@@ -460,8 +473,9 @@ def prompt_repeat(label: str, item_label: str, current: list[str] | None, valida
         print(f"Current {label}: {len(values)} item(s)", file=sys.stderr)
     while prompt_yes_no(f"Add {label}?", False):
         while True:
-            value = prompt_text(item_label, required=True)
-            assert value is not None
+            value = prompt_text(f"{item_label} (empty to skip)")
+            if value is None:
+                return values or None
             try:
                 validator(value)
                 values.append(value)
@@ -484,7 +498,7 @@ def validate_template_file_prompt(value: str) -> None:
 
 
 def default_host_volume_path(name: str) -> str:
-    return str(NOMAD_ROOT_DIR / "volumes" / name)
+    return str(HOST_VOLUME_DIR / name)
 
 
 def parse_unique_host_volumes(values: list[str] | None) -> list[dict[str, Any]]:
@@ -504,7 +518,10 @@ def prompt_host_volume_paths(args: argparse.Namespace) -> None:
     paths = dict(getattr(args, "host_volume_paths", {}) or {})
     for volume in parse_unique_host_volumes(args.host_volume):
         name = str(volume["name"])
-        paths[name] = prompt_absolute_path(f'Host path for Nomad client volume "{name}"', paths.get(name) or default_host_volume_path(name))
+        paths[name] = prompt_host_volume_path(
+            f'Host path for Nomad client volume "{name}" (relative to {HOST_VOLUME_DIR})',
+            paths.get(name) or default_host_volume_path(name),
+        )
     args.host_volume_paths = paths
 
 
@@ -516,15 +533,17 @@ def host_volume_setup_commands(args: argparse.Namespace) -> list[str]:
     paths = getattr(args, "host_volume_paths", {}) or {}
     commands: list[str] = []
     for volume in parse_unique_host_volumes(args.host_volume):
+        name = str(volume["name"])
         command = [
             "nomad-manager",
             "host-volume",
             "add",
-            str(volume["name"]),
-            "--path",
-            str(paths.get(str(volume["name"])) or "/path/on/host"),
-            "--create",
+            name,
         ]
+        path = str(paths.get(name) or "")
+        if path and path != default_host_volume_path(name):
+            command.extend(["--path", path])
+        command.append("--create")
         if volume["readonly"]:
             command.append("--read-only")
         commands.append(shell_command(command))
@@ -1207,7 +1226,7 @@ def cmd_tutor(args: argparse.Namespace) -> int:
         "docker": "Start with a Docker job:\n  nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --out jobs/web.nomad.hcl",
         "compose": "Use Docker Compose as an intermediate parser:\n  nomad-job compose convert docker-compose.yml --out jobs/app.nomad.hcl",
         "vault": "Prepare workload identity first:\n  nomad-manager vault-jwt apply --profile default ...\n  nomad-job scaffold docker ... --vault-role nomad-workloads --template-file app.ctmpl:secrets/app.env:env",
-        "volume": "Use Docker mounts or managed host volumes:\n  nomad-manager host-volume add logs --path /var/log/app --create\n  nomad-job scaffold docker ... --host-volume logs:/var/log/app:rw",
+        "volume": "Use Docker mounts or managed host volumes:\n  nomad-manager host-volume add logs --create\n  nomad-job scaffold docker ... --host-volume logs:/var/log/app:rw",
         "lifecycle": "Run a review loop:\n  nomad-job validate jobs/web.nomad.hcl\n  nomad-job plan jobs/web.nomad.hcl\n  nomad-job apply jobs/web.nomad.hcl\n  nomad-job status web",
         "troubleshoot": "Inspect job and allocation state:\n  nomad-job status web\n  nomad alloc status <alloc-id>\n  nomad alloc logs <alloc-id>",
         "web-service": "Generate an HTTP service:\n  nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --check-http /health --out jobs/web.nomad.hcl",

@@ -5,6 +5,7 @@ import json
 import os
 import pwd
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -62,6 +63,7 @@ DEFAULT_NOMAD_VERSION = "2.0.0"
 NOMAD_USER = "nomad"
 NOMAD_GROUP = "nomad"
 NOMAD_ROOT_DIR = Path("/opt/nomad")
+HOST_VOLUME_DIR = NOMAD_ROOT_DIR / "volumes"
 BIN_DIR = NOMAD_ROOT_DIR / "bin"
 BIN_PATH = BIN_DIR / "nomad"
 BIN_ENTRY = Path("/usr/local/bin/nomad")
@@ -448,11 +450,23 @@ def host_volume_config_path(name: str) -> Path:
     return CONFIG_DIR / f"70-host-volume-{name}.hcl"
 
 
+def resolve_host_volume_path(name: str, value: str | None) -> Path:
+    raw_path = (value or name).strip()
+    if not raw_path:
+        raw_path = name
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    base = HOST_VOLUME_DIR.resolve(strict=False)
+    target = (base / path).resolve(strict=False)
+    if target != base and base not in target.parents:
+        raise CLIError(f"Host volume path escapes base directory {HOST_VOLUME_DIR}: {raw_path}")
+    return target
+
+
 def cmd_host_volume_add(args: argparse.Namespace) -> int:
     validate_name(args.name, "host volume name")
-    path = Path(args.path)
-    if not path.is_absolute():
-        raise CLIError(f"Host volume path must be absolute: {path}")
+    path = resolve_host_volume_path(args.name, args.path)
     if args.create:
         run_root(["install", "-d", "-m", "0755", str(path)])
     elif not path.is_dir():
@@ -775,6 +789,45 @@ def profile_summary(data: dict[str, Any]) -> str:
     )
 
 
+def shell_command(args: list[str]) -> str:
+    return " ".join(shlex.quote(str(item)) for item in args)
+
+
+def vault_jwt_apply_command(data: dict[str, Any], *, force: bool = False) -> str:
+    command = [
+        NOMAD_MANAGER_CMD,
+        "vault-jwt",
+        "apply",
+        "--profile",
+        data["profile"],
+        "--vault-addr",
+        data["vault_addr"],
+        "--nomad-addr",
+        data["nomad_addr"],
+        "--auth-path",
+        data["auth_path"],
+        "--role",
+        data["role"],
+        "--policy",
+        data["policy"],
+        "--aud",
+        data["aud"],
+        "--ttl",
+        data["ttl"],
+    ]
+    if data.get("vault_namespace"):
+        command.extend(["--vault-namespace", data["vault_namespace"]])
+    if data.get("nomad_jwks_url"):
+        command.extend(["--nomad-jwks-url", data["nomad_jwks_url"]])
+    for secret_path in data["secret_paths"]:
+        command.extend(["--secret-path", secret_path])
+    if data.get("policy_file"):
+        command.extend(["--policy-file", data["policy_file"]])
+    if force:
+        command.append("--force")
+    return shell_command(command)
+
+
 def cmd_vault_jwt_plan(args: argparse.Namespace) -> int:
     data = prepare_profile(args)
     print(profile_summary(data))
@@ -787,7 +840,7 @@ def cmd_vault_jwt_plan(args: argparse.Namespace) -> int:
         f"  [5/7] Write Vault policy {data['policy']}\n"
         f"  [6/7] Write Vault role {data['role']}\n"
         f"  [7/7] Save profile {profile_path(data['profile'])}\n\n"
-        f"Next:\n  {NOMAD_MANAGER_CMD} vault-jwt apply --profile {data['profile']}"
+        f"Next:\n  {vault_jwt_apply_command(data, force=args.force)}"
     )
     return 0
 
@@ -1074,6 +1127,7 @@ def install_directories() -> None:
         (NOMAD_ROOT_DIR / "data", "0755", "root", "root"),
         (NOMAD_ROOT_DIR / "lib", "0755", "root", "root"),
         (NOMAD_ROOT_DIR / "log", "0750", "root", "root"),
+        (HOST_VOLUME_DIR, "0755", "root", "root"),
         (CONFIG_DIR, "0755", NOMAD_USER, NOMAD_GROUP),
         (DATA_DIR, "0755", NOMAD_USER, NOMAD_GROUP),
         (NOMAD_AGENT_DATA_DIR, "0755", NOMAD_USER, NOMAD_GROUP),
@@ -1208,6 +1262,7 @@ def write_install_metadata(version: str) -> None:
         "config_dir": str(CONFIG_DIR),
         "data_dir": str(DATA_DIR),
         "agent_data_dir": str(NOMAD_AGENT_DATA_DIR),
+        "host_volume_dir": str(HOST_VOLUME_DIR),
         "service": str(SYSTEMD_SERVICE),
         "nomad_version": version,
         "installed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -1226,6 +1281,7 @@ def write_data_pointer() -> None:
             f"Install metadata: {INSTALL_METADATA_FILE}",
             f"Tool dir: {TOOL_DIR}",
             f"Config dir: {CONFIG_DIR}",
+            f"Host volume dir: {HOST_VOLUME_DIR}",
             f"Audit log: {AUDIT_LOG_FILE}",
             "",
         ]
@@ -1259,6 +1315,51 @@ def install_tool_snapshot(version: str, script_dir: Path) -> None:
         safe_remove_path(LEGACY_JOB_ENTRY)
     log_success(f"Nomad manager entry installed: {TOOL_ENTRY}")
     log_success(f"Nomad job entry installed: {JOB_ENTRY}")
+
+
+def read_installed_nomad_version() -> str:
+    try:
+        metadata = json.loads(INSTALL_METADATA_FILE.read_text(encoding="utf-8"))
+        if isinstance(metadata, dict):
+            version = metadata.get("nomad_version")
+            if isinstance(version, str) and version.strip():
+                return version.strip()
+    except (OSError, json.JSONDecodeError):
+        pass
+    try:
+        for line in TOOL_VERSION_FILE.read_text(encoding="utf-8").splitlines():
+            key, sep, value = line.partition("=")
+            if sep and key == "nomad_version" and value.strip():
+                return value.strip()
+    except OSError:
+        pass
+    return "unknown"
+
+
+def require_tool_source(script_dir: Path) -> None:
+    missing = [
+        str(script_dir / name)
+        for name in ("nomad-manager", "nomad-job")
+        if not (script_dir / name).is_file()
+    ]
+    if not (script_dir / "nomad_tools").is_dir():
+        missing.append(str(script_dir / "nomad_tools"))
+    if missing:
+        raise CLIError(f"Tool source is incomplete: {', '.join(missing)}")
+
+
+def cmd_tools_update(args: argparse.Namespace) -> int:
+    require_linux()
+    require_command("install")
+    script_dir = current_script_dir(__file__).parent
+    require_tool_source(script_dir)
+    version = normalize_version(args.nomad_version) if args.nomad_version else read_installed_nomad_version()
+    if version == "unknown":
+        log_warn("Installed Nomad version metadata not found; recording unknown")
+    log_info(f"Updating Nomad init tool files from: {script_dir}")
+    install_tool_snapshot(version, script_dir)
+    log_success("Nomad init tools updated")
+    return 0
 
 
 def target_token_file() -> Path:
@@ -1503,7 +1604,7 @@ def cmd_tutor(args: argparse.Namespace) -> int:
   nomad-job apply jobs/web.nomad.hcl
 """,
         "host-volume-job": f"""Run a job with a managed host volume:
-  {NOMAD_MANAGER_CMD} host-volume add data --path /opt/nomad/volumes/data --create
+  {NOMAD_MANAGER_CMD} host-volume add data --create
   nomad-job scaffold docker --job web --image nginx:1.27 --host-volume data:/opt/data:rw --out jobs/web.nomad.hcl
   nomad-job validate jobs/web.nomad.hcl
   nomad-job plan jobs/web.nomad.hcl
@@ -1555,6 +1656,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=f"""Examples:
   {NOMAD_MANAGER_CMD} quickstart
   {NOMAD_MANAGER_CMD} install --version {DEFAULT_NOMAD_VERSION}
+  {NOMAD_MANAGER_CMD} tools update
   {NOMAD_MANAGER_CMD} doctor
   {NOMAD_MANAGER_CMD} docker enable --allow-privileged --volumes
   {NOMAD_MANAGER_CMD} uninstall --dry-run
@@ -1582,6 +1684,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     quickstart = sub.add_parser("quickstart", help="Show a copyable setup workflow")
     quickstart.set_defaults(func=cmd_quickstart)
+
+    tools = sub.add_parser("tools", help="Manage installed tool files")
+    tools_sub = tools.add_subparsers(dest="tools_command")
+    tools.set_defaults(func=lambda _: missing_subcommand(tools, f"{NOMAD_MANAGER_CMD} tools"))
+    tools_update = tools_sub.add_parser(
+        "update",
+        help="Update nomad-manager and nomad-job files only",
+        description="Update the installed nomad-manager, nomad-job and nomad_tools package without changing Nomad binary, config or service state.",
+    )
+    tools_update.add_argument("--nomad-version", help="Nomad version recorded in tool metadata; defaults to existing metadata")
+    tools_update.set_defaults(func=cmd_tools_update)
 
     vault = sub.add_parser("vault", help="Manage Vault integration")
     vault_sub = vault.add_subparsers(dest="vault_command")
@@ -1713,7 +1826,10 @@ def build_parser() -> argparse.ArgumentParser:
     host_volume.set_defaults(func=lambda _: missing_subcommand(host_volume, f"{NOMAD_MANAGER_CMD} host-volume"))
     hv_add = hv_sub.add_parser("add", help="Add a managed host volume config")
     hv_add.add_argument("name", help="Host volume name")
-    hv_add.add_argument("--path", required=True, help="Absolute host path")
+    hv_add.add_argument(
+        "--path",
+        help=f"Host path; relative paths are resolved under {HOST_VOLUME_DIR}, defaults to the volume name",
+    )
     hv_add.add_argument("--read-only", action="store_true", dest="read_only", help="Mount the host volume read-only")
     hv_add.add_argument("--read-write", action="store_false", dest="read_only", help="Mount the host volume read-write")
     hv_add.set_defaults(read_only=False)
