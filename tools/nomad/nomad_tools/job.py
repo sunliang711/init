@@ -673,6 +673,20 @@ def log_scaffold_guidance(args: argparse.Namespace) -> None:
     log_vault_guidance(args)
 
 
+def log_scaffold_next_steps(args: argparse.Namespace) -> None:
+    print("Next:", file=sys.stderr)
+    if args.out == "-":
+        print("  Save stdout to a .nomad.hcl file, then run:", file=sys.stderr)
+        print("  nomad-job validate <job-file>", file=sys.stderr)
+        print("  nomad-job plan <job-file>", file=sys.stderr)
+        print("  nomad-job apply <job-file>", file=sys.stderr)
+    else:
+        print(f"  {shell_command(['nomad-job', 'validate', args.out])}", file=sys.stderr)
+        print(f"  {shell_command(['nomad-job', 'plan', args.out])}", file=sys.stderr)
+        print(f"  {shell_command(['nomad-job', 'apply', args.out])}", file=sys.stderr)
+    print(f"  {shell_command(['nomad-job', 'status', args.job])}", file=sys.stderr)
+
+
 def log_compose_guidance(content: str) -> None:
     if "\n        mount {\n" in content:
         log_docker_mount_guidance()
@@ -783,6 +797,8 @@ def cmd_scaffold_docker(args: argparse.Namespace) -> int:
     write_output(args.out, build_scaffold_hcl(args), args.force)
     sys.stdout.flush()
     log_scaffold_guidance(args)
+    if args.interactive:
+        log_scaffold_next_steps(args)
     return 0
 
 
