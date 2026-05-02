@@ -1,0 +1,442 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEFAULT_IMAGE="busybox:latest"
+
+usage() {
+  cat <<EOF
+Docker volume archive tool
+
+Usage:
+  dockerVolume export <volume> [--out <file>] [--force] [--image <image>] [--quiet]
+  dockerVolume import <backup-file> <volume> [--image <image>] [--quiet]
+  dockerVolume export-to-dir <volume> <target-dir> [--force] [--image <image>] [--quiet]
+  dockerVolume import-from-dir <source-dir> <volume> [--image <image>] [--quiet]
+  dockerVolume ls
+  dockerVolume inspect <volume>
+  dockerVolume help
+
+Commands:
+  export            Export a Docker volume to a tar.gz archive.
+  import            Import a tar.gz archive into a new Docker volume.
+  export-to-dir     Export a Docker volume to a directory.
+  import-from-dir   Import a directory into a new Docker volume.
+  ls                List Docker volumes.
+  inspect           Inspect a Docker volume.
+
+Examples:
+  dockerVolume export mysql_data
+  dockerVolume export mysql_data --out /backup/mysql_data.tar.gz --force
+  dockerVolume import /backup/mysql_data.tar.gz mysql_data_restore
+  dockerVolume export-to-dir mysql_data /backup/mysql_data --force
+  dockerVolume import-from-dir /backup/mysql_data mysql_data_restore
+EOF
+}
+
+log_info() {
+  if [ "${QUIET:-0}" -eq 0 ]; then
+    printf '[INFO] %s\n' "$*" >&2
+  fi
+}
+
+log_error() {
+  printf '[ERROR] %s\n' "$*" >&2
+}
+
+fatal() {
+  log_error "$*"
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fatal "Required command not found: $1"
+}
+
+validate_volume_name() {
+  local volume="$1"
+
+  [ -n "$volume" ] || fatal "Volume name is required"
+  case "$volume" in
+    -* | */* | *$'\n'* | *$'\r'*)
+      fatal "Invalid volume name: ${volume}"
+      ;;
+  esac
+}
+
+volume_exists() {
+  docker volume inspect "$1" >/dev/null 2>&1
+}
+
+require_volume_exists() {
+  local volume="$1"
+
+  validate_volume_name "$volume"
+  volume_exists "$volume" || fatal "Docker volume not found: ${volume}"
+}
+
+canonical_path() {
+  local path="$1"
+  local dir
+  local base
+
+  dir="$(dirname "$path")"
+  base="$(basename "$path")"
+  (
+    cd "$dir" && printf '%s/%s\n' "$(pwd)" "$base"
+  )
+}
+
+path_has_entries() {
+  local path="$1"
+
+  find "$path" -mindepth 1 -maxdepth 1 -print -quit | grep -q .
+}
+
+require_safe_clear_dir() {
+  local path="$1"
+  local resolved
+  local home_resolved=""
+
+  resolved="$(canonical_path "$path")"
+  if [ -n "${HOME:-}" ] && [ -d "$HOME" ]; then
+    home_resolved="$(cd "$HOME" && pwd)"
+  fi
+
+  case "$resolved" in
+    "" | "/" | "/tmp" | "/var/tmp" | "/private/tmp" | "/private/var/tmp" | "$home_resolved")
+      fatal "Refuse to clear unsafe directory: ${resolved}"
+      ;;
+  esac
+}
+
+clear_dir_contents() {
+  local path="$1"
+
+  require_safe_clear_dir "$path"
+  find "$path" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+}
+
+prepare_output_file() {
+  local out="$1"
+  local force="$2"
+  local out_dir
+
+  [ -n "$out" ] || fatal "Output file is required"
+  [ ! -d "$out" ] || fatal "Output path is a directory: ${out}"
+  out_dir="$(dirname "$out")"
+  if [ ! -d "$out_dir" ]; then
+    log_info "Creating output directory: ${out_dir}"
+    mkdir -p "$out_dir" || fatal "Failed to create output directory: ${out_dir}"
+  fi
+  if [ -e "$out" ] && [ "$force" -ne 1 ]; then
+    fatal "Output file already exists, use --force to overwrite: ${out}"
+  fi
+}
+
+cmd_export() {
+  local volume="${1:-}"
+  local out=""
+  local force=0
+  local image="$DEFAULT_IMAGE"
+  local out_dir
+  local out_file
+
+  case "$volume" in
+    -h | --help)
+      usage
+      return 0
+      ;;
+  esac
+  [ -n "$volume" ] || fatal "Usage: dockerVolume export <volume> [--out <file>] [--force] [--image <image>] [--quiet]"
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --out)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --out"
+        out="$1"
+        ;;
+      --force)
+        force=1
+        ;;
+      --image)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --image"
+        image="$1"
+        ;;
+      --quiet)
+        QUIET=1
+        ;;
+      -h | --help)
+        usage
+        return 0
+        ;;
+      *)
+        fatal "Unknown export option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  require_command docker
+  require_volume_exists "$volume"
+  out="${out:-${volume}.tar.gz}"
+  prepare_output_file "$out" "$force"
+  out_dir="$(cd "$(dirname "$out")" && pwd)"
+  out_file="$(basename "$out")"
+
+  log_info "Exporting Docker volume ${volume} to ${out_dir}/${out_file}"
+  docker run --rm \
+    -v "${volume}:/volume:ro" \
+    -v "${out_dir}:/backup" \
+    "$image" \
+    tar czf "/backup/${out_file}" -C /volume .
+  log_info "Docker volume exported: ${out_dir}/${out_file}"
+}
+
+cmd_import() {
+  local backup_file="${1:-}"
+  local volume="${2:-}"
+  local image="$DEFAULT_IMAGE"
+  local backup_dir
+  local backup_name
+  local created=0
+
+  case "$backup_file" in
+    -h | --help)
+      usage
+      return 0
+      ;;
+  esac
+  [ -n "$backup_file" ] && [ -n "$volume" ] || fatal "Usage: dockerVolume import <backup-file> <volume> [--image <image>] [--quiet]"
+  shift 2
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --image)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --image"
+        image="$1"
+        ;;
+      --quiet)
+        QUIET=1
+        ;;
+      -h | --help)
+        usage
+        return 0
+        ;;
+      *)
+        fatal "Unknown import option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  require_command docker
+  validate_volume_name "$volume"
+  [ -f "$backup_file" ] || fatal "Backup file not found: ${backup_file}"
+  if volume_exists "$volume"; then
+    fatal "Docker volume already exists: ${volume}"
+  fi
+
+  backup_dir="$(cd "$(dirname "$backup_file")" && pwd)"
+  backup_name="$(basename "$backup_file")"
+
+  log_info "Creating Docker volume: ${volume}"
+  docker volume create "$volume" >/dev/null
+  created=1
+
+  if ! docker run --rm \
+    -v "${volume}:/volume" \
+    -v "${backup_dir}:/backup:ro" \
+    "$image" \
+    tar xzf "/backup/${backup_name}" -C /volume; then
+    if [ "$created" -eq 1 ]; then
+      log_error "Import failed, removing created Docker volume: ${volume}"
+      docker volume rm "$volume" >/dev/null 2>&1 || true
+    fi
+    return 1
+  fi
+
+  log_info "Docker volume imported: ${volume}"
+}
+
+cmd_export_to_dir() {
+  local volume="${1:-}"
+  local target_dir="${2:-}"
+  local force=0
+  local image="$DEFAULT_IMAGE"
+  local target_abs
+
+  case "$volume" in
+    -h | --help)
+      usage
+      return 0
+      ;;
+  esac
+  [ -n "$volume" ] && [ -n "$target_dir" ] || fatal "Usage: dockerVolume export-to-dir <volume> <target-dir> [--force] [--image <image>] [--quiet]"
+  shift 2
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --force)
+        force=1
+        ;;
+      --image)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --image"
+        image="$1"
+        ;;
+      --quiet)
+        QUIET=1
+        ;;
+      -h | --help)
+        usage
+        return 0
+        ;;
+      *)
+        fatal "Unknown export-to-dir option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  require_command docker
+  require_volume_exists "$volume"
+  if [ -e "$target_dir" ] && [ ! -d "$target_dir" ]; then
+    fatal "Target path exists and is not a directory: ${target_dir}"
+  fi
+  if [ ! -d "$target_dir" ]; then
+    log_info "Creating target directory: ${target_dir}"
+    mkdir -p "$target_dir" || fatal "Failed to create target directory: ${target_dir}"
+  fi
+  if path_has_entries "$target_dir"; then
+    if [ "$force" -ne 1 ]; then
+      fatal "Target directory is not empty, use --force to overwrite: ${target_dir}"
+    fi
+    log_info "Clearing target directory: ${target_dir}"
+    clear_dir_contents "$target_dir"
+  fi
+
+  target_abs="$(cd "$target_dir" && pwd)"
+  log_info "Exporting Docker volume ${volume} to directory ${target_abs}"
+  docker run --rm \
+    -v "${volume}:/volume:ro" \
+    -v "${target_abs}:/backup" \
+    "$image" \
+    sh -c 'cd /volume && tar cf - . | tar xf - -C /backup'
+  log_info "Docker volume exported to directory: ${target_abs}"
+}
+
+cmd_import_from_dir() {
+  local source_dir="${1:-}"
+  local volume="${2:-}"
+  local image="$DEFAULT_IMAGE"
+  local source_abs
+  local created=0
+
+  case "$source_dir" in
+    -h | --help)
+      usage
+      return 0
+      ;;
+  esac
+  [ -n "$source_dir" ] && [ -n "$volume" ] || fatal "Usage: dockerVolume import-from-dir <source-dir> <volume> [--image <image>] [--quiet]"
+  shift 2
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --image)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --image"
+        image="$1"
+        ;;
+      --quiet)
+        QUIET=1
+        ;;
+      -h | --help)
+        usage
+        return 0
+        ;;
+      *)
+        fatal "Unknown import-from-dir option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  require_command docker
+  validate_volume_name "$volume"
+  [ -d "$source_dir" ] || fatal "Source directory not found: ${source_dir}"
+  if volume_exists "$volume"; then
+    fatal "Docker volume already exists: ${volume}"
+  fi
+
+  source_abs="$(cd "$source_dir" && pwd)"
+  log_info "Creating Docker volume: ${volume}"
+  docker volume create "$volume" >/dev/null
+  created=1
+
+  if ! docker run --rm \
+    -v "${volume}:/volume" \
+    -v "${source_abs}:/source:ro" \
+    "$image" \
+    sh -c 'cd /source && tar cf - . | tar xf - -C /volume'; then
+    if [ "$created" -eq 1 ]; then
+      log_error "Import failed, removing created Docker volume: ${volume}"
+      docker volume rm "$volume" >/dev/null 2>&1 || true
+    fi
+    return 1
+  fi
+
+  log_info "Docker volume imported from directory: ${volume}"
+}
+
+cmd_ls() {
+  require_command docker
+  docker volume ls
+}
+
+cmd_inspect() {
+  local volume="${1:-}"
+
+  [ -n "$volume" ] || fatal "Usage: dockerVolume inspect <volume>"
+  require_command docker
+  require_volume_exists "$volume"
+  docker volume inspect "$volume"
+}
+
+main() {
+  local command="${1:-help}"
+
+  if [ "$#" -gt 0 ]; then
+    shift
+  fi
+
+  case "$command" in
+    export)
+      cmd_export "$@"
+      ;;
+    import)
+      cmd_import "$@"
+      ;;
+    export-to-dir)
+      cmd_export_to_dir "$@"
+      ;;
+    import-from-dir)
+      cmd_import_from_dir "$@"
+      ;;
+    ls | list)
+      cmd_ls
+      ;;
+    inspect)
+      cmd_inspect "$@"
+      ;;
+    help | -h | --help)
+      usage
+      ;;
+    *)
+      usage >&2
+      fatal "Unknown command: ${command}"
+      ;;
+  esac
+}
+
+main "$@"
