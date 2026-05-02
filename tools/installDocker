@@ -109,13 +109,81 @@ example() {
     # TODO
 }
 
+_run_root_command() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    else
+        sudo "$@"
+    fi
+}
+
+_ensure_docker_daemon_config() {
+    local dockerConfigFile="/etc/docker/daemon.json"
+
+    if [ ! -e "${dockerConfigFile}" ]; then
+        _run_root_command install -d -m 0755 /etc/docker || return 1
+        printf '%s\n' "{}" | _run_root_command tee "${dockerConfigFile}" >/dev/null || return 1
+    fi
+}
+
+_enable_docker_service() {
+    if command -v systemctl >/dev/null 2>&1; then
+        _run_root_command systemctl enable --now docker || {
+            _errorln "failed to enable or start docker service"
+            return 1
+        }
+    else
+        _infoln "systemctl not found, skip docker service enable"
+    fi
+}
+
 install() {
-    cd /tmp
-    curl -fsSL https://get.docker.com -o get-docker.sh
-    sudo sh get-docker.sh
-    dockerConfigFile=/etc/docker/daemon.json
-    if [ ! -e ${dockerConfigFile} ];then
-      echo "{}" | sudo tee ${dockerConfigFile}
+    local dryRun=0
+    local dockerInstallScript=""
+
+    case "${1:-}" in
+    "")
+        ;;
+    --dry-run)
+        dryRun=1
+        ;;
+    *)
+        _errorln "usage: install [--dry-run]"
+        return 2
+        ;;
+    esac
+
+    _require_linux
+    _require_command curl
+    _require_command mktemp
+    _require_command sh
+
+    if [ "$(id -u)" -ne 0 ]; then
+        _require_command sudo
+    fi
+
+    if [ "${dryRun}" -eq 0 ] && command -v docker >/dev/null 2>&1; then
+        _infoln "Docker already installed."
+        return 0
+    fi
+
+    dockerInstallScript="$(mktemp -t get-docker.XXXXXX.sh)" || return 1
+    trap 'rm -f "${dockerInstallScript}"' RETURN
+
+    _infoln "Downloading docker install script..."
+    curl -fsSL https://get.docker.com -o "${dockerInstallScript}" || return 1
+
+    if [ "${dryRun}" -eq 1 ]; then
+        _run_root_command sh "${dockerInstallScript}" --dry-run
+        return $?
+    fi
+
+    _run_root_command sh "${dockerInstallScript}" || return 1
+    _ensure_docker_daemon_config || return 1
+    _enable_docker_service || return 1
+
+    if command -v docker >/dev/null 2>&1; then
+        docker version >/dev/null 2>&1 || _infoln "Docker installed, but current user may need sudo or docker group permission."
     fi
 }
 
