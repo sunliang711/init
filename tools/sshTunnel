@@ -1,0 +1,590 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEFAULT_SSH_PORT="22"
+DEFAULT_LISTEN_BIND="127.0.0.1"
+DEFAULT_SERVER_ALIVE_INTERVAL="30"
+DEFAULT_SERVER_ALIVE_COUNT_MAX="3"
+TUNNEL_DIR="${SSH_TUNNEL_DIR:-${HOME}/.ssh/tunnels}"
+
+usage() {
+  cat <<EOF
+SSH tunnel helper
+
+Usage:
+  sshTunnel local  --ssh <user@host> --listen [bind:]port --target host:port [options]
+  sshTunnel remote --ssh <user@host> --listen [bind:]port --target host:port [options]
+  sshTunnel status <name>
+  sshTunnel stop <name>
+  sshTunnel list
+  sshTunnel clean
+  sshTunnel help
+
+Modes:
+  local      Open a port on this machine. Traffic entering this machine is sent
+             through SSH and then reaches the target from the SSH server side.
+             Flow: client -> this machine listen -> SSH server -> target
+
+  remote     Open a port on the SSH server. Traffic entering the SSH server is
+             sent back through SSH and then reaches the target from this machine.
+             Flow: client -> SSH server listen -> this machine -> target
+
+Address rules:
+  --listen port       Means 127.0.0.1:port, visible only from the listening host.
+  --listen ip:port    Binds the listening side to a specific address.
+  --target host:port  Is resolved from the exit side of the tunnel.
+                      local mode: target is reached from the SSH server.
+                      remote mode: target is reached from this machine.
+
+Common use cases:
+  local      Access a private remote service from your laptop.
+             Example: laptop 127.0.0.1:3306 -> server can reach 127.0.0.1:3306
+
+  remote     Expose a local service through a remote server.
+             Example: server 0.0.0.0:8080 -> laptop can reach 127.0.0.1:80
+
+Options:
+  --ssh <user@host>                 SSH destination.
+  --ssh-port <port>                 SSH port, default: 22.
+  --listen [bind:]port              Listen address. Port-only uses 127.0.0.1:port.
+  --target host:port                Target endpoint.
+  --name <name>                     Tunnel name. Required with --background.
+  --background                      Run tunnel in background with ControlPath.
+  --identity-file <file>            SSH identity file.
+  --jump <jump-host>                SSH jump host, maps to -J.
+  --strict-host-key-checking <mode> Set StrictHostKeyChecking, for example accept-new.
+  --log-file <file>                 Write SSH logs to file. Background default: ~/.ssh/tunnels/<name>.log.
+  --verbose                         Enable SSH verbose output.
+  --dry-run                         Print SSH command without running it.
+
+Examples:
+  # Local tunnel: open 127.0.0.1:8080 on this machine, reach 127.0.0.1:80 from the SSH server side.
+  sshTunnel local --ssh user@example.com --listen 8080 --target 127.0.0.1:80
+
+  # Local tunnel for a database, running in background.
+  sshTunnel local --ssh user@example.com --listen 127.0.0.1:3306 --target 127.0.0.1:3306 --background --name mysql
+
+  # Remote tunnel: open 0.0.0.0:8080 on the SSH server, reach 127.0.0.1:80 on this machine.
+  sshTunnel remote --ssh user@example.com --listen 0.0.0.0:8080 --target 127.0.0.1:80 --background --name web
+
+  sshTunnel status mysql
+  sshTunnel stop mysql
+  sshTunnel clean
+EOF
+}
+
+log_info() {
+  printf '[INFO] %s\n' "$*" >&2
+}
+
+log_warn() {
+  printf '[WARN] %s\n' "$*" >&2
+}
+
+log_error() {
+  printf '[ERROR] %s\n' "$*" >&2
+}
+
+fatal() {
+  log_error "$*"
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fatal "Required command not found: $1"
+}
+
+validate_name() {
+  local name="$1"
+
+  [[ "$name" =~ ^[A-Za-z0-9_.-]+$ ]] || fatal "Invalid tunnel name: ${name}"
+}
+
+validate_port() {
+  local port="$1"
+
+  [[ "$port" =~ ^[0-9]+$ ]] || fatal "Invalid port: ${port}"
+  [ "$port" -ge 1 ] && [ "$port" -le 65535 ] || fatal "Port out of range: ${port}"
+}
+
+parse_listen() {
+  local value="$1"
+  local bind
+  local port
+
+  [ -n "$value" ] || fatal "Missing listen endpoint"
+  case "$value" in
+    *:*:*)
+      fatal "IPv6 listen endpoints are not supported yet: ${value}"
+      ;;
+    *:*)
+      bind="${value%:*}"
+      port="${value##*:}"
+      ;;
+    *)
+      bind="$DEFAULT_LISTEN_BIND"
+      port="$value"
+      ;;
+  esac
+  [ -n "$bind" ] || fatal "Listen bind address is empty"
+  validate_port "$port"
+  LISTEN_BIND="$bind"
+  LISTEN_PORT="$port"
+}
+
+parse_target() {
+  local value="$1"
+  local host
+  local port
+
+  [ -n "$value" ] || fatal "Missing target endpoint"
+  case "$value" in
+    *:*:*)
+      fatal "IPv6 target endpoints are not supported yet: ${value}"
+      ;;
+    *:*)
+      host="${value%:*}"
+      port="${value##*:}"
+      ;;
+    *)
+      fatal "Target must use host:port: ${value}"
+      ;;
+  esac
+  [ -n "$host" ] || fatal "Target host is empty"
+  validate_port "$port"
+  TARGET_HOST="$host"
+  TARGET_PORT="$port"
+}
+
+control_path() {
+  local name="$1"
+
+  printf '%s/%s.sock\n' "$TUNNEL_DIR" "$name"
+}
+
+metadata_path() {
+  local name="$1"
+
+  printf '%s/%s.env\n' "$TUNNEL_DIR" "$name"
+}
+
+log_path() {
+  local name="$1"
+
+  printf '%s/%s.log\n' "$TUNNEL_DIR" "$name"
+}
+
+shell_quote_command() {
+  local arg
+  local first=1
+
+  for arg in "$@"; do
+    if [ "$first" -eq 0 ]; then
+      printf ' '
+    fi
+    printf '%q' "$arg"
+    first=0
+  done
+  printf '\n'
+}
+
+write_metadata() {
+  local name="$1"
+  local mode="$2"
+  local ssh_dest="$3"
+  local ssh_port="$4"
+  local listen="$5"
+  local target="$6"
+  local log_file="$7"
+  local path
+
+  path="$(metadata_path "$name")"
+  {
+    printf 'name=%s\n' "$name"
+    printf 'mode=%s\n' "$mode"
+    printf 'ssh_dest=%s\n' "$ssh_dest"
+    printf 'ssh_port=%s\n' "$ssh_port"
+    printf 'listen=%s\n' "$listen"
+    printf 'target=%s\n' "$target"
+    printf 'log_file=%s\n' "$log_file"
+    printf 'started_at=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date)"
+  } >"$path"
+  chmod 0600 "$path"
+}
+
+metadata_exists() {
+  local name="$1"
+
+  [ -f "$(metadata_path "$name")" ]
+}
+
+read_metadata_value() {
+  local name="$1"
+  local key="$2"
+  local path
+
+  path="$(metadata_path "$name")"
+  [ -f "$path" ] || return 1
+  sed -n "s/^${key}=//p" "$path" | head -n 1
+}
+
+tunnel_is_running() {
+  local name="$1"
+  local socket
+  local ssh_dest
+  local ssh_port
+
+  socket="$(control_path "$name")"
+  ssh_dest="$(read_metadata_value "$name" "ssh_dest" || true)"
+  ssh_port="$(read_metadata_value "$name" "ssh_port" || true)"
+  [ -n "$ssh_dest" ] || return 1
+  [ -n "$ssh_port" ] || return 1
+  [ -S "$socket" ] || return 1
+  ssh -S "$socket" -p "$ssh_port" -O check "$ssh_dest" >/dev/null 2>&1
+}
+
+build_common_ssh_args() {
+  SSH_ARGS=(
+    "ssh"
+    "-p" "$SSH_PORT"
+    "-o" "ExitOnForwardFailure=yes"
+    "-o" "ServerAliveInterval=${SERVER_ALIVE_INTERVAL}"
+    "-o" "ServerAliveCountMax=${SERVER_ALIVE_COUNT_MAX}"
+  )
+  if [ -n "$IDENTITY_FILE" ]; then
+    SSH_ARGS+=("-i" "$IDENTITY_FILE")
+  fi
+  if [ -n "$JUMP_HOST" ]; then
+    SSH_ARGS+=("-J" "$JUMP_HOST")
+  fi
+  if [ -n "$STRICT_HOST_KEY_CHECKING" ]; then
+    SSH_ARGS+=("-o" "StrictHostKeyChecking=${STRICT_HOST_KEY_CHECKING}")
+  fi
+  if [ -n "$LOG_FILE" ]; then
+    SSH_ARGS+=("-E" "$LOG_FILE")
+  fi
+  if [ "$VERBOSE" -eq 1 ]; then
+    SSH_ARGS+=("-v")
+  fi
+}
+
+run_tunnel() {
+  local mode="$1"
+  local forward_arg
+  local listen
+  local target
+  local socket
+  local flow
+
+  require_command ssh
+  [ -n "$SSH_DEST" ] || fatal "Missing --ssh"
+  [ -n "$LISTEN_RAW" ] || fatal "Missing --listen"
+  [ -n "$TARGET_RAW" ] || fatal "Missing --target"
+  validate_port "$SSH_PORT"
+  parse_listen "$LISTEN_RAW"
+  parse_target "$TARGET_RAW"
+
+  listen="${LISTEN_BIND}:${LISTEN_PORT}"
+  target="${TARGET_HOST}:${TARGET_PORT}"
+  case "$mode" in
+    local)
+      forward_arg="${LISTEN_BIND}:${LISTEN_PORT}:${TARGET_HOST}:${TARGET_PORT}"
+      flow="client -> this machine ${listen} -> ${SSH_DEST} -> ${target}"
+      ;;
+    remote)
+      forward_arg="${LISTEN_BIND}:${LISTEN_PORT}:${TARGET_HOST}:${TARGET_PORT}"
+      flow="client -> ${SSH_DEST} ${listen} -> this machine -> ${target}"
+      case "$LISTEN_BIND" in
+        "0.0.0.0" | "::" | "*")
+          log_warn "Remote bind ${LISTEN_BIND} may require GatewayPorts clientspecified on the SSH server"
+          ;;
+      esac
+      ;;
+    *)
+      fatal "Unknown tunnel mode: ${mode}"
+      ;;
+  esac
+
+  build_common_ssh_args
+  if [ "$BACKGROUND" -eq 1 ]; then
+    [ -n "$NAME" ] || fatal "--name is required with --background"
+    validate_name "$NAME"
+    mkdir -p "$TUNNEL_DIR"
+    chmod 0700 "$TUNNEL_DIR"
+    if [ -z "$LOG_FILE" ]; then
+      LOG_FILE="$(log_path "$NAME")"
+      build_common_ssh_args
+    fi
+    socket="$(control_path "$NAME")"
+    if [ -S "$socket" ]; then
+      fatal "Tunnel control socket already exists: ${socket}"
+    fi
+    SSH_ARGS+=("-M" "-S" "$socket" "-fN")
+  else
+    SSH_ARGS+=("-N")
+  fi
+
+  if [ "$mode" = "local" ]; then
+    SSH_ARGS+=("-L" "$forward_arg")
+  else
+    SSH_ARGS+=("-R" "$forward_arg")
+  fi
+  SSH_ARGS+=("$SSH_DEST")
+
+  if [ "$DRY_RUN" -eq 1 ]; then
+    shell_quote_command "${SSH_ARGS[@]}"
+    return 0
+  fi
+
+  log_info "Starting ${mode} tunnel: ${listen} -> ${target} via ${SSH_DEST}"
+  log_info "Flow: ${flow}"
+  "${SSH_ARGS[@]}"
+  if [ "$BACKGROUND" -eq 1 ]; then
+    write_metadata "$NAME" "$mode" "$SSH_DEST" "$SSH_PORT" "$listen" "$target" "$LOG_FILE"
+    log_info "Tunnel started: ${NAME}"
+    log_info "Tunnel log file: ${LOG_FILE}"
+  fi
+}
+
+parse_tunnel_options() {
+  local mode="$1"
+
+  SSH_DEST=""
+  SSH_PORT="$DEFAULT_SSH_PORT"
+  LISTEN_RAW=""
+  TARGET_RAW=""
+  NAME=""
+  BACKGROUND=0
+  DRY_RUN=0
+  VERBOSE=0
+  IDENTITY_FILE=""
+  JUMP_HOST=""
+  STRICT_HOST_KEY_CHECKING=""
+  LOG_FILE=""
+  SERVER_ALIVE_INTERVAL="$DEFAULT_SERVER_ALIVE_INTERVAL"
+  SERVER_ALIVE_COUNT_MAX="$DEFAULT_SERVER_ALIVE_COUNT_MAX"
+
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --ssh)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --ssh"
+        SSH_DEST="$1"
+        ;;
+      --ssh-port)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --ssh-port"
+        SSH_PORT="$1"
+        ;;
+      --listen)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --listen"
+        LISTEN_RAW="$1"
+        ;;
+      --target)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --target"
+        TARGET_RAW="$1"
+        ;;
+      --name)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --name"
+        NAME="$1"
+        ;;
+      --background)
+        BACKGROUND=1
+        ;;
+      --identity-file)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --identity-file"
+        IDENTITY_FILE="$1"
+        ;;
+      --jump)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --jump"
+        JUMP_HOST="$1"
+        ;;
+      --strict-host-key-checking)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --strict-host-key-checking"
+        STRICT_HOST_KEY_CHECKING="$1"
+        ;;
+      --log-file)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --log-file"
+        LOG_FILE="$1"
+        ;;
+      --server-alive-interval)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --server-alive-interval"
+        SERVER_ALIVE_INTERVAL="$1"
+        ;;
+      --server-alive-count-max)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --server-alive-count-max"
+        SERVER_ALIVE_COUNT_MAX="$1"
+        ;;
+      --verbose)
+        VERBOSE=1
+        ;;
+      --dry-run)
+        DRY_RUN=1
+        ;;
+      -h | --help)
+        usage
+        return 0
+        ;;
+      *)
+        fatal "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  validate_port "$SERVER_ALIVE_INTERVAL"
+  validate_port "$SERVER_ALIVE_COUNT_MAX"
+  run_tunnel "$mode"
+}
+
+cmd_status() {
+  local name="${1:-}"
+  local mode
+  local listen
+  local target
+  local ssh_dest
+  local started_at
+  local log_file
+
+  [ -n "$name" ] || fatal "Usage: sshTunnel status <name>"
+  validate_name "$name"
+  if ! metadata_exists "$name"; then
+    fatal "Tunnel metadata not found: ${name}"
+  fi
+
+  mode="$(read_metadata_value "$name" "mode" || true)"
+  listen="$(read_metadata_value "$name" "listen" || true)"
+  target="$(read_metadata_value "$name" "target" || true)"
+  ssh_dest="$(read_metadata_value "$name" "ssh_dest" || true)"
+  started_at="$(read_metadata_value "$name" "started_at" || true)"
+  log_file="$(read_metadata_value "$name" "log_file" || true)"
+
+  if tunnel_is_running "$name"; then
+    printf 'status=running\n'
+  else
+    printf 'status=stale\n'
+  fi
+  printf 'name=%s\n' "$name"
+  printf 'mode=%s\n' "$mode"
+  printf 'listen=%s\n' "$listen"
+  printf 'target=%s\n' "$target"
+  printf 'ssh_dest=%s\n' "$ssh_dest"
+  printf 'started_at=%s\n' "$started_at"
+  printf 'log_file=%s\n' "$log_file"
+}
+
+cmd_stop() {
+  local name="${1:-}"
+  local socket
+  local ssh_dest
+  local ssh_port
+
+  [ -n "$name" ] || fatal "Usage: sshTunnel stop <name>"
+  validate_name "$name"
+  socket="$(control_path "$name")"
+  ssh_dest="$(read_metadata_value "$name" "ssh_dest" || true)"
+  ssh_port="$(read_metadata_value "$name" "ssh_port" || true)"
+  if [ -z "$ssh_dest" ] || [ -z "$ssh_port" ]; then
+    fatal "Tunnel metadata not found: ${name}"
+  fi
+  ssh -S "$socket" -p "$ssh_port" -O exit "$ssh_dest" >/dev/null 2>&1 || fatal "Failed to stop tunnel: ${name}"
+  rm -f -- "$socket" "$(metadata_path "$name")"
+  log_info "Tunnel stopped: ${name}"
+}
+
+cmd_list() {
+  local file
+  local name
+  local mode
+  local listen
+  local target
+  local ssh_dest
+  local status
+
+  if [ ! -d "$TUNNEL_DIR" ]; then
+    return 0
+  fi
+  printf 'NAME\tSTATUS\tMODE\tFORWARD\tSSH\n'
+  for file in "$TUNNEL_DIR"/*.env; do
+    [ -e "$file" ] || continue
+    name="$(basename "$file" .env)"
+    mode="$(read_metadata_value "$name" "mode" || true)"
+    listen="$(read_metadata_value "$name" "listen" || true)"
+    target="$(read_metadata_value "$name" "target" || true)"
+    ssh_dest="$(read_metadata_value "$name" "ssh_dest" || true)"
+    if tunnel_is_running "$name"; then
+      status="running"
+    else
+      status="stale"
+    fi
+    printf '%s\t%s\t%s\t%s -> %s\t%s\n' "$name" "$status" "$mode" "$listen" "$target" "$ssh_dest"
+  done
+}
+
+cmd_clean() {
+  local file
+  local name
+  local socket
+  local removed=0
+
+  if [ ! -d "$TUNNEL_DIR" ]; then
+    return 0
+  fi
+  for file in "$TUNNEL_DIR"/*.env; do
+    [ -e "$file" ] || continue
+    name="$(basename "$file" .env)"
+    if tunnel_is_running "$name"; then
+      continue
+    fi
+    socket="$(control_path "$name")"
+    rm -f -- "$file" "$socket"
+    log_info "Removed stale tunnel metadata: ${name}"
+    removed=$((removed + 1))
+  done
+  log_info "Removed stale tunnel entries: ${removed}"
+}
+
+main() {
+  local command="${1:-help}"
+
+  if [ "$#" -gt 0 ]; then
+    shift
+  fi
+
+  case "$command" in
+    local | remote)
+      parse_tunnel_options "$command" "$@"
+      ;;
+    status)
+      cmd_status "$@"
+      ;;
+    stop)
+      cmd_stop "$@"
+      ;;
+    list | ls)
+      cmd_list
+      ;;
+    clean)
+      cmd_clean
+      ;;
+    help | -h | --help)
+      usage
+      ;;
+    *)
+      usage >&2
+      fatal "Unknown command: ${command}"
+      ;;
+  esac
+}
+
+main "$@"
