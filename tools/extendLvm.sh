@@ -38,6 +38,26 @@ die() {
     exit 1
 }
 
+print_available_disks() {
+    printf '\nAvailable disks:\n' >&2
+    if ! command -v lsblk >/dev/null 2>&1; then
+        printf '  lsblk is not available.\n' >&2
+        return
+    fi
+
+    lsblk -dnpo NAME,SIZE,TYPE,MODEL 2>/dev/null | awk '$3 == "disk" { print "  " $0 }' >&2
+}
+
+print_available_lvs() {
+    printf '\nAvailable logical volumes:\n' >&2
+    if ! command -v lvs >/dev/null 2>&1; then
+        printf '  lvs is not available.\n' >&2
+        return
+    fi
+
+    lvs --noheadings -o lv_path,vg_name,lv_size 2>/dev/null | awk 'NF { print "  " $0 }' >&2
+}
+
 quote_cmd() {
     local arg
     printf '+'
@@ -118,7 +138,20 @@ parse_add_args() {
         esac
     done
 
-    [ "$#" -eq 2 ] || die "Usage: ${SCRIPT_NAME} add [options] /dev/DISK /dev/VG/LV"
+    if [ "$#" -lt 1 ]; then
+        usage >&2
+        print_available_disks
+        die "Missing /dev/DISK."
+    fi
+    if [ "$#" -lt 2 ]; then
+        usage >&2
+        print_available_lvs
+        die "Missing /dev/VG/LV."
+    fi
+    if [ "$#" -gt 2 ]; then
+        usage_error "Too many arguments."
+    fi
+
     DISK="$1"
     LV_PATH="$2"
 
@@ -158,9 +191,14 @@ predict_partition_path() {
 resolve_lv_vg() {
     local vg
     vg="$(lvs --noheadings -o vg_name "${LV_PATH}" 2>/dev/null | awk 'NF { print $1; exit }')"
-    [ -n "${vg}" ] || die "Cannot find LV: ${LV_PATH}"
+    if [ -z "${vg}" ]; then
+        usage >&2
+        print_available_lvs
+        die "Cannot find LV: ${LV_PATH}"
+    fi
 
     if [ -n "${VG_NAME}" ] && [ "${VG_NAME}" != "${vg}" ]; then
+        print_available_lvs
         die "LV ${LV_PATH} belongs to VG ${vg}, not ${VG_NAME}."
     fi
 
@@ -192,7 +230,11 @@ validate_disk() {
     local partition
     local existing_partitions=()
 
-    [ -b "${DISK}" ] || die "Disk is not a block device: ${DISK}"
+    if [ ! -b "${DISK}" ]; then
+        usage >&2
+        print_available_disks
+        die "Disk is not a block device: ${DISK}"
+    fi
 
     if has_mountpoint "${DISK}"; then
         die "Disk or its partitions are mounted: ${DISK}"

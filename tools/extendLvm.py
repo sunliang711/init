@@ -17,6 +17,21 @@ from typing import Optional, Sequence
 
 SUPPORTED_FS_TYPES = {"auto", "ext2", "ext3", "ext4", "xfs"}
 RESIZABLE_EXT_TYPES = {"ext2", "ext3", "ext4"}
+USAGE_TEXT = """Usage:
+  extendLvm.py add [options] /dev/DISK /dev/VG/LV
+
+Options:
+  --vg VG_NAME             Require the target LV to belong to this VG.
+  --fs-type TYPE           Filesystem type: auto, ext2, ext3, ext4, xfs. Default: auto.
+  --dry-run                Print the execution plan without changing disks.
+  --yes                    Execute without interactive confirmation.
+  --force                  Allow overwriting a disk that already has partitions.
+  -h, --help               Show this help.
+
+Examples:
+  extendLvm.py add --dry-run /dev/sdb /dev/vg0/root
+  extendLvm.py add --yes --fs-type xfs /dev/nvme1n1 /dev/vg0/data
+"""
 
 
 @dataclass(frozen=True)
@@ -70,6 +85,69 @@ def log(message: str) -> None:
 def die(message: str) -> None:
     sys.stderr.write(f"ERROR: {message}\n")
     raise SystemExit(1)
+
+
+def print_add_usage() -> None:
+    sys.stderr.write(USAGE_TEXT)
+
+
+def capture_optional(args: Sequence[str]) -> str:
+    if shutil.which(args[0]) is None:
+        return ""
+    completed = subprocess.run(
+        args,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout
+
+
+def print_available_disks() -> None:
+    sys.stderr.write("\nAvailable disks:\n")
+    if shutil.which("lsblk") is None:
+        sys.stderr.write("  lsblk is not available.\n")
+        return
+
+    output = capture_optional(["lsblk", "-dnpo", "NAME,SIZE,TYPE,MODEL"])
+    found = False
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and fields[2] == "disk":
+            sys.stderr.write(f"  {line}\n")
+            found = True
+    if not found:
+        sys.stderr.write("  No disks found.\n")
+
+
+def print_available_lvs() -> None:
+    sys.stderr.write("\nAvailable logical volumes:\n")
+    if shutil.which("lvs") is None:
+        sys.stderr.write("  lvs is not available.\n")
+        return
+
+    output = capture_optional(["lvs", "--noheadings", "-o", "lv_path,vg_name,lv_size"])
+    found = False
+    for line in output.splitlines():
+        if line.strip():
+            sys.stderr.write(f"  {line}\n")
+            found = True
+    if not found:
+        sys.stderr.write("  No logical volumes found.\n")
+
+
+def require_add_arguments(args: argparse.Namespace) -> None:
+    if not args.disk:
+        print_add_usage()
+        print_available_disks()
+        die("Missing /dev/DISK.")
+    if not args.lv_path:
+        print_add_usage()
+        print_available_lvs()
+        die("Missing /dev/VG/LV.")
 
 
 def log_command(args: Sequence[str]) -> None:
@@ -131,9 +209,12 @@ def resolve_lv_vg(runner: Runner, lv_path: str, expected_vg: str) -> str:
     output = runner.capture(["lvs", "--noheadings", "-o", "vg_name", lv_path], allow_failure=True)
     vg_name = first_word(output)
     if not vg_name:
+        print_add_usage()
+        print_available_lvs()
         die(f"Cannot find LV: {lv_path}")
 
     if expected_vg and expected_vg != vg_name:
+        print_available_lvs()
         die(f"LV {lv_path} belongs to VG {vg_name}, not {expected_vg}.")
 
     return vg_name
@@ -181,6 +262,8 @@ def require_resize_command(fs_type: str) -> None:
 
 def validate_disk(runner: Runner, disk: str, force: bool) -> None:
     if not is_block_device(disk):
+        print_add_usage()
+        print_available_disks()
         die(f"Disk is not a block device: {disk}")
 
     if has_mountpoint(runner, disk):
@@ -281,6 +364,7 @@ def resize_filesystem(runner: Runner, config: AddConfig) -> None:
 
 
 def add_command(args: argparse.Namespace) -> int:
+    require_add_arguments(args)
     require_linux()
     require_root_for_write(args.dry_run)
     require_commands(
@@ -317,18 +401,17 @@ def add_command(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Safely extend an LVM logical volume with a new disk.")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("command", nargs="?")
 
-    add_parser = subparsers.add_parser("add", help="Add a new disk to the LV's VG and grow the LV.")
-    add_parser.add_argument("disk", help="New disk to partition, for example /dev/sdb.")
-    add_parser.add_argument("lv_path", help="Target logical volume, for example /dev/vg0/root.")
-    add_parser.add_argument("--vg", dest="vg_name", default="", help="Require the target LV to belong to this VG.")
-    add_parser.add_argument("--fs-type", choices=sorted(SUPPORTED_FS_TYPES), default="auto", help="Filesystem type. Default: auto.")
-    add_parser.add_argument("--dry-run", action="store_true", help="Print the execution plan without changing disks.")
-    add_parser.add_argument("--yes", action="store_true", help="Execute without interactive confirmation.")
-    add_parser.add_argument("--force", action="store_true", help="Allow overwriting a disk that already has partitions.")
-    add_parser.set_defaults(func=add_command)
+    parser.add_argument("disk", nargs="?")
+    parser.add_argument("lv_path", nargs="?")
+    parser.add_argument("--vg", dest="vg_name", default="")
+    parser.add_argument("--fs-type", choices=sorted(SUPPORTED_FS_TYPES), default="auto")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--yes", action="store_true")
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("-h", "--help", action="store_true")
 
     return parser
 
@@ -336,7 +419,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+
+    if args.help or args.command in (None, "help"):
+        sys.stdout.write(USAGE_TEXT)
+        return 0
+
+    if args.command != "add":
+        print_add_usage()
+        die(f"Unknown command: {args.command}")
+
+    return add_command(args)
 
 
 if __name__ == "__main__":
