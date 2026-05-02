@@ -1710,12 +1710,23 @@ def cmd_tutor(args: argparse.Namespace) -> int:
   {NOMAD_MANAGER_CMD} tutor web-service-job
 """,
         "vault-secret-job": f"""Run a Vault-backed job workflow:
+  export VAULT_ADDR=http://127.0.0.1:8200
+  export VAULT_TOKEN=<root-token-or-admin-token>
+  vault secrets enable -path=kv kv-v2
+  vault kv put kv/app/config value='my-secret-value' username='app-user' password='app-password' api_key='app-api-key'
+  vault kv get kv/app/config
   {NOMAD_MANAGER_CMD} vault-jwt plan --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://127.0.0.1:4646 --secret-path kv/data/app/*
   {NOMAD_MANAGER_CMD} vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://127.0.0.1:4646 --secret-path kv/data/app/*
   {NOMAD_MANAGER_CMD} vault-jwt job-example --profile default --job web --secret kv/data/app/config --out jobs/web.nomad.hcl
   nomad-job validate jobs/web.nomad.hcl
   nomad-job plan jobs/web.nomad.hcl
   nomad-job apply jobs/web.nomad.hcl
+
+Notes:
+  vault kv put uses the KV CLI path kv/app/config.
+  Nomad templates and Vault policies use the KV v2 API path kv/data/app/config.
+  If kv/ is already enabled, skip the vault secrets enable command.
+  Avoid putting real secret values directly in shared shell history.
 """,
         "host-volume-job": f"""Run a job with a managed host volume:
   {NOMAD_MANAGER_CMD} host-volume add data --create
