@@ -117,18 +117,269 @@ _run_root_command() {
     fi
 }
 
-_ensure_docker_daemon_config() {
-    local dockerConfigFile="/etc/docker/daemon.json"
+_docker_run_root() {
+    local dryRun="$1"
+    shift
 
-    if [ ! -e "${dockerConfigFile}" ]; then
-        _run_root_command install -d -m 0755 /etc/docker || return 1
-        printf '%s\n' "{}" | _run_root_command tee "${dockerConfigFile}" >/dev/null || return 1
+    if [ "${dryRun}" -eq 1 ]; then
+        _infoln "DRY-RUN: sudo $*"
+        return 0
+    fi
+
+    _run_root_command "$@"
+}
+
+_docker_write_root_file() {
+    local dryRun="$1"
+    local path="$2"
+    local content="$3"
+    local tmpFile=""
+    local rc=0
+
+    if [ "${dryRun}" -eq 1 ]; then
+        _infoln "DRY-RUN: write ${path}"
+        printf '%s\n' "${content}"
+        return 0
+    fi
+
+    tmpFile="$(mktemp)" || return 1
+    printf '%s\n' "${content}" >"${tmpFile}" || {
+        rm -f "${tmpFile}"
+        return 1
+    }
+    _run_root_command install -m 0644 "${tmpFile}" "${path}"
+    rc=$?
+    rm -f "${tmpFile}"
+    return "${rc}"
+}
+
+_docker_handle_conflicts() {
+    local dryRun="$1"
+    local replaceConflicts="$2"
+    local removeCommand="$3"
+    shift 3
+    local conflicts=("$@")
+
+    if [ "${#conflicts[@]}" -eq 0 ]; then
+        return 0
+    fi
+
+    if [ "${replaceConflicts}" -ne 1 ]; then
+        _errorln "conflicting Docker packages installed: ${conflicts[*]}"
+        _errorln "re-run with --replace-conflicts to remove them before installing Docker Engine"
+        return 1
+    fi
+
+    case "${removeCommand}" in
+    apt-get)
+        _docker_run_root "${dryRun}" apt-get remove -y "${conflicts[@]}"
+        ;;
+    dnf)
+        _docker_run_root "${dryRun}" dnf remove -y "${conflicts[@]}"
+        ;;
+    yum)
+        _docker_run_root "${dryRun}" yum remove -y "${conflicts[@]}"
+        ;;
+    *)
+        _errorln "unsupported package remove command: ${removeCommand}"
+        return 1
+        ;;
+    esac
+}
+
+_docker_handle_debian_conflicts() {
+    local dryRun="$1"
+    local replaceConflicts="$2"
+    local pkg=""
+    local conflicts=()
+
+    for pkg in docker.io docker-compose docker-doc podman-docker containerd runc; do
+        if dpkg -s "${pkg}" >/dev/null 2>&1; then
+            conflicts+=("${pkg}")
+        fi
+    done
+
+    _docker_handle_conflicts "${dryRun}" "${replaceConflicts}" apt-get "${conflicts[@]}"
+}
+
+_docker_handle_rpm_conflicts() {
+    local dryRun="$1"
+    local replaceConflicts="$2"
+    local removeCommand="$3"
+    local pkg=""
+    local conflicts=()
+
+    for pkg in docker docker-client docker-client-latest docker-common docker-latest docker-latest-logrotate docker-logrotate docker-engine podman runc; do
+        if rpm -q "${pkg}" >/dev/null 2>&1; then
+            conflicts+=("${pkg}")
+        fi
+    done
+
+    _docker_handle_conflicts "${dryRun}" "${replaceConflicts}" "${removeCommand}" "${conflicts[@]}"
+}
+
+_docker_load_os_release() {
+    if [ ! -r /etc/os-release ]; then
+        _errorln "failed to read /etc/os-release"
+        return 1
+    fi
+
+    # shellcheck disable=SC1091
+    . /etc/os-release
+
+    DOCKER_OS_ID="${ID:-}"
+    DOCKER_OS_VERSION_CODENAME="${VERSION_CODENAME:-}"
+    DOCKER_OS_UBUNTU_CODENAME="${UBUNTU_CODENAME:-}"
+}
+
+_docker_install_debian_like() {
+    local dryRun="$1"
+    local replaceConflicts="$2"
+    local repoName="$3"
+    local suite=""
+    local arch=""
+    local sourceContent=""
+
+    _require_command apt-get
+    _require_command dpkg
+
+    _docker_handle_debian_conflicts "${dryRun}" "${replaceConflicts}" || return 1
+
+    if [ "${repoName}" = "ubuntu" ]; then
+        suite="${DOCKER_OS_UBUNTU_CODENAME:-${DOCKER_OS_VERSION_CODENAME}}"
+    else
+        suite="${DOCKER_OS_VERSION_CODENAME}"
+    fi
+    if [ -z "${suite}" ]; then
+        _errorln "failed to detect Docker apt repository suite"
+        return 1
+    fi
+
+    if [ "${dryRun}" -eq 1 ]; then
+        arch="\$(dpkg --print-architecture)"
+    else
+        arch="$(dpkg --print-architecture)" || return 1
+    fi
+
+    sourceContent="$(printf '%s\n' \
+        "Types: deb" \
+        "URIs: https://download.docker.com/linux/${repoName}" \
+        "Suites: ${suite}" \
+        "Components: stable" \
+        "Architectures: ${arch}" \
+        "Signed-By: /etc/apt/keyrings/docker.asc")"
+
+    _docker_run_root "${dryRun}" apt-get update || return 1
+    _docker_run_root "${dryRun}" apt-get install -y ca-certificates curl || return 1
+    _docker_run_root "${dryRun}" install -m 0755 -d /etc/apt/keyrings || return 1
+    _docker_run_root "${dryRun}" curl -fsSL "https://download.docker.com/linux/${repoName}/gpg" -o /etc/apt/keyrings/docker.asc || return 1
+    _docker_run_root "${dryRun}" chmod a+r /etc/apt/keyrings/docker.asc || return 1
+    _docker_run_root "${dryRun}" install -m 0755 -d /etc/apt/sources.list.d || return 1
+    _docker_write_root_file "${dryRun}" /etc/apt/sources.list.d/docker.sources "${sourceContent}" || return 1
+    _docker_run_root "${dryRun}" apt-get update || return 1
+    _docker_run_root "${dryRun}" apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+}
+
+_docker_install_rpm_like() {
+    local dryRun="$1"
+    local replaceConflicts="$2"
+    local repoName="$3"
+    local pkgManager=""
+    local configManager="config-manager"
+
+    if command -v dnf >/dev/null 2>&1; then
+        pkgManager="dnf"
+    elif command -v yum >/dev/null 2>&1; then
+        pkgManager="yum"
+        configManager="yum-config-manager"
+    else
+        _errorln "dnf or yum is required"
+        return 1
+    fi
+
+    _docker_handle_rpm_conflicts "${dryRun}" "${replaceConflicts}" "${pkgManager}" || return 1
+
+    if [ "${pkgManager}" = "dnf" ]; then
+        _docker_run_root "${dryRun}" dnf -y install dnf-plugins-core || return 1
+        _docker_run_root "${dryRun}" dnf "${configManager}" --add-repo "https://download.docker.com/linux/${repoName}/docker-ce.repo" || return 1
+        _docker_run_root "${dryRun}" dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+    else
+        _docker_run_root "${dryRun}" yum install -y yum-utils || return 1
+        _docker_run_root "${dryRun}" "${configManager}" --add-repo "https://download.docker.com/linux/${repoName}/docker-ce.repo" || return 1
+        _docker_run_root "${dryRun}" yum install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     fi
 }
 
-_enable_docker_service() {
+_docker_install_arch() {
+    local dryRun="$1"
+
+    _require_command pacman
+    _docker_run_root "${dryRun}" pacman -Syu --noconfirm --needed docker docker-buildx docker-compose
+}
+
+_install_docker_packages() {
+    local dryRun="$1"
+    local replaceConflicts="$2"
+
+    _docker_load_os_release || return 1
+
+    case "${DOCKER_OS_ID}" in
+    ubuntu)
+        _docker_install_debian_like "${dryRun}" "${replaceConflicts}" ubuntu
+        ;;
+    debian)
+        _docker_install_debian_like "${dryRun}" "${replaceConflicts}" debian
+        ;;
+    rhel)
+        _docker_install_rpm_like "${dryRun}" "${replaceConflicts}" rhel
+        ;;
+    fedora)
+        _docker_install_rpm_like "${dryRun}" "${replaceConflicts}" fedora
+        ;;
+    centos | rocky | almalinux)
+        _docker_install_rpm_like "${dryRun}" "${replaceConflicts}" centos
+        ;;
+    arch)
+        _docker_install_arch "${dryRun}"
+        ;;
+    *)
+        _errorln "unsupported Linux distribution for Docker repository install: ${DOCKER_OS_ID:-unknown}"
+        return 1
+        ;;
+    esac
+}
+
+_ensure_docker_daemon_config() {
+    local dryRun="${1:-0}"
+    local dockerConfigFile="/etc/docker/daemon.json"
+
+    if [ -e "${dockerConfigFile}" ]; then
+        if [ ! -f "${dockerConfigFile}" ]; then
+            _errorln "${dockerConfigFile} exists but is not a regular file"
+            return 1
+        fi
+        if command -v python3 >/dev/null 2>&1; then
+            python3 -m json.tool "${dockerConfigFile}" >/dev/null || {
+                _errorln "${dockerConfigFile} is not valid JSON"
+                return 1
+            }
+        fi
+        return 0
+    fi
+
+    _docker_run_root "${dryRun}" install -d -m 0755 /etc/docker || return 1
+    _docker_write_root_file "${dryRun}" "${dockerConfigFile}" "{}" || return 1
+}
+
+_enable_docker_services() {
+    local dryRun="${1:-0}"
+
     if command -v systemctl >/dev/null 2>&1; then
-        _run_root_command systemctl enable --now docker || {
+        _docker_run_root "${dryRun}" systemctl enable --now containerd.service || {
+            _errorln "failed to enable or start containerd service"
+            return 1
+        }
+        _docker_run_root "${dryRun}" systemctl enable --now docker.service || {
             _errorln "failed to enable or start docker service"
             return 1
         }
@@ -137,26 +388,46 @@ _enable_docker_service() {
     fi
 }
 
+_verify_docker_install() {
+    local dryRun="$1"
+
+    if [ "${dryRun}" -eq 1 ]; then
+        return 0
+    fi
+
+    if ! command -v docker >/dev/null 2>&1; then
+        _errorln "docker command not found after installation"
+        return 1
+    fi
+
+    _run_root_command docker version >/dev/null 2>&1 || {
+        _errorln "Docker installed, but docker version verification failed"
+        return 1
+    }
+}
+
 install() {
     local dryRun=0
-    local dockerInstallScript=""
+    local replaceConflicts=0
 
-    case "${1:-}" in
-    "")
-        ;;
-    --dry-run)
-        dryRun=1
-        ;;
-    *)
-        _errorln "usage: install [--dry-run]"
-        return 2
-        ;;
-    esac
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --dry-run)
+            dryRun=1
+            ;;
+        --replace-conflicts)
+            replaceConflicts=1
+            ;;
+        *)
+            _errorln "usage: install [--dry-run] [--replace-conflicts]"
+            return 2
+            ;;
+        esac
+        shift
+    done
 
     _require_linux
-    _require_command curl
     _require_command mktemp
-    _require_command sh
 
     if [ "$(id -u)" -ne 0 ]; then
         _require_command sudo
@@ -164,27 +435,18 @@ install() {
 
     if [ "${dryRun}" -eq 0 ] && command -v docker >/dev/null 2>&1; then
         _infoln "Docker already installed."
+        _ensure_docker_daemon_config "${dryRun}" || return 1
+        _enable_docker_services "${dryRun}" || return 1
+        _verify_docker_install "${dryRun}" || return 1
         return 0
     fi
 
-    dockerInstallScript="$(mktemp -t get-docker.XXXXXX.sh)" || return 1
-    trap 'rm -f "${dockerInstallScript}"' RETURN
+    _install_docker_packages "${dryRun}" "${replaceConflicts}" || return 1
+    _ensure_docker_daemon_config "${dryRun}" || return 1
+    _enable_docker_services "${dryRun}" || return 1
+    _verify_docker_install "${dryRun}" || return 1
 
-    _infoln "Downloading docker install script..."
-    curl -fsSL https://get.docker.com -o "${dockerInstallScript}" || return 1
-
-    if [ "${dryRun}" -eq 1 ]; then
-        _run_root_command sh "${dockerInstallScript}" --dry-run
-        return $?
-    fi
-
-    _run_root_command sh "${dockerInstallScript}" || return 1
-    _ensure_docker_daemon_config || return 1
-    _enable_docker_service || return 1
-
-    if command -v docker >/dev/null 2>&1; then
-        docker version >/dev/null 2>&1 || _infoln "Docker installed, but current user may need sudo or docker group permission."
-    fi
+    _infoln "Docker installed. Non-root Docker access is not enabled by default because the docker group grants root-level privileges."
 }
 
 # write your code above
