@@ -107,20 +107,79 @@ def capture_optional(args: Sequence[str]) -> str:
 
 
 def print_available_disks() -> None:
-    sys.stderr.write("\nAvailable disks:\n")
+    sys.stderr.write("\nAvailable unused disks:\n")
     if shutil.which("lsblk") is None:
         sys.stderr.write("  lsblk is not available.\n")
         return
 
-    output = capture_optional(["lsblk", "-dnpo", "NAME,SIZE,TYPE,MODEL"])
-    found = False
+    output = capture_optional(["lsblk", "-dnrpo", "NAME,SIZE,RO,RM,TYPE,MODEL"])
+    available: list[str] = []
+    unavailable: list[str] = []
     for line in output.splitlines():
-        fields = line.split()
-        if len(fields) >= 3 and fields[2] == "disk":
-            sys.stderr.write(f"  {line}\n")
-            found = True
-    if not found:
-        sys.stderr.write("  No disks found.\n")
+        fields = line.split(maxsplit=5)
+        if len(fields) < 5 or fields[4] != "disk":
+            continue
+
+        name = fields[0]
+        size = fields[1]
+        ro = fields[2]
+        rm = fields[3]
+        model = fields[5] if len(fields) > 5 else "unknown"
+        reasons = disk_unavailable_reasons(name, ro, rm)
+        if reasons:
+            unavailable.append(f"  {name}  {size}  {model}  ({', '.join(reasons)})")
+        else:
+            available.append(f"  {name}  {size}  {model}")
+
+    if available:
+        for line in available:
+            sys.stderr.write(f"{line}\n")
+    else:
+        sys.stderr.write("  No unused disks found.\n")
+
+    if unavailable:
+        sys.stderr.write("\nUnavailable disks:\n")
+        for line in unavailable:
+            sys.stderr.write(f"{line}\n")
+
+
+def list_disk_children_optional(disk: str) -> list[str]:
+    output = capture_optional(["lsblk", "-nrpo", "NAME", disk])
+    names = [line.strip() for line in output.splitlines() if line.strip()]
+    return names[1:]
+
+
+def has_mountpoint_optional(path: str) -> bool:
+    output = capture_optional(["lsblk", "-nrpo", "MOUNTPOINT", path])
+    return any(line.strip() for line in output.splitlines())
+
+
+def is_lvm_pv_optional(path: str) -> bool:
+    output = capture_optional(["pvs", "--noheadings", path])
+    return bool(output.strip())
+
+
+def disk_unavailable_reasons(disk: str, ro: str, rm: str) -> list[str]:
+    reasons: list[str] = []
+
+    if ro == "1":
+        reasons.append("read-only")
+    if rm == "1":
+        reasons.append("removable")
+    if has_mountpoint_optional(disk):
+        reasons.append("mounted")
+    if is_lvm_pv_optional(disk):
+        reasons.append("lvm-pv")
+
+    children = list_disk_children_optional(disk)
+    if children:
+        reasons.append("has-partitions")
+        if any(has_mountpoint_optional(child) for child in children):
+            reasons.append("mounted-child")
+        if any(is_lvm_pv_optional(child) for child in children):
+            reasons.append("lvm-pv-child")
+
+    return reasons
 
 
 def print_available_lvs() -> None:
@@ -406,6 +465,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("disk", nargs="?")
     parser.add_argument("lv_path", nargs="?")
+    parser.add_argument("extra", nargs="*")
     parser.add_argument("--vg", dest="vg_name", default="")
     parser.add_argument("--fs-type", choices=sorted(SUPPORTED_FS_TYPES), default="auto")
     parser.add_argument("--dry-run", action="store_true")
@@ -427,6 +487,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if args.command != "add":
         print_add_usage()
         die(f"Unknown command: {args.command}")
+
+    if args.extra:
+        print_add_usage()
+        die("Too many arguments.")
 
     return add_command(args)
 

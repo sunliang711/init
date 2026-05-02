@@ -39,13 +39,42 @@ die() {
 }
 
 print_available_disks() {
-    printf '\nAvailable disks:\n' >&2
+    local available=""
+    local unavailable=""
+    local name=""
+    local size=""
+    local ro=""
+    local rm=""
+    local type=""
+    local model=""
+    local reasons=""
+
+    printf '\nAvailable unused disks:\n' >&2
     if ! command -v lsblk >/dev/null 2>&1; then
         printf '  lsblk is not available.\n' >&2
         return
     fi
 
-    lsblk -dnpo NAME,SIZE,TYPE,MODEL 2>/dev/null | awk '$3 == "disk" { print "  " $0 }' >&2
+    while read -r name size ro rm type model; do
+        [ "${type}" = "disk" ] || continue
+        reasons="$(disk_unavailable_reasons "${name}" "${ro}" "${rm}")"
+        if [ -z "${reasons}" ]; then
+            available="${available}  ${name}  ${size}  ${model:-unknown}"$'\n'
+        else
+            unavailable="${unavailable}  ${name}  ${size}  ${model:-unknown}  (${reasons})"$'\n'
+        fi
+    done < <(lsblk -dnrpo NAME,SIZE,RO,RM,TYPE,MODEL 2>/dev/null)
+
+    if [ -n "${available}" ]; then
+        printf '%s' "${available}" >&2
+    else
+        printf '  No unused disks found.\n' >&2
+    fi
+
+    if [ -n "${unavailable}" ]; then
+        printf '\nUnavailable disks:\n' >&2
+        printf '%s' "${unavailable}" >&2
+    fi
 }
 
 print_available_lvs() {
@@ -149,7 +178,8 @@ parse_add_args() {
         die "Missing /dev/VG/LV."
     fi
     if [ "$#" -gt 2 ]; then
-        usage_error "Too many arguments."
+        usage >&2
+        die "Too many arguments."
     fi
 
     DISK="$1"
@@ -168,12 +198,60 @@ list_child_partitions() {
     lsblk -nrpo NAME "${DISK}" | sed '1d'
 }
 
+list_disk_children() {
+    lsblk -nrpo NAME "$1" | sed '1d'
+}
+
 has_mountpoint() {
     lsblk -nrpo MOUNTPOINT "$1" | awk 'NF { found=1 } END { exit found ? 0 : 1 }'
 }
 
 is_lvm_pv() {
     pvs --noheadings "$1" >/dev/null 2>&1
+}
+
+disk_unavailable_reasons() {
+    local disk="$1"
+    local ro="$2"
+    local rm="$3"
+    local child=""
+    local reasons=()
+    local children=()
+
+    if [ "${ro}" = "1" ]; then
+        reasons+=("read-only")
+    fi
+    if [ "${rm}" = "1" ]; then
+        reasons+=("removable")
+    fi
+    if has_mountpoint "${disk}"; then
+        reasons+=("mounted")
+    fi
+    if is_lvm_pv "${disk}"; then
+        reasons+=("lvm-pv")
+    fi
+
+    mapfile -t children < <(list_disk_children "${disk}")
+    if [ "${#children[@]}" -gt 0 ]; then
+        reasons+=("has-partitions")
+        for child in "${children[@]}"; do
+            if has_mountpoint "${child}"; then
+                reasons+=("mounted-child")
+                break
+            fi
+        done
+        for child in "${children[@]}"; do
+            if is_lvm_pv "${child}"; then
+                reasons+=("lvm-pv-child")
+                break
+            fi
+        done
+    fi
+
+    if [ "${#reasons[@]}" -gt 0 ]; then
+        local IFS=","
+        printf '%s\n' "${reasons[*]}"
+    fi
 }
 
 predict_partition_path() {
