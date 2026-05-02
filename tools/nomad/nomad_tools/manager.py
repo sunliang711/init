@@ -103,6 +103,7 @@ CNI_CLIENT_CONFIG = CONFIG_DIR / "83-cni.hcl"
 CNI_BIN_DIR = Path("/opt/cni/bin")
 CNI_CONFIG_DIR = Path("/opt/cni/config")
 CNI_SYSCTL_CONFIG = Path("/etc/sysctl.d/99-nomad-cni-bridge.conf")
+CNI_MODULES_CONFIG = Path("/etc/modules-load.d/99-nomad-cni.conf")
 DEFAULT_CNI_PLUGIN_VERSION = "v1.6.2"
 VAULT_JWT_PROFILE_DIR = Path(os.environ.get("VAULT_JWT_PROFILE_DIR", str(NOMAD_ROOT_DIR / "data" / "vault-jwt")))
 REDACTED_PATH_LABEL = "<set>"
@@ -629,14 +630,32 @@ def cni_sysctl_content() -> str:
     )
 
 
+def cni_modules_content() -> str:
+    return "\n".join(
+        [
+            MANAGED_MARKER,
+            "bridge",
+            "br_netfilter",
+            "",
+        ]
+    )
+
+
 def apply_cni_sysctl() -> None:
     require_command("modprobe")
     require_command("sysctl")
+    ensure_managed_or_absent(CNI_MODULES_CONFIG)
     ensure_managed_or_absent(CNI_SYSCTL_CONFIG)
     run_root(["modprobe", "bridge"])
+    run_root(["modprobe", "br_netfilter"])
+    run_root(["install", "-d", "-m", "0755", str(CNI_MODULES_CONFIG.parent)])
+    install_text(CNI_MODULES_CONFIG, cni_modules_content(), mode="0644")
     run_root(["install", "-d", "-m", "0755", str(CNI_SYSCTL_CONFIG.parent)])
     install_text(CNI_SYSCTL_CONFIG, cni_sysctl_content(), mode="0644")
-    run_root(["sysctl", "-p", str(CNI_SYSCTL_CONFIG)])
+    result = run_root(["sysctl", "--system"], check=False, capture=True)
+    if result.returncode != 0:
+        log_warn("sysctl --system failed, falling back to sysctl -p for CNI bridge settings")
+        run_root(["sysctl", "-p", str(CNI_SYSCTL_CONFIG)])
 
 
 def write_cni_client_config(*, restart: bool) -> None:
@@ -668,9 +687,11 @@ def cmd_cni_plan(args: argparse.Namespace) -> int:
     print(f"  - Verify:   {archive_name}.sha256")
     print(f"  - Install:  {CNI_BIN_DIR}")
     print(f"  - Ensure:   {CNI_CONFIG_DIR}")
+    print(f"  - Write:    {CNI_MODULES_CONFIG}")
     print(f"  - Write:    {CNI_SYSCTL_CONFIG}")
     print(f"  - Write:    {CNI_CLIENT_CONFIG}")
-    print("  - Reload:   sysctl bridge settings")
+    print("  - Load:     bridge and br_netfilter modules")
+    print("  - Reload:   bridge sysctl settings")
     print("  - Restart:  nomad.service")
     return 0
 
@@ -686,6 +707,10 @@ def cmd_cni_disable(args: argparse.Namespace) -> int:
         ensure_managed_or_absent(CNI_SYSCTL_CONFIG)
         run_root(["rm", "-f", "--", str(CNI_SYSCTL_CONFIG)])
         log_success(f"Config removed: {CNI_SYSCTL_CONFIG}")
+    if CNI_MODULES_CONFIG.exists():
+        ensure_managed_or_absent(CNI_MODULES_CONFIG)
+        run_root(["rm", "-f", "--", str(CNI_MODULES_CONFIG)])
+        log_success(f"Config removed: {CNI_MODULES_CONFIG}")
     if args.remove_plugins:
         safe_remove_path(CNI_BIN_DIR)
         log_success(f"CNI plugins removed: {CNI_BIN_DIR}")
@@ -713,6 +738,7 @@ def cmd_cni_status(_: argparse.Namespace) -> int:
     status = "OK" if CNI_CLIENT_CONFIG.is_file() else "FAIL"
     failures += 0 if status == "OK" else 1
     doctor_check(status, f"Nomad CNI client config: {CNI_CLIENT_CONFIG}")
+    doctor_check("OK" if CNI_MODULES_CONFIG.is_file() else "WARN", f"CNI modules config: {CNI_MODULES_CONFIG}")
     doctor_check("OK" if CNI_SYSCTL_CONFIG.is_file() else "WARN", f"CNI bridge sysctl config: {CNI_SYSCTL_CONFIG}")
     for name in ("bridge-nf-call-arptables", "bridge-nf-call-ip6tables", "bridge-nf-call-iptables"):
         path = Path("/proc/sys/net/bridge") / name
