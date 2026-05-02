@@ -831,18 +831,19 @@ def vault_jwt_apply_command(data: dict[str, Any], *, force: bool = False) -> str
 def cmd_vault_jwt_plan(args: argparse.Namespace) -> int:
     data = prepare_profile(args)
     print(profile_summary(data))
+    failures = vault_jwt_preflight(data)
     print(
         "\nPlan:\n"
-        f"  [1/7] Write Nomad vault config {VAULT_CONFIG}\n"
-        "  [2/7] Validate Nomad config and restart nomad.service\n"
-        f"  [3/7] Enable Vault JWT auth at auth/{data['auth_path']} if missing\n"
-        f"  [4/7] Write Vault JWT config with jwks_url={data['nomad_jwks_url']}\n"
-        f"  [5/7] Write Vault policy {data['policy']}\n"
-        f"  [6/7] Write Vault role {data['role']}\n"
+        f"  [1/7] Enable Vault JWT auth at auth/{data['auth_path']} if missing\n"
+        f"  [2/7] Write Vault JWT config with jwks_url={data['nomad_jwks_url']}\n"
+        f"  [3/7] Write Vault policy {data['policy']}\n"
+        f"  [4/7] Write Vault role {data['role']}\n"
+        f"  [5/7] Write Nomad vault config {VAULT_CONFIG}\n"
+        "  [6/7] Validate Nomad config and restart nomad.service\n"
         f"  [7/7] Save profile {profile_path(data['profile'])}\n\n"
         f"Next:\n  {vault_jwt_apply_command(data, force=args.force)}"
     )
-    return 0
+    return 0 if failures == 0 else 1
 
 
 def write_profile(data: dict[str, Any]) -> None:
@@ -863,12 +864,125 @@ def vault_cmd(data: dict[str, Any], command: list[str], *, capture: bool = False
     return run(["vault", *command], env=vault_env(data), capture=capture, check=check)
 
 
+def vault_status_json_for_jwt(data: dict[str, Any]) -> dict[str, Any] | None:
+    result = vault_cmd(data, ["status", "-format=json"], capture=True, check=False)
+    if result.returncode not in {0, 2}:
+        return None
+    try:
+        parsed = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
 def vault_auth_type(data: dict[str, Any]) -> str:
     result = vault_cmd(data, ["auth", "list", "-format=json"], capture=True, check=False)
     if result.returncode != 0:
         return ""
     parsed = json.loads(result.stdout or "{}")
     return parsed.get(f"{data['auth_path'].rstrip('/')}/", {}).get("type", "")
+
+
+def vault_token_has_capability(data: dict[str, Any], path: str, required: set[str]) -> bool:
+    result = vault_cmd(data, ["token", "capabilities", path], capture=True, check=False)
+    if result.returncode != 0:
+        return False
+    capabilities = set((result.stdout or "").split())
+    return "root" in capabilities or bool(capabilities.intersection(required))
+
+
+def vault_jwt_preflight(data: dict[str, Any]) -> int:
+    failures = 0
+    print("Preflight:")
+    if command_exists("vault"):
+        doctor_check("OK", f"vault CLI found: {shutil.which('vault')}")
+    else:
+        doctor_check("FAIL", "vault CLI not found")
+        failures += 1
+        return failures
+
+    health_url = f"{str(data['vault_addr']).rstrip('/')}/v1/sys/health"
+    code = http_status(health_url)
+    if code in {200, 429, 472, 473, 501, 503}:
+        doctor_check("OK", f"Vault health endpoint reachable: {health_url} ({code})")
+    else:
+        doctor_check("FAIL", f"Vault health endpoint not reachable: {health_url} ({code})")
+        failures += 1
+
+    status = vault_status_json_for_jwt(data)
+    if status is None:
+        doctor_check("FAIL", "vault status failed; check Vault address, TLS and namespace")
+        failures += 1
+    else:
+        if status.get("initialized") is True:
+            doctor_check("OK", "Vault is initialized")
+        else:
+            doctor_check("FAIL", "Vault is not initialized")
+            failures += 1
+        if status.get("sealed") is True:
+            doctor_check("FAIL", "Vault is sealed; run vault-manager unseal --keys-file /opt/vault/init/vault-init.json")
+            failures += 1
+        elif status.get("sealed") is False:
+            doctor_check("OK", "Vault is unsealed")
+        else:
+            doctor_check("FAIL", "Vault seal status is unknown")
+            failures += 1
+
+    auth_type = ""
+    if status is not None and status.get("sealed") is False:
+        auth_list = vault_cmd(data, ["auth", "list", "-format=json"], capture=True, check=False)
+        if auth_list.returncode != 0:
+            doctor_check("FAIL", "Vault token cannot list auth methods; check VAULT_TOKEN permissions")
+            failures += 1
+        else:
+            try:
+                auth_data = json.loads(auth_list.stdout or "{}")
+            except json.JSONDecodeError:
+                auth_data = {}
+            auth_type = auth_data.get(f"{data['auth_path'].rstrip('/')}/", {}).get("type", "")
+            if not auth_type:
+                doctor_check("OK", f"Vault auth path auth/{data['auth_path']} is available")
+            elif auth_type == "jwt":
+                doctor_check("OK", f"Vault auth path auth/{data['auth_path']} already uses jwt")
+            else:
+                doctor_check("FAIL", f"Vault auth path auth/{data['auth_path']} already exists with type {auth_type}")
+                failures += 1
+
+        token_result = vault_cmd(data, ["token", "lookup", "-format=json"], capture=True, check=False)
+        if token_result.returncode == 0:
+            doctor_check("OK", "Vault token lookup succeeded")
+            capability_checks = [
+                (f"sys/auth/{data['auth_path']}", {"create", "update", "sudo"}, "enable Vault auth method"),
+                (f"auth/{data['auth_path']}/config", {"create", "update", "sudo"}, "write Vault JWT auth config"),
+                (f"sys/policies/acl/{data['policy']}", {"create", "update", "sudo"}, "write Vault policy"),
+                (f"auth/{data['auth_path']}/role/{data['role']}", {"create", "update", "sudo"}, "write Vault JWT role"),
+            ]
+            for path, required, label in capability_checks:
+                if vault_token_has_capability(data, path, required):
+                    doctor_check("OK", f"Vault token can {label}: {path}")
+                else:
+                    doctor_check("FAIL", f"Vault token cannot {label}: {path}")
+                    failures += 1
+        else:
+            doctor_check("FAIL", "Vault token lookup failed; set VAULT_TOKEN or use a token with management permissions")
+            failures += 1
+
+    if wait_http(data["nomad_jwks_url"], attempts=1, delay=0):
+        doctor_check("OK", f"Nomad JWKS URL reachable: {data['nomad_jwks_url']}")
+    else:
+        doctor_check("FAIL", f"Nomad JWKS URL not reachable: {data['nomad_jwks_url']}")
+        failures += 1
+
+    policy_file = data.get("policy_file")
+    if policy_file and not Path(policy_file).is_file():
+        doctor_check("FAIL", f"Policy file not found: {policy_file}")
+        failures += 1
+    elif policy_file:
+        doctor_check("OK", f"Policy file readable: {policy_file}")
+    else:
+        doctor_check("OK", "Vault policy will be generated")
+
+    return failures
 
 
 def generate_policy(data: dict[str, Any]) -> str:
@@ -911,25 +1025,10 @@ def generate_role_json(data: dict[str, Any]) -> str:
 
 def cmd_vault_jwt_apply(args: argparse.Namespace) -> int:
     data = prepare_profile(args)
-    require_command("vault")
-    cmd_vault_enable(
-        argparse.Namespace(
-            address=data["vault_addr"],
-            namespace=data.get("vault_namespace", ""),
-            jwt_auth_backend_path=data["auth_path"],
-            aud=data["aud"],
-            ttl=data["ttl"],
-            env=False,
-            file=True,
-            ca_file="",
-            ca_path="",
-            cert_file="",
-            key_file="",
-        )
-    )
-    log_info(f"Waiting for Nomad JWKS URL: {data['nomad_jwks_url']}")
-    if not wait_http(data["nomad_jwks_url"], attempts=30, delay=2):
-        raise CLIError(f"Timed out waiting for Nomad JWKS URL: {data['nomad_jwks_url']}")
+    failures = vault_jwt_preflight(data)
+    if failures:
+        sys.stdout.flush()
+        raise CLIError("Vault JWT preflight failed; no changes were applied")
     auth_type = vault_auth_type(data)
     if not auth_type:
         log_info(f"Enabling Vault JWT auth: {data['auth_path']}")
@@ -956,6 +1055,21 @@ def cmd_vault_jwt_apply(args: argparse.Namespace) -> int:
         vault_cmd(data, ["write", f"auth/{data['auth_path']}/role/{data['role']}", f"@{role_path}"])
     finally:
         Path(role_path).unlink(missing_ok=True)
+    cmd_vault_enable(
+        argparse.Namespace(
+            address=data["vault_addr"],
+            namespace=data.get("vault_namespace", ""),
+            jwt_auth_backend_path=data["auth_path"],
+            aud=data["aud"],
+            ttl=data["ttl"],
+            env=False,
+            file=True,
+            ca_file="",
+            ca_path="",
+            cert_file="",
+            key_file="",
+        )
+    )
     write_profile(data)
     return 0
 

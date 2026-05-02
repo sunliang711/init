@@ -2409,16 +2409,43 @@ init_vault() {
   log_info "Vault init output saved: ${out}"
 }
 
+validate_unseal_keys_file() {
+  local path="$1"
+  local dir
+
+  dir="$(dirname "$path")"
+
+  if [ ! -d "$dir" ]; then
+    if [ -e "$dir" ]; then
+      fatal "Keys file parent path is not a directory: ${dir}"
+    fi
+    fatal "Keys file directory not found or inaccessible: ${dir}"
+  fi
+  [ -x "$dir" ] || fatal "Keys file directory is not accessible: ${dir}"
+  [ -e "$path" ] || fatal "Keys file not found: ${path}"
+  [ -f "$path" ] || fatal "Keys file is not a regular file: ${path}"
+  [ -r "$path" ] || fatal "Keys file is not readable: ${path}"
+}
+
 unseal_keys_from_file() {
   local path="$1"
 
-  [ -f "$path" ] || fatal "Keys file not found: ${path}"
   require_command python3
   python3 - "$path" <<'PY'
 import json
 import sys
 
-data = json.load(open(sys.argv[1], "r", encoding="utf-8"))
+path = sys.argv[1]
+try:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+except OSError as exc:
+    print(f"Failed to open keys file: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+except json.JSONDecodeError as exc:
+    print(f"Failed to parse keys file JSON: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
 keys = data.get("unseal_keys_b64") or data.get("unseal_keys_hex") or []
 for key in keys:
     print(key)
@@ -2427,9 +2454,11 @@ PY
 
 unseal_vault() {
   local keys_file=""
+  local keys_output=""
   local sealed
   local opt
   local key
+  local applied_keys=0
 
   reset_vault_cli_opts
   while [ "$#" -gt 0 ]; do
@@ -2463,15 +2492,23 @@ unseal_vault() {
     return
   fi
 
+  validate_unseal_keys_file "$keys_file"
+  if ! keys_output="$(unseal_keys_from_file "$keys_file")"; then
+    fatal "Failed to read keys file: ${keys_file}"
+  fi
+
   while IFS= read -r key; do
     [ -n "$key" ] || continue
+    applied_keys=$((applied_keys + 1))
     vault_cli operator unseal "$key" >/dev/null
     sealed="$(vault_status_field sealed || true)"
     if [ "$sealed" = "false" ]; then
       log_info "Vault unsealed"
       return
     fi
-  done < <(unseal_keys_from_file "$keys_file")
+  done <<<"$keys_output"
+
+  [ "$applied_keys" -gt 0 ] || fatal "Keys file does not contain unseal keys: ${keys_file}"
 
   fatal "Vault is still sealed after applying keys"
 }
