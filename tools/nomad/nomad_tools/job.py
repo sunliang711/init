@@ -485,6 +485,38 @@ def prompt_repeat(label: str, item_label: str, current: list[str] | None, valida
     return values or None
 
 
+def print_current_values(label: str, values: list[str] | None) -> None:
+    items = list(values or [])
+    if not items:
+        print(f"Current {label}: none", file=sys.stderr)
+        return
+    print(f"Current {label}:", file=sys.stderr)
+    for index, value in enumerate(items, 1):
+        print(f"  {index}. {value}", file=sys.stderr)
+
+
+def prompt_repeat_review(label: str, item_label: str, current: list[str] | None, validator) -> list[str] | None:
+    values = list(current or [])
+    while True:
+        print_current_values(label, values)
+        choice = prompt_choice(f"{label} action", ["add", "clear", "back"], "back")
+        if choice == "back":
+            return values or None
+        if choice == "clear":
+            values = []
+            log_info(f"Cleared {label}")
+            continue
+        while True:
+            value = prompt_text(f"{item_label} (empty to stop adding)")
+            if value is None:
+                break
+            try:
+                validator(value)
+                values.append(value)
+            except CLIError as exc:
+                log_warn(str(exc))
+
+
 def validate_env_file_prompt(value: str) -> None:
     if not Path(value).is_file():
         raise CLIError(f"Env file not found: {value}")
@@ -541,6 +573,29 @@ def prompt_template_files(current: list[str] | None) -> list[str] | None:
             except CLIError as exc:
                 log_warn(str(exc))
     return values or None
+
+
+def prompt_template_files_review(current: list[str] | None) -> list[str] | None:
+    values = list(current or [])
+    while True:
+        print_current_values("template file", values)
+        choice = prompt_choice("template file action", ["add", "clear", "back"], "back")
+        if choice == "back":
+            return values or None
+        if choice == "clear":
+            values = []
+            log_info("Cleared template file")
+            continue
+        print_template_file_examples()
+        while True:
+            value = prompt_text("Template spec source:destination[:env] (empty to stop adding)")
+            if value is None:
+                break
+            try:
+                validate_template_file_prompt(value)
+                values.append(value)
+            except CLIError as exc:
+                log_warn(str(exc))
 
 
 def default_host_volume_path(name: str) -> str:
@@ -714,6 +769,163 @@ def scaffold_summary(args: argparse.Namespace) -> list[str]:
     return lines
 
 
+def print_scaffold_summary(args: argparse.Namespace) -> None:
+    print("Scaffold summary:", file=sys.stderr)
+    for item in scaffold_summary(args):
+        print(item, file=sys.stderr)
+
+
+def edit_basic_scaffold_fields(args: argparse.Namespace) -> None:
+    args.job = prompt_name("Job name", args.job, "job name", required=True)
+    args.image = prompt_text("Docker image", args.image, required=True)
+    args.type = prompt_choice("Job type", ["service", "batch"], args.type)
+    args.datacenters = prompt_text("Datacenters", args.datacenters, required=True)
+    args.namespace = prompt_text("Namespace", args.namespace)
+    args.region = prompt_text("Region", args.region)
+    args.group = prompt_name("Group name", args.group or args.job, "group name", required=True)
+    args.task = prompt_name("Task name", args.task or args.group, "task name", required=True)
+    args.count = prompt_positive_int("Group count", args.count)
+    args.cpu = prompt_positive_int("CPU reservation in MHz", args.cpu)
+    args.memory = prompt_positive_int("Memory reservation in MB", args.memory)
+
+
+def edit_docker_command(args: argparse.Namespace) -> None:
+    choice = prompt_choice("Docker command action", ["set", "clear", "back"], "back")
+    if choice == "back":
+        return
+    if choice == "clear":
+        args.command = None
+        args.arg = None
+        log_info("Cleared Docker command override")
+        return
+    args.command = prompt_text("Docker command", args.command)
+    args.arg = prompt_repeat_review("Docker command argument", "Argument", args.arg, lambda _: None)
+
+
+def edit_service(args: argparse.Namespace) -> None:
+    choice = prompt_choice("service block action", ["set", "clear", "back"], "back")
+    if choice == "back":
+        return
+    if choice == "clear":
+        args.emit_service = False
+        args.service_name = None
+        args.check_http = None
+        args.check_tcp = False
+        log_info("Cleared service block")
+        return
+    args.emit_service = True
+    if not args.port:
+        log_warn("Service block requires at least one port; add a port mapping before generation")
+    args.service_name = prompt_name("Service name", args.service_name or args.job, "service name")
+    args.service_provider = prompt_choice("Service provider", ["nomad", "consul"], args.service_provider)
+    if args.check_http:
+        check_default = "http"
+    elif args.check_tcp:
+        check_default = "tcp"
+    else:
+        check_default = "none"
+    check_type = prompt_choice("Health check", ["none", "http", "tcp"], check_default)
+    args.check_http = None
+    args.check_tcp = False
+    if check_type == "http":
+        args.check_http = prompt_text("HTTP check path", "/health", required=True)
+    elif check_type == "tcp":
+        args.check_tcp = True
+    if check_type != "none":
+        args.check_interval = prompt_text("Health check interval", args.check_interval, required=True)
+        args.check_timeout = prompt_text("Health check timeout", args.check_timeout, required=True)
+
+
+def edit_host_volumes(args: argparse.Namespace) -> None:
+    args.host_volume = prompt_repeat_review("host volume", "Host volume spec name:destination[:ro|rw]", args.host_volume, parse_host_volume)
+    if args.host_volume:
+        prompt_host_volume_paths(args)
+    else:
+        args.host_volume_paths = {}
+
+
+def edit_vault_role(args: argparse.Namespace) -> None:
+    choice = prompt_choice("Vault role action", ["set", "clear", "back"], "back")
+    if choice == "back":
+        return
+    if choice == "clear":
+        args.vault_role = None
+        args.vault_cluster = "default"
+        log_info("Cleared Vault role")
+        return
+    args.vault_role = prompt_text("Vault role", args.vault_role, required=True)
+    args.vault_cluster = prompt_text("Vault cluster", args.vault_cluster, required=True)
+
+
+def edit_workload_identity(args: argparse.Namespace) -> None:
+    choice = prompt_choice("workload identity action", ["set", "clear", "back"], "back")
+    if choice == "back":
+        return
+    if choice == "clear":
+        args.identity_aud = None
+        args.identity_ttl = "1h"
+        log_info("Cleared workload identity")
+        return
+    args.identity_aud = prompt_text("Workload identity audiences", args.identity_aud, required=True)
+    args.identity_ttl = prompt_text("Workload identity token TTL", args.identity_ttl, required=True)
+
+
+def review_scaffold_interactive(args: argparse.Namespace) -> None:
+    while True:
+        print_scaffold_summary(args)
+        print(
+            """Edit before generate:
+  basics          job, image, type, datacenters, group, task and resources
+  command         Docker command override and arguments
+  ports           port mappings
+  service         service block and health check
+  env             environment variables
+  env-files       environment files
+  mounts          Docker mounts
+  host-volumes    host volumes and host paths
+  templates       template files
+  vault           Vault role
+  identity        workload identity
+  output          output path
+  generate        generate the job file
+  cancel          cancel interactive scaffold""",
+            file=sys.stderr,
+        )
+        choice = prompt_choice(
+            "Review action",
+            ["basics", "command", "ports", "service", "env", "env-files", "mounts", "host-volumes", "templates", "vault", "identity", "output", "generate", "cancel"],
+            "generate",
+        )
+        if choice == "generate":
+            return
+        if choice == "cancel":
+            raise CLIError("Interactive scaffold cancelled")
+        if choice == "basics":
+            edit_basic_scaffold_fields(args)
+        elif choice == "command":
+            edit_docker_command(args)
+        elif choice == "ports":
+            args.port = prompt_repeat_review("port mapping", "Port spec name:to[/proto] or name:static:to[/proto]", args.port, lambda value: parse_port(value, 1))
+        elif choice == "service":
+            edit_service(args)
+        elif choice == "env":
+            args.env = prompt_repeat_review("environment variable", "Environment variable KEY=VALUE", args.env, lambda value: parse_key_value(value, "env"))
+        elif choice == "env-files":
+            args.env_file = prompt_repeat_review("environment file", "Env file path", args.env_file, validate_env_file_prompt)
+        elif choice == "mounts":
+            args.mount = prompt_repeat_review("Docker mount", "Mount spec bind:source:target[:ro|rw], volume:name:target[:ro|rw], or tmpfs:target[:ro|rw]", args.mount, parse_mount)
+        elif choice == "host-volumes":
+            edit_host_volumes(args)
+        elif choice == "templates":
+            args.template_file = prompt_template_files_review(args.template_file)
+        elif choice == "vault":
+            edit_vault_role(args)
+        elif choice == "identity":
+            edit_workload_identity(args)
+        elif choice == "output":
+            args.out = prompt_text("Output path, or '-' for stdout", args.out, required=True)
+
+
 def run_scaffold_docker_interactive(args: argparse.Namespace) -> None:
     require_interactive_terminal()
     print("Nomad Docker job interactive scaffold", file=sys.stderr)
@@ -774,11 +986,7 @@ def run_scaffold_docker_interactive(args: argparse.Namespace) -> None:
 
     default_out = args.out or f"jobs/{args.job}.nomad.hcl"
     args.out = prompt_text("Output path, or '-' for stdout", default_out, required=True)
-    print("Scaffold summary:", file=sys.stderr)
-    for item in scaffold_summary(args):
-        print(item, file=sys.stderr)
-    if not prompt_yes_no("Generate this Nomad job file?", True):
-        raise CLIError("Interactive scaffold cancelled")
+    review_scaffold_interactive(args)
 
 
 def cmd_scaffold_docker(args: argparse.Namespace) -> int:
