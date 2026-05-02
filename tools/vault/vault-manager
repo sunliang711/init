@@ -249,6 +249,7 @@ health checks, auth methods and policies used by these tools.
 Usage:
   ${VAULT_MANAGER_CMD} install [VERSION] [options]
   ${VAULT_MANAGER_CMD} install [--version <VERSION>] [options]
+  ${VAULT_MANAGER_CMD} tools update [--vault-version <VERSION>]
   ${VAULT_MANAGER_CMD} uninstall [--purge-data] [--remove-tools|--purge]
   ${VAULT_MANAGER_CMD} status [vault options]
   ${VAULT_MANAGER_CMD} doctor [vault options]
@@ -273,6 +274,8 @@ Command names:
 Command groups:
   Lifecycle:
     install, uninstall, status, doctor
+  Tooling:
+    tools
   Cluster bootstrap:
     init, unseal
   Vault administration:
@@ -339,6 +342,8 @@ Installed tool snapshot:
   ${TOOL_DIR}
   ${TOOL_PATH} -> ${TOOL_DIR}/vault-manager
   ${TOOL_ENTRY} -> ${TOOL_PATH}
+  Refresh installed tool files without changing Vault runtime:
+    ${VAULT_MANAGER_CMD} tools update
   ${CLIENT_ENV_FILE}
   ${INSTALL_METADATA_FILE}
   ${AUDIT_LOG_FILE}
@@ -425,6 +430,27 @@ Temporary workspace:
 Verify:
   systemctl status vault
   ${VAULT_MANAGER_CMD} status
+EOF
+}
+
+tools_usage() {
+  cat <<EOF
+Vault manager tools
+
+Manage installed vault-manager tool files without changing Vault binary,
+configuration, service state or data.
+
+Usage:
+  ${VAULT_MANAGER_CMD} tools update [--vault-version <VERSION>]
+
+Commands:
+  update                    Update installed vault-manager files from the current script
+
+Options:
+  --vault-version <VERSION>  Vault version recorded in tool metadata; defaults to existing metadata
+
+Example:
+  ${VAULT_MANAGER_CMD} tools update
 EOF
 }
 
@@ -1516,6 +1542,67 @@ install_tool_snapshot() {
   log_info "Vault manager path installed: ${TOOL_PATH}"
   log_info "Vault manager entry installed: ${TOOL_ENTRY}"
   log_info "Vault install metadata written: ${INSTALL_METADATA_FILE}"
+}
+
+read_installed_vault_version() {
+  local version=""
+
+  if [ -r "$INSTALL_METADATA_FILE" ]; then
+    version="$(
+      sed -n 's/^[[:space:]]*"vault_version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$INSTALL_METADATA_FILE" |
+        head -n 1
+    )"
+  fi
+  if [ -z "$version" ] && [ -r "$TOOL_VERSION_FILE" ]; then
+    version="$(sed -n 's/^vault_version=//p' "$TOOL_VERSION_FILE" | head -n 1)"
+  fi
+
+  printf '%s\n' "${version:-unknown}"
+}
+
+tools_update() {
+  local version=""
+  local tmpdir=""
+
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --vault-version)
+        shift
+        [ "$#" -gt 0 ] || fatal "Missing value for --vault-version"
+        version="$(normalize_version "$1")"
+        ;;
+      -h | --help)
+        tools_usage
+        exit 0
+        ;;
+      *)
+        fatal "Unknown tools update option: $1"
+        ;;
+    esac
+    shift
+  done
+
+  require_linux
+  require_command install
+  require_command mktemp
+  require_command readlink
+  require_command sed
+  require_any_checksum_command
+
+  if [ -z "$version" ]; then
+    version="$(read_installed_vault_version)"
+  fi
+  if [ "$version" = "unknown" ]; then
+    log_warn "Installed Vault version metadata not found; recording unknown"
+  fi
+
+  tmpdir="$(create_install_tmpdir vault-tools-update)"
+  if ! install_tool_snapshot "$version" "$tmpdir"; then
+    rm -rf -- "$tmpdir"
+    return 1
+  fi
+  rm -rf -- "$tmpdir"
+  log_info "Vault init tools updated"
 }
 
 remove_tool_snapshot() {
@@ -2803,6 +2890,27 @@ dispatch_tutor() {
   fi
 }
 
+dispatch_tools() {
+  local command="${1:-help}"
+
+  if [ "$#" -gt 0 ]; then
+    shift
+  fi
+
+  case "$command" in
+    update)
+      tools_update "$@"
+      ;;
+    help | -h | --help)
+      tools_usage
+      ;;
+    *)
+      tools_usage >&2
+      fatal "Unknown tools command: ${command}"
+      ;;
+  esac
+}
+
 main() {
   local command="${1:-help}"
 
@@ -2828,6 +2936,9 @@ main() {
           ;;
       esac
       uninstall_vault "$@"
+      ;;
+    tools)
+      dispatch_tools "$@"
       ;;
     status)
       case "${1:-}" in
