@@ -1,384 +1,362 @@
-#!/bin/bash
-_init_resolve_script_dir() {
-    local source_path="${1:-${BASH_SOURCE[0]:-$0}}"
-    local resolved_path=""
+#!/usr/bin/env bash
+set -euo pipefail
 
-    if [ -n "${source_path}" ] && [ -e "${source_path}" ]; then
-        resolved_path="$(readlink "${source_path}" 2>/dev/null || true)"
-    fi
+SCRIPT_NAME="$(basename "$0")"
+DRY_RUN=0
+YES=0
+FORCE=0
+VG_NAME=""
+FS_TYPE="auto"
+DISK=""
+LV_PATH=""
 
-    if [ -z "${resolved_path}" ]; then
-        resolved_path="${source_path}"
-    elif printf '%s' "${resolved_path}" | grep -q '^/'; then
-        :
-    else
-        resolved_path="$(dirname "${source_path}")/${resolved_path}"
-    fi
+usage() {
+    cat <<EOF
+Usage:
+  ${SCRIPT_NAME} add [options] /dev/DISK /dev/VG/LV
 
-    (
-        cd "$(dirname "${resolved_path}")" && pwd
-    )
+Options:
+  --vg VG_NAME             Require the target LV to belong to this VG.
+  --fs-type TYPE           Filesystem type: auto, ext2, ext3, ext4, xfs. Default: auto.
+  --dry-run                Print the execution plan without changing disks.
+  --yes                    Execute without interactive confirmation.
+  --force                  Allow overwriting a disk that already has partitions.
+  -h, --help               Show this help.
+
+Examples:
+  ${SCRIPT_NAME} add --dry-run /dev/sdb /dev/vg0/root
+  ${SCRIPT_NAME} add --yes --fs-type xfs /dev/nvme1n1 /dev/vg0/data
+EOF
 }
 
-_search_dir="$(_init_resolve_script_dir "${BASH_SOURCE[0]:-$0}")"
-_runtime_path=""
-while [ "${_search_dir}" != "/" ]; do
-    if [ -r "${_search_dir}/bootstrap/lib/runtime.sh" ]; then
-        _runtime_path="${_search_dir}/bootstrap/lib/runtime.sh"
-        break
-    fi
-    _search_dir="$(dirname "${_search_dir}")"
-done
+log() {
+    printf '%s\n' "$*"
+}
 
-if [ -z "${_runtime_path}" ]; then
-    echo "failed to find bootstrap/lib/runtime.sh" >&2
+die() {
+    printf 'ERROR: %s\n' "$*" >&2
     exit 1
-fi
-
-# shellcheck disable=SC2034
-INIT_CALLER_SOURCE="${BASH_SOURCE[0]:-$0}"
-# shellcheck source=../bootstrap/lib/runtime.sh
-source "${_runtime_path}"
-unset INIT_CALLER_SOURCE _runtime_path _search_dir
-
-
-# available VARs: user, home, rootID
-# available color vars: RED GREEN YELLOW BLUE CYAN BOLD NORMAL
-# available functions:
-#    _err(): print "$*" to stderror
-#    _command_exists(): check command "$1" existence
-#    _require_command(): exit when command "$1" not exist
-#    _runAsRoot():
-#                  -x (trace)
-#                  -s (run in subshell)
-#                  --nostdout (discard stdout)
-#                  --nostderr (discard stderr)
-#    _insert_path(): insert "$1" to PATH
-#    _run():
-#                  -x (trace)
-#                  -s (run in subshell)
-#                  --no-stdout (discard stdout)
-#                  --no-stderr (discard stderr)
-#    _ensureDir(): mkdir if $@ not exist
-#    _root(): check if it is run as root
-#    _require_root(): exit when not run as root
-#    _linux(): check if it is on Linux
-#    _require_linux(): exit when not on Linux
-#    _wait(): wait $i seconds in script
-#    _must_ok(): exit when $? not zero
-#    _info(): info log
-#    _infoln(): info log with \n
-#    _error(): error log
-#    _errorln(): error log with \n
-#    _checkService(): check $1 exist in systemd
-
-##### begin progress bar #####
-# Usage:
-# Source this script
-# _enable_trapping <- optional to clean up properly if user presses ctrl-c
-# _setup_scroll_area <- create empty progress bar
-# _draw_progress_bar 10 <- advance progress bar
-# _draw_progress_bar 40 <- advance progress bar
-# _block_progress_bar 45 <- turns the progress bar yellow to indicate some action is requested from the user
-# _draw_progress_bar 90 <- advance progress bar
-# _destroy_scroll_area <- remove progress bar
-
-# Constants
-CODE_SAVE_CURSOR="\033[s"
-CODE_RESTORE_CURSOR="\033[u"
-CODE_CURSOR_IN_SCROLL_AREA="\033[1A"
-COLOR_FG="\e[30m"
-COLOR_BG="\e[42m"
-COLOR_BG_BLOCKED="\e[43m"
-RESTORE_FG="\e[39m"
-RESTORE_BG="\e[49m"
-
-# Variables
-PROGRESS_BLOCKED="false"
-TRAPPING_ENABLED="false"
-TRAP_SET="false"
-
-CURRENT_NR_LINES=0
-
-_setup_scroll_area() {
-    # If trapping is enabled, we will want to activate it whenever we setup the scroll area and remove it when we break the scroll area
-    if [ "$TRAPPING_ENABLED" = "true" ]; then
-        _trap_on_interrupt
-    fi
-
-    lines=$(tput lines)
-    CURRENT_NR_LINES=$lines
-    let lines=$lines-1
-    # Scroll down a bit to avoid visual glitch when the screen area shrinks by one row
-    echo -en "\n"
-
-    # Save cursor
-    echo -en "$CODE_SAVE_CURSOR"
-    # Set scroll region (this will place the cursor in the top left)
-    echo -en "\033[0;${lines}r"
-
-    # Restore cursor but ensure its inside the scrolling area
-    echo -en "$CODE_RESTORE_CURSOR"
-    echo -en "$CODE_CURSOR_IN_SCROLL_AREA"
-
-    # Start empty progress bar
-    _draw_progress_bar 0
 }
 
-_destroy_scroll_area() {
-    lines=$(tput lines)
-    # Save cursor
-    echo -en "$CODE_SAVE_CURSOR"
-    # Set scroll region (this will place the cursor in the top left)
-    echo -en "\033[0;${lines}r"
+quote_cmd() {
+    local arg
+    printf '+'
+    for arg in "$@"; do
+        printf ' %q' "${arg}"
+    done
+    printf '\n'
+}
 
-    # Restore cursor but ensure its inside the scrolling area
-    echo -en "$CODE_RESTORE_CURSOR"
-    echo -en "$CODE_CURSOR_IN_SCROLL_AREA"
+run_cmd() {
+    quote_cmd "$@"
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        return 0
+    fi
+    "$@"
+}
 
-    # We are done so clear the scroll bar
-    _clear_progress_bar
+require_linux() {
+    [ "$(uname -s)" = "Linux" ] || die "Linux is required."
+}
 
-    # Scroll down a bit to avoid visual glitch when the screen area grows by one row
-    echo -en "\n\n"
-
-    # Once the scroll area is cleared, we want to remove any trap previously set. Otherwise, ctrl+c will exit our shell
-    if [ "$TRAP_SET" = "true" ]; then
-        trap - INT
+require_root_for_write() {
+    if [ "${DRY_RUN}" -eq 0 ] && [ "${EUID}" -ne 0 ]; then
+        die "Root privilege is required when not using --dry-run."
     fi
 }
 
-_draw_progress_bar() {
-    sleep .1
-    percentage=$1
-    lines=$(tput lines)
-    let lines=$lines
-
-    # Check if the window has been resized. If so, reset the scroll area
-    if [ "$lines" -ne "$CURRENT_NR_LINES" ]; then
-        _setup_scroll_area
-    fi
-
-    # Save cursor
-    echo -en "$CODE_SAVE_CURSOR"
-
-    # Move cursor position to last row
-    echo -en "\033[${lines};0f"
-
-    # Clear progress bar
-    tput el
-
-    # Draw progress bar
-    PROGRESS_BLOCKED="false"
-    _print_bar_text $percentage
-
-    # Restore cursor position
-    echo -en "$CODE_RESTORE_CURSOR"
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "Command is required: $1"
 }
 
-_block_progress_bar() {
-    percentage=$1
-    lines=$(tput lines)
-    let lines=$lines
-    # Save cursor
-    echo -en "$CODE_SAVE_CURSOR"
-
-    # Move cursor position to last row
-    echo -en "\033[${lines};0f"
-
-    # Clear progress bar
-    tput el
-
-    # Draw progress bar
-    PROGRESS_BLOCKED="true"
-    _print_bar_text $percentage
-
-    # Restore cursor position
-    echo -en "$CODE_RESTORE_CURSOR"
+require_commands() {
+    local command_name
+    for command_name in "$@"; do
+        require_command "${command_name}"
+    done
 }
 
-_clear_progress_bar() {
-    lines=$(tput lines)
-    let lines=$lines
-    # Save cursor
-    echo -en "$CODE_SAVE_CURSOR"
-
-    # Move cursor position to last row
-    echo -en "\033[${lines};0f"
-
-    # clear progress bar
-    tput el
-
-    # Restore cursor position
-    echo -en "$CODE_RESTORE_CURSOR"
-}
-
-_print_bar_text() {
-    local percentage=$1
-    local cols=$(tput cols)
-    let bar_size=$cols-17
-
-    local color="${COLOR_FG}${COLOR_BG}"
-    if [ "$PROGRESS_BLOCKED" = "true" ]; then
-        color="${COLOR_FG}${COLOR_BG_BLOCKED}"
-    fi
-
-    # Prepare progress bar
-    let complete_size=($bar_size * $percentage)/100
-    let remainder_size=$bar_size-$complete_size
-    progress_bar=$(
-        echo -ne "["
-        echo -en "${color}"
-        _printf_new "#" $complete_size
-        echo -en "${RESTORE_FG}${RESTORE_BG}"
-        _printf_new "." $remainder_size
-        echo -ne "]"
-    )
-
-    # Print progress bar
-    echo -ne " Progress ${percentage}% ${progress_bar}"
-}
-
-_enable_trapping() {
-    TRAPPING_ENABLED="true"
-}
-
-_trap_on_interrupt() {
-    # If this function is called, we setup an interrupt handler to cleanup the progress bar
-    TRAP_SET="true"
-    trap _cleanup_on_interrupt INT
-}
-
-_cleanup_on_interrupt() {
-    _destroy_scroll_area
-    exit
-}
-
-_printf_new() {
-    str=$1
-    num=$2
-    v=$(printf "%-${num}s" "$str")
-    echo -ne "${v// /$str}"
-}
-
-##### end progress bar #####
-
-# vim: set ft=sh:
-
-###############################################################################
-# write your code below (just define function[s])
-# function is hidden when begin with '_'
-function _parseOptions() {
-    if [ $(uname) != "Linux" ]; then
-        echo "getopt only on Linux"
-        exit 1
-    fi
-
-    options=$(getopt -o dv --long debug --long name: -- "$@")
-    [ $? -eq 0 ] || {
-        echo "Incorrect option provided"
-        exit 1
-    }
-    eval set -- "$options"
-    while true; do
+parse_add_args() {
+    while [ "$#" -gt 0 ]; do
         case "$1" in
-        -v)
-            VERBOSE=1
+        --vg)
+            [ "$#" -ge 2 ] || die "--vg requires a value."
+            VG_NAME="$2"
+            shift 2
             ;;
-        -d)
-            DEBUG=1
+        --fs-type)
+            [ "$#" -ge 2 ] || die "--fs-type requires a value."
+            FS_TYPE="$2"
+            shift 2
             ;;
-        --debug)
-            DEBUG=1
+        --dry-run)
+            DRY_RUN=1
+            shift
             ;;
-        --name)
-            shift # The arg is next in position args
-            NAME=$1
+        --yes)
+            YES=1
+            shift
+            ;;
+        --force)
+            FORCE=1
+            shift
+            ;;
+        -h | --help)
+            usage
+            exit 0
             ;;
         --)
             shift
             break
             ;;
+        -*)
+            die "Unknown option: $1"
+            ;;
+        *)
+            break
+            ;;
         esac
-        shift
     done
+
+    [ "$#" -eq 2 ] || die "Usage: ${SCRIPT_NAME} add [options] /dev/DISK /dev/VG/LV"
+    DISK="$1"
+    LV_PATH="$2"
+
+    case "${FS_TYPE}" in
+    auto | ext2 | ext3 | ext4 | xfs)
+        ;;
+    *)
+        die "Unsupported filesystem type: ${FS_TYPE}"
+        ;;
+    esac
 }
 
-_example() {
-    _parseOptions "$0" "$@"
-    # TODO
+list_child_partitions() {
+    lsblk -nrpo NAME "${DISK}" | sed '1d'
+}
+
+has_mountpoint() {
+    lsblk -nrpo MOUNTPOINT "$1" | awk 'NF { found=1 } END { exit found ? 0 : 1 }'
+}
+
+is_lvm_pv() {
+    pvs --noheadings "$1" >/dev/null 2>&1
+}
+
+predict_partition_path() {
+    local disk="$1"
+    case "$(basename "${disk}")" in
+    nvme*n* | mmcblk* | loop*)
+        printf '%sp1\n' "${disk}"
+        ;;
+    *)
+        printf '%s1\n' "${disk}"
+        ;;
+    esac
+}
+
+resolve_lv_vg() {
+    local vg
+    vg="$(lvs --noheadings -o vg_name "${LV_PATH}" 2>/dev/null | awk 'NF { print $1; exit }')"
+    [ -n "${vg}" ] || die "Cannot find LV: ${LV_PATH}"
+
+    if [ -n "${VG_NAME}" ] && [ "${VG_NAME}" != "${vg}" ]; then
+        die "LV ${LV_PATH} belongs to VG ${vg}, not ${VG_NAME}."
+    fi
+
+    VG_NAME="${vg}"
+}
+
+detect_filesystem_type() {
+    local detected=""
+
+    if [ "${FS_TYPE}" != "auto" ]; then
+        printf '%s\n' "${FS_TYPE}"
+        return 0
+    fi
+
+    detected="$(findmnt -rn -o FSTYPE --source "${LV_PATH}" 2>/dev/null | sed -n '1p' || true)"
+    if [ -z "${detected}" ]; then
+        detected="$(blkid -s TYPE -o value "${LV_PATH}" 2>/dev/null || true)"
+    fi
+
+    [ -n "${detected}" ] || die "Cannot detect filesystem type for ${LV_PATH}. Use --fs-type."
+    printf '%s\n' "${detected}"
+}
+
+get_mountpoint() {
+    findmnt -rn -o TARGET --source "${LV_PATH}" 2>/dev/null | sed -n '1p'
+}
+
+validate_disk() {
+    local partition
+    local existing_partitions=()
+
+    [ -b "${DISK}" ] || die "Disk is not a block device: ${DISK}"
+
+    if has_mountpoint "${DISK}"; then
+        die "Disk or its partitions are mounted: ${DISK}"
+    fi
+
+    if is_lvm_pv "${DISK}"; then
+        die "Disk is already an LVM PV: ${DISK}"
+    fi
+
+    mapfile -t existing_partitions < <(list_child_partitions)
+    if [ "${#existing_partitions[@]}" -gt 0 ]; then
+        for partition in "${existing_partitions[@]}"; do
+            if has_mountpoint "${partition}"; then
+                die "Partition is mounted: ${partition}"
+            fi
+            if is_lvm_pv "${partition}"; then
+                die "Partition is already an LVM PV: ${partition}"
+            fi
+        done
+
+        if [ "${FORCE}" -ne 1 ]; then
+            die "Disk already has partitions. Re-run with --force to overwrite: ${DISK}"
+        fi
+    fi
+}
+
+validate_partition_plan() {
+    local partition="$1"
+
+    if [ -b "${partition}" ] && [ "${FORCE}" -ne 1 ]; then
+        die "Planned partition already exists. Re-run with --force to overwrite: ${partition}"
+    fi
+}
+
+require_resize_command() {
+    local fs_type="$1"
+
+    case "${fs_type}" in
+    ext2 | ext3 | ext4)
+        require_command resize2fs
+        ;;
+    xfs)
+        require_command xfs_growfs
+        ;;
+    *)
+        die "Unsupported filesystem type for online resize: ${fs_type}"
+        ;;
+    esac
+}
+
+confirm_plan() {
+    local partition="$1"
+    local fs_type="$2"
+    local answer=""
+
+    log "Execution plan:"
+    log "  disk: ${DISK}"
+    log "  new partition: ${partition}"
+    log "  vg: ${VG_NAME}"
+    log "  lv: ${LV_PATH}"
+    log "  filesystem: ${fs_type}"
+    log "  dry-run: ${DRY_RUN}"
+    log "  force: ${FORCE}"
+    log ""
+    log "Commands to run:"
+    quote_cmd parted "${DISK}" -a optimal -s mklabel gpt mkpart primary 1MiB 100% set 1 lvm on
+    quote_cmd partprobe "${DISK}"
+    if command -v udevadm >/dev/null 2>&1; then
+        quote_cmd udevadm settle
+    fi
+    quote_cmd pvcreate "${partition}"
+    quote_cmd vgextend "${VG_NAME}" "${partition}"
+    quote_cmd lvextend -l +100%FREE "${LV_PATH}"
+    case "${fs_type}" in
+    ext2 | ext3 | ext4)
+        quote_cmd resize2fs "${LV_PATH}"
+        ;;
+    xfs)
+        quote_cmd xfs_growfs "$(get_mountpoint)"
+        ;;
+    esac
+    log ""
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        return 0
+    fi
+
+    if [ "${YES}" -eq 1 ]; then
+        return 0
+    fi
+
+    # 这里会重写目标磁盘分区表，必须让操作者显式确认。
+    printf 'Type EXTEND-LVM to overwrite %s and extend %s: ' "${DISK}" "${LV_PATH}" >&2
+    read -r answer
+    [ "${answer}" = "EXTEND-LVM" ] || die "Confirmation failed."
+}
+
+resize_filesystem() {
+    local fs_type="$1"
+    local mountpoint="$2"
+
+    case "${fs_type}" in
+    ext2 | ext3 | ext4)
+        run_cmd resize2fs "${LV_PATH}"
+        ;;
+    xfs)
+        run_cmd xfs_growfs "${mountpoint}"
+        ;;
+    *)
+        die "Unsupported filesystem type for resize: ${fs_type}"
+        ;;
+    esac
 }
 
 add() {
-    _require_root
-    _require_command parted
-    _require_command pvcreate
+    local partition
+    local fs_type
+    local mountpoint=""
 
-    alias echo='{ set +x; } 2> /dev/null; builtin echo'
+    parse_add_args "$@"
+    require_linux
+    require_root_for_write
+    require_commands lsblk sed awk parted partprobe pvcreate pvs vgextend lvextend lvs findmnt blkid
 
-    if (($#<2));then
-        echo "usage: $0 add /dev/sdX /dev/<VG_NAME>/<LV_NAME> [VG_NAME]"
-        exit 1
-    fi
-    disk=${1:?'missing new disk: eg. /dev/sdX'}
-    lv=${2:?'missing lv name: eg. /dev/VG_NAME/LV_NAME'}
-    vgName=${3}
-
-    set -ex
-
-    # create partition
-    echo "create partition.."
-    parted "${disk}" -a optimal -s \
-        mklabel msdos \
-        mkpart primary 1MiB 100% \
-        set 1 lvm on
-
-    echo "create pv ${disk}1.."
-    pvcreate "${disk}1"
-
-    if [ -z "$vgName" ]; then
-        echo "no vg provied, try to get vg name.."
-        vgName=$(vgdisplay | perl -lne 'print $1 if /VG Name\s+(.+)/')
-        if [ -z "$vgName" ]; then
-            echo "cannot find vg"
-            exit 1
-        fi
-        echo "Find vg: ${vgName}"
+    validate_disk
+    resolve_lv_vg
+    fs_type="$(detect_filesystem_type)"
+    require_resize_command "${fs_type}"
+    partition="$(predict_partition_path "${DISK}")"
+    validate_partition_plan "${partition}"
+    if [ "${fs_type}" = "xfs" ]; then
+        mountpoint="$(get_mountpoint)"
+        [ -n "${mountpoint}" ] || die "XFS resize requires a mounted filesystem: ${LV_PATH}"
     fi
 
-    echo "extend vg: ${vgName} by add new disk: ${disk}1 to vg.."
-    vgextend "${vgName}" "${disk}1"
+    confirm_plan "${partition}" "${fs_type}"
 
-    echo "extend lv: ${lv}.."
-    lvextend -l +100%FREE "$lv"
+    run_cmd parted "${DISK}" -a optimal -s mklabel gpt mkpart primary 1MiB 100% set 1 lvm on
+    run_cmd partprobe "${DISK}"
+    if command -v udevadm >/dev/null 2>&1; then
+        run_cmd udevadm settle
+    fi
 
-    echo "resize2fs lv: ${lv}.."
-    resize2fs "$lv"
-
+    run_cmd pvcreate "${partition}"
+    run_cmd vgextend "${VG_NAME}" "${partition}"
+    run_cmd lvextend -l +100%FREE "${LV_PATH}"
+    resize_filesystem "${fs_type}" "${mountpoint}"
 }
 
-# write your code above
-###############################################################################
+main() {
+    local command="${1:-}"
 
-em() {
-    $ed $0
+    case "${command}" in
+    "" | -h | --help | help)
+        usage
+        ;;
+    add)
+        shift
+        add "$@"
+        ;;
+    *)
+        die "Unknown command: ${command}"
+        ;;
+    esac
 }
 
-function _help() {
-    cd "${this}"
-    cat <<EOF2
-Usage: $(basename $0) ${bold}CMD${reset}
-
-${bold}CMD${reset}:
-EOF2
-    perl -lne 'print "\t$2" if /^\s*(function)?\s*(\S+)\s*\(\)\s*\{$/' $(basename ${BASH_SOURCE}) | perl -lne "print if /^\t[^_]/"
-}
-
-case "$1" in
-"" | -h | --help | help)
-    _help
-    ;;
-*)
-    "$@"
-    ;;
-esac
+main "$@"
