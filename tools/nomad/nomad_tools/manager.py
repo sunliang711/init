@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 from pathlib import Path
@@ -98,6 +99,11 @@ META_CONFIG = CONFIG_DIR / "72-client-meta.hcl"
 DOCKER_CONFIG = CONFIG_DIR / "80-docker.hcl"
 RAW_EXEC_CONFIG = CONFIG_DIR / "81-raw-exec.hcl"
 DRIVER_DENYLIST_CONFIG = CONFIG_DIR / "82-driver-denylist.hcl"
+CNI_CLIENT_CONFIG = CONFIG_DIR / "83-cni.hcl"
+CNI_BIN_DIR = Path("/opt/cni/bin")
+CNI_CONFIG_DIR = Path("/opt/cni/config")
+CNI_SYSCTL_CONFIG = Path("/etc/sysctl.d/99-nomad-cni-bridge.conf")
+DEFAULT_CNI_PLUGIN_VERSION = "v1.6.2"
 VAULT_JWT_PROFILE_DIR = Path(os.environ.get("VAULT_JWT_PROFILE_DIR", str(NOMAD_ROOT_DIR / "data" / "vault-jwt")))
 REDACTED_PATH_LABEL = "<set>"
 
@@ -521,6 +527,200 @@ def cmd_meta_unset(args: argparse.Namespace) -> int:
     return 0
 
 
+def normalize_cni_version(version: str) -> str:
+    value = version.strip()
+    if re.match(r"^[0-9]+[.][0-9]+[.][0-9]+$", value):
+        value = f"v{value}"
+    if not re.match(r"^v[0-9]+[.][0-9]+[.][0-9]+$", value):
+        raise CLIError(f"Invalid CNI plugin version: {version}")
+    return value
+
+
+def detect_cni_arch() -> str:
+    arch = detect_arch()
+    if arch in {"amd64", "arm64"}:
+        return arch
+    if arch == "386":
+        return "386"
+    raise CLIError(f"Unsupported CNI architecture: {arch}")
+
+
+def cni_archive_name(version: str, arch: str) -> str:
+    return f"cni-plugins-linux-{arch}-{version}.tgz"
+
+
+def verify_cni_checksum(archive_file: Path, checksum_file: Path) -> None:
+    expected = checksum_file.read_text(encoding="utf-8").split()[0]
+    actual = sha256_file(archive_file)
+    if expected != actual:
+        raise CLIError(f"Checksum mismatch for {archive_file.name}")
+    log_success(f"Checksum verified: {archive_file.name}")
+
+
+def safe_extract_cni_archive(archive_file: Path, output_dir: Path) -> None:
+    output_base = output_dir.resolve()
+    with tarfile.open(archive_file, "r:gz") as archive:
+        for member in archive.getmembers():
+            target = (output_base / member.name).resolve()
+            if target != output_base and output_base not in target.parents:
+                raise CLIError(f"Refuse to extract unsafe CNI archive member: {member.name}")
+            if member.issym() or member.islnk():
+                raise CLIError(f"Refuse to extract linked CNI archive member: {member.name}")
+        archive.extractall(output_base)
+
+
+def download_cni_plugins(version: str, tmpdir: Path) -> Path:
+    arch = detect_cni_arch()
+    archive_name = cni_archive_name(version, arch)
+    base_url = f"https://github.com/containernetworking/plugins/releases/download/{version}"
+    archive_file = tmpdir / archive_name
+    checksum_file = tmpdir / f"{archive_name}.sha256"
+
+    log_info(f"Downloading CNI plugins {version} for linux_{arch}")
+    download_file(f"{base_url}/{archive_name}", archive_file, timeout=300)
+    download_file(f"{base_url}/{archive_name}.sha256", checksum_file, timeout=300)
+    verify_cni_checksum(archive_file, checksum_file)
+
+    extract_dir = tmpdir / "cni-extract"
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    safe_extract_cni_archive(archive_file, extract_dir)
+    return extract_dir
+
+
+def install_cni_plugins(version: str) -> None:
+    tmpdir = create_install_tmpdir("nomad-cni")
+    try:
+        extract_dir = download_cni_plugins(version, tmpdir)
+        run_root(["install", "-d", "-m", "0755", str(CNI_BIN_DIR)])
+        installed = 0
+        for path in sorted(extract_dir.iterdir()):
+            if not path.is_file():
+                continue
+            run_root(["install", "-m", "0755", str(path), str(CNI_BIN_DIR / path.name)])
+            installed += 1
+        if installed == 0:
+            raise CLIError("CNI plugin archive did not contain plugin binaries")
+        log_success(f"CNI plugins installed: {CNI_BIN_DIR}")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def cni_client_config_content() -> str:
+    body = "\n".join(
+        [
+            "client {",
+            f"  cni_path       = {hcl_string(CNI_BIN_DIR)}",
+            f"  cni_config_dir = {hcl_string(CNI_CONFIG_DIR)}",
+            "}",
+        ]
+    )
+    return managed_config(body)
+
+
+def cni_sysctl_content() -> str:
+    return "\n".join(
+        [
+            MANAGED_MARKER,
+            "net.bridge.bridge-nf-call-arptables = 1",
+            "net.bridge.bridge-nf-call-ip6tables = 1",
+            "net.bridge.bridge-nf-call-iptables = 1",
+            "",
+        ]
+    )
+
+
+def apply_cni_sysctl() -> None:
+    require_command("modprobe")
+    require_command("sysctl")
+    ensure_managed_or_absent(CNI_SYSCTL_CONFIG)
+    run_root(["modprobe", "bridge"])
+    run_root(["install", "-d", "-m", "0755", str(CNI_SYSCTL_CONFIG.parent)])
+    install_text(CNI_SYSCTL_CONFIG, cni_sysctl_content(), mode="0644")
+    run_root(["sysctl", "-p", str(CNI_SYSCTL_CONFIG)])
+
+
+def write_cni_client_config(*, restart: bool) -> None:
+    if restart:
+        commit_managed_file(CNI_CLIENT_CONFIG, cni_client_config_content())
+        return
+    ensure_managed_or_absent(CNI_CLIENT_CONFIG)
+    install_text(CNI_CLIENT_CONFIG, cni_client_config_content(), mode="0644")
+
+
+def enable_cni(version: str, *, restart: bool) -> None:
+    require_config_environment()
+    version = normalize_cni_version(version)
+    install_cni_plugins(version)
+    run_root(["install", "-d", "-m", "0755", str(CNI_CONFIG_DIR)])
+    apply_cni_sysctl()
+    write_cni_client_config(restart=restart)
+    if not restart:
+        validate_nomad_config()
+    log_success("Nomad CNI configuration enabled")
+
+
+def cmd_cni_plan(args: argparse.Namespace) -> int:
+    version = normalize_cni_version(args.version)
+    arch = detect_cni_arch()
+    archive_name = cni_archive_name(version, arch)
+    print("Nomad CNI enable plan:")
+    print(f"  - Download: https://github.com/containernetworking/plugins/releases/download/{version}/{archive_name}")
+    print(f"  - Verify:   {archive_name}.sha256")
+    print(f"  - Install:  {CNI_BIN_DIR}")
+    print(f"  - Ensure:   {CNI_CONFIG_DIR}")
+    print(f"  - Write:    {CNI_SYSCTL_CONFIG}")
+    print(f"  - Write:    {CNI_CLIENT_CONFIG}")
+    print("  - Reload:   sysctl bridge settings")
+    print("  - Restart:  nomad.service")
+    return 0
+
+
+def cmd_cni_enable(args: argparse.Namespace) -> int:
+    enable_cni(args.version, restart=True)
+    return 0
+
+
+def cmd_cni_disable(args: argparse.Namespace) -> int:
+    remove_managed_file(CNI_CLIENT_CONFIG)
+    if CNI_SYSCTL_CONFIG.exists():
+        ensure_managed_or_absent(CNI_SYSCTL_CONFIG)
+        run_root(["rm", "-f", "--", str(CNI_SYSCTL_CONFIG)])
+        log_success(f"Config removed: {CNI_SYSCTL_CONFIG}")
+    if args.remove_plugins:
+        safe_remove_path(CNI_BIN_DIR)
+        log_success(f"CNI plugins removed: {CNI_BIN_DIR}")
+    return 0
+
+
+def read_proc_sysctl(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+def cmd_cni_status(_: argparse.Namespace) -> int:
+    plugins = ["bridge", "loopback", "host-local", "portmap", "firewall"]
+    failures = 0
+    for plugin in plugins:
+        path = CNI_BIN_DIR / plugin
+        status = "OK" if os.access(path, os.X_OK) else "FAIL"
+        failures += 0 if status == "OK" else 1
+        doctor_check(status, f"CNI plugin {plugin}: {path}")
+    status = "OK" if CNI_CONFIG_DIR.is_dir() else "FAIL"
+    failures += 0 if status == "OK" else 1
+    doctor_check(status, f"CNI config dir: {CNI_CONFIG_DIR}")
+    status = "OK" if CNI_CLIENT_CONFIG.is_file() else "FAIL"
+    failures += 0 if status == "OK" else 1
+    doctor_check(status, f"Nomad CNI client config: {CNI_CLIENT_CONFIG}")
+    doctor_check("OK" if CNI_SYSCTL_CONFIG.is_file() else "WARN", f"CNI bridge sysctl config: {CNI_SYSCTL_CONFIG}")
+    for name in ("bridge-nf-call-arptables", "bridge-nf-call-ip6tables", "bridge-nf-call-iptables"):
+        path = Path("/proc/sys/net/bridge") / name
+        value = read_proc_sysctl(path)
+        doctor_check("OK" if value == "1" else "WARN", f"{name}={value or 'unavailable'}")
+    return 1 if failures else 0
+
+
 def doctor_check(status: str, message: str) -> None:
     labels = {
         "OK": (terminal_status_prefix(), COLOR_GREEN),
@@ -708,6 +908,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if args.integrations or DOCKER_CONFIG.is_file():
         print("\nDocker checks:")
         failures += cmd_docker_doctor(argparse.Namespace())
+    if args.integrations or CNI_CLIENT_CONFIG.is_file():
+        print("\nCNI checks:")
+        failures += cmd_cni_status(argparse.Namespace())
     if args.integrations or VAULT_CONFIG.is_file():
         print("\nVault checks:")
         failures += cmd_vault_doctor(argparse.Namespace(address=None, namespace=None))
@@ -1561,6 +1764,8 @@ def cmd_install(args: argparse.Namespace) -> int:
         if not wait_for_nomad_api():
             raise CLIError("Timed out waiting for Nomad HTTP API")
         bootstrap_acl(not args.no_acl_bootstrap)
+        if args.enable_cni:
+            enable_cni(args.cni_version, restart=True)
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     log_success("Nomad installation completed")
@@ -1670,13 +1875,16 @@ def cmd_quickstart(_: argparse.Namespace) -> int:
   3. Enable Docker settings when needed:
      {NOMAD_MANAGER_CMD} docker enable --allow-privileged --volumes --image-gc
 
-  4. Generate and apply a job:
+  4. Enable CNI bridge networking when jobs use network mode bridge:
+     {NOMAD_MANAGER_CMD} cni enable
+
+  5. Generate and apply a job:
      nomad-job scaffold docker --job web --image nginx:1.27 --port http:8080:80 --out jobs/web.nomad.hcl
      nomad-job validate jobs/web.nomad.hcl
      nomad-job plan jobs/web.nomad.hcl
      nomad-job apply jobs/web.nomad.hcl
 
-  5. Review destructive actions before removal:
+  6. Review destructive actions before removal:
      {NOMAD_MANAGER_CMD} uninstall --dry-run
 """
     )
@@ -1695,10 +1903,11 @@ def cmd_tutor(args: argparse.Namespace) -> int:
     {NOMAD_MANAGER_CMD} doctor
 
   Topics:
-    install, docker, vault, vault-jwt, consul, ui, workflows, vault-secret-job, host-volume-job, private-image-job, web-service-job, uninstall, troubleshoot
+    install, docker, cni, vault, vault-jwt, consul, ui, workflows, vault-secret-job, host-volume-job, private-image-job, web-service-job, uninstall, troubleshoot
 """,
         "install": f"Install a single node:\n  {NOMAD_MANAGER_CMD} install --version {DEFAULT_NOMAD_VERSION}",
         "docker": f"Enable Docker support:\n  {NOMAD_MANAGER_CMD} docker enable --allow-privileged --volumes",
+        "cni": f"Enable CNI bridge networking:\n  {NOMAD_MANAGER_CMD} cni plan\n  {NOMAD_MANAGER_CMD} cni enable\n  {NOMAD_MANAGER_CMD} cni status",
         "vault": f"Point Nomad at Vault:\n  {NOMAD_MANAGER_CMD} vault enable --address http://127.0.0.1:8200",
         "vault-jwt": f"Link workload identity:\n  {NOMAD_MANAGER_CMD} vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://127.0.0.1:4646",
         "consul": f"Point Nomad at Consul:\n  {NOMAD_MANAGER_CMD} consul enable --address 127.0.0.1:8500",
@@ -1794,7 +2003,9 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("version_pos", nargs="?", help="Nomad version, for example 2.0.0 or latest")
     install.add_argument("--version", dest="version_opt", help="Nomad version; overrides the positional version")
     install.add_argument("--no-acl-bootstrap", action="store_true", help="Skip automatic ACL bootstrap after install")
-    install.set_defaults(func=lambda args: cmd_install(argparse.Namespace(version=args.version_opt or args.version_pos, no_acl_bootstrap=args.no_acl_bootstrap)))
+    install.add_argument("--enable-cni", action="store_true", help="Install and configure CNI plugins after Nomad install")
+    install.add_argument("--cni-version", default=DEFAULT_CNI_PLUGIN_VERSION, help=f"CNI plugins version (default: {DEFAULT_CNI_PLUGIN_VERSION})")
+    install.set_defaults(func=lambda args: cmd_install(argparse.Namespace(version=args.version_opt or args.version_pos, no_acl_bootstrap=args.no_acl_bootstrap, enable_cni=args.enable_cni, cni_version=args.cni_version)))
 
     uninstall = sub.add_parser("uninstall", help="Uninstall Nomad", description="Stop Nomad and remove runtime files after showing a removal plan.")
     uninstall.add_argument("--remove-tools", action="store_true", help="Also remove nomad-manager and nomad-job from the managed install")
@@ -1804,7 +2015,7 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall.set_defaults(func=cmd_uninstall)
 
     doctor = sub.add_parser("doctor", help="Run node and integration checks", description="Check the managed Nomad install, service status and detected integrations.")
-    doctor.add_argument("--integrations", action="store_true", help="Run Docker, Vault and Consul checks even if their managed configs are absent")
+    doctor.add_argument("--integrations", action="store_true", help="Run Docker, CNI, Vault and Consul checks even if their managed configs are absent")
     doctor.set_defaults(func=cmd_doctor)
 
     quickstart = sub.add_parser("quickstart", help="Show a copyable setup workflow")
@@ -1927,6 +2138,21 @@ def build_parser() -> argparse.ArgumentParser:
     docker_enable_driver.set_defaults(func=lambda _: cmd_driver_allow(argparse.Namespace(driver="docker")))
     docker_doctor = docker_sub.add_parser("doctor", help="Check Docker integration")
     docker_doctor.set_defaults(func=cmd_docker_doctor)
+
+    cni = sub.add_parser("cni", help="Manage CNI plugins for Nomad bridge networking")
+    cni_sub = cni.add_subparsers(dest="cni_command")
+    cni.set_defaults(func=lambda _: missing_subcommand(cni, f"{NOMAD_MANAGER_CMD} cni"))
+    cni_plan = cni_sub.add_parser("plan", help="Preview CNI plugin installation and Nomad config changes")
+    cni_plan.add_argument("--version", default=DEFAULT_CNI_PLUGIN_VERSION, help=f"CNI plugins version (default: {DEFAULT_CNI_PLUGIN_VERSION})")
+    cni_plan.set_defaults(func=cmd_cni_plan)
+    cni_enable = cni_sub.add_parser("enable", help="Install CNI plugins and write Nomad client CNI config")
+    cni_enable.add_argument("--version", default=DEFAULT_CNI_PLUGIN_VERSION, help=f"CNI plugins version (default: {DEFAULT_CNI_PLUGIN_VERSION})")
+    cni_enable.set_defaults(func=cmd_cni_enable)
+    cni_disable = cni_sub.add_parser("disable", help="Remove managed Nomad CNI config")
+    cni_disable.add_argument("--remove-plugins", action="store_true", help=f"Also remove {CNI_BIN_DIR}")
+    cni_disable.set_defaults(func=cmd_cni_disable)
+    cni_status = cni_sub.add_parser("status", help="Check CNI plugin and bridge sysctl status")
+    cni_status.set_defaults(func=cmd_cni_status)
 
     raw_exec = sub.add_parser("raw-exec", help="Manage raw_exec driver config")
     raw_sub = raw_exec.add_subparsers(dest="raw_exec_command")
