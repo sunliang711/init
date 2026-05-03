@@ -1212,7 +1212,7 @@ add_tls_dns_name() {
   validate_tls_value "TLS DNS SAN" "$value"
   if [ "${#INSTALL_TLS_DNS_NAMES[@]}" -gt 0 ]; then
     for existing in "${INSTALL_TLS_DNS_NAMES[@]}"; do
-      [ "$existing" != "$value" ] || return
+      [ "$existing" != "$value" ] || return 0
     done
   fi
   INSTALL_TLS_DNS_NAMES+=("$value")
@@ -1225,7 +1225,7 @@ add_tls_ip_address() {
   validate_tls_value "TLS IP SAN" "$value"
   if [ "${#INSTALL_TLS_IP_ADDRESSES[@]}" -gt 0 ]; then
     for existing in "${INSTALL_TLS_IP_ADDRESSES[@]}"; do
-      [ "$existing" != "$value" ] || return
+      [ "$existing" != "$value" ] || return 0
     done
   fi
   INSTALL_TLS_IP_ADDRESSES+=("$value")
