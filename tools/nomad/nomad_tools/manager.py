@@ -1421,11 +1421,11 @@ job {hcl_string(args.job)} {{
         env         = true
         data = <<EOH
 {{{{ with secret {hcl_string(args.secret)} }}}}
-{{{{ with index .Data.data "value" }}}}SECRET_VALUE={{{{ . }}}}
-{{{{ end }}}}{{{{ with index .Data.data "username" }}}}APP_USERNAME={{{{ . }}}}
-{{{{ end }}}}{{{{ with index .Data.data "password" }}}}APP_PASSWORD={{{{ . }}}}
-{{{{ end }}}}{{{{ with index .Data.data "api_key" }}}}APP_API_KEY={{{{ . }}}}
-{{{{ end }}}}{{{{ end }}}}
+{{{{ with index .Data.data "value" }}}}SECRET_VALUE={{{{ . }}}}{{{{ end }}}}
+{{{{ with index .Data.data "username" }}}}APP_USERNAME={{{{ . }}}}{{{{ end }}}}
+{{{{ with index .Data.data "password" }}}}APP_PASSWORD={{{{ . }}}}{{{{ end }}}}
+{{{{ with index .Data.data "api_key" }}}}APP_API_KEY={{{{ . }}}}{{{{ end }}}}
+{{{{ end }}}}
 EOH
       }}
 
