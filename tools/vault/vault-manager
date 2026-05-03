@@ -1735,6 +1735,13 @@ install_binary() {
   "$BIN_PATH" version
 }
 
+print_install_next_steps() {
+  log_info "Next steps:"
+  log_info "  ${VAULT_MANAGER_CMD} init --key-shares 1 --key-threshold 1 --out ${INIT_DIR}/vault-init.json"
+  log_info "  ${VAULT_MANAGER_CMD} unseal --keys-file ${INIT_DIR}/vault-init.json"
+  log_info "  ${VAULT_MANAGER_CMD} status --token-file ${INIT_DIR}/vault-init.json"
+}
+
 write_vault_config() {
   local tmpdir="$1"
   local listen_address="$2"
@@ -2075,6 +2082,7 @@ install_vault() {
   wait_for_vault_api "$api_addr" "$tls_ca_cert_file"
 
   log_info "Vault installation completed"
+  print_install_next_steps
 }
 
 uninstall_vault() {
@@ -2277,6 +2285,15 @@ write_vault_acl_env_file() {
   run_root chown "${target_uid}:${target_gid}" "$acl_file" 2>/dev/null || true
   rm -f "$tmp"
   log_info "Vault ACL env saved to ${acl_file} for ${target_user}"
+}
+
+print_init_next_steps() {
+  local init_json="$1"
+
+  log_info "Next steps:"
+  log_info "  ${VAULT_MANAGER_CMD} unseal --keys-file ${init_json}"
+  log_info "  source ~/vault.acl"
+  log_info "  ${VAULT_MANAGER_CMD} status --token-file ${init_json}"
 }
 
 remove_vault_acl_env_file() {
@@ -2555,6 +2572,7 @@ init_vault() {
   write_vault_acl_env_file "$tmp"
   rm -f "$tmp"
   log_info "Vault init output saved: ${out}"
+  print_init_next_steps "$out"
 }
 
 validate_unseal_keys_file() {
