@@ -405,6 +405,7 @@ def confirm_plan(config: AddConfig) -> None:
 
     # 这里会重写目标磁盘分区表，必须让操作者显式确认。
     sys.stderr.write(f"Type EXTEND-LVM to overwrite {config.disk} and extend {config.lv_path}: ")
+    sys.stderr.flush()
     answer = sys.stdin.readline().strip()
     if answer != "EXTEND-LVM":
         die("Confirmation failed.")
@@ -502,3 +503,6 @@ if __name__ == "__main__":
         die(str(exc))
     except subprocess.CalledProcessError as exc:
         die(f"Command failed: {shlex.join(exc.cmd)}")
+    except KeyboardInterrupt:
+        sys.stderr.write("\nERROR: Interrupted by user.\n")
+        raise SystemExit(130)
