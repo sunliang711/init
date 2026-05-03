@@ -77,6 +77,21 @@ fatal() {
   exit 1
 }
 
+handle_unexpected_error() {
+  local exit_code="$1"
+  local line_no="$2"
+  local failed_command="$3"
+  local command_line="$4"
+
+  if [ "${AUDIT_FINALIZED:-0}" -eq 0 ]; then
+    log_error "Failed command (${exit_code}) at line ${line_no}: ${failed_command}"
+    log_error "Failed vault-manager command (${exit_code}): ${command_line}"
+    audit_record "failed" "$exit_code" "${AUDIT_ARGS[@]}"
+    AUDIT_FINALIZED=1
+  fi
+  exit "$exit_code"
+}
+
 json_escape() {
   local value="$1"
 
@@ -1668,8 +1683,7 @@ install_vault_dir() {
   fi
 
   if ! run_root install -d -m "$mode" -o "$owner" -g "$group" "$path"; then
-    log_error "Failed to create directory: $path"
-    return 1
+    fatal "Failed to create directory: $path"
   fi
 }
 
@@ -3199,7 +3213,7 @@ run_with_audit() {
   audit_record "started" 0 "$@"
 
   set -E
-  trap 'exit_code=$?; if [ "${AUDIT_FINALIZED:-0}" -eq 0 ]; then log_error "Failed vault-manager command (${exit_code}): ${command_line}"; audit_record "failed" "$exit_code" "${AUDIT_ARGS[@]}"; AUDIT_FINALIZED=1; fi; exit "$exit_code"' ERR
+  trap 'handle_unexpected_error "$?" "$LINENO" "$BASH_COMMAND" "$command_line"' ERR
   main "$@"
   trap - ERR
 
