@@ -471,6 +471,37 @@ def resolve_host_volume_path(name: str, value: str | None) -> Path:
     return target
 
 
+def host_volume_job_hcl_example(name: str, read_only: bool) -> str:
+    mode = hcl_bool(read_only)
+    destination = f"/opt/{name}"
+    return f"""    group "app" {{
+      volume "{name}" {{
+        type      = "host"
+        source    = "{name}"
+        read_only = {mode}
+      }}
+
+      task "web" {{
+        volume_mount {{
+          volume      = "{name}"
+          destination = "{destination}"
+          read_only   = {mode}
+        }}
+      }}
+    }}"""
+
+
+def host_volume_next_steps(name: str, read_only: bool) -> str:
+    access = "ro" if read_only else "rw"
+    return (
+        "Next:\n"
+        "  Reference this host volume in a Nomad job:\n\n"
+        f"{host_volume_job_hcl_example(name, read_only)}\n\n"
+        "  Or scaffold a job with:\n"
+        f"    {shell_command(['nomad-job', 'scaffold', 'docker', '--job', 'web', '--image', 'nginx:1.27', '--host-volume', f'{name}:/opt/{name}:{access}', '--out', 'jobs/web.nomad.hcl'])}"
+    )
+
+
 def cmd_host_volume_add(args: argparse.Namespace) -> int:
     validate_name(args.name, "host volume name")
     path = resolve_host_volume_path(args.name, args.path)
@@ -489,6 +520,7 @@ def cmd_host_volume_add(args: argparse.Namespace) -> int:
         ]
     )
     commit_managed_file(host_volume_config_path(args.name), managed_config(body))
+    print(host_volume_next_steps(args.name, args.read_only), file=sys.stderr)
     return 0
 
 
@@ -2198,10 +2230,32 @@ def build_parser() -> argparse.ArgumentParser:
     driver_allow.add_argument("driver", help="Driver name")
     driver_allow.set_defaults(func=cmd_driver_allow)
 
-    host_volume = sub.add_parser("host-volume", help="Manage host volumes")
+    host_volume = sub.add_parser(
+        "host-volume",
+        help="Manage host volumes",
+        description="Manage Nomad client host volume configs.",
+        epilog=f"""Examples:
+  {NOMAD_MANAGER_CMD} host-volume add data --create
+  nomad-job scaffold docker --job web --image nginx:1.27 --host-volume data:/opt/data:rw --out jobs/web.nomad.hcl
+""",
+    )
     hv_sub = host_volume.add_subparsers(dest="host_volume_command")
     host_volume.set_defaults(func=lambda _: missing_subcommand(host_volume, f"{NOMAD_MANAGER_CMD} host-volume"))
-    hv_add = hv_sub.add_parser("add", help="Add a managed host volume config")
+    hv_add = hv_sub.add_parser(
+        "add",
+        help="Add a managed host volume config",
+        description="Add a managed Nomad client host volume config.",
+        epilog=f"""Examples:
+  {NOMAD_MANAGER_CMD} host-volume add data --create
+  {NOMAD_MANAGER_CMD} host-volume add logs --path /srv/logs --create --read-only
+
+Job HCL reference:
+{host_volume_job_hcl_example("data", False)}
+
+Scaffold a job:
+  nomad-job scaffold docker --job web --image nginx:1.27 --host-volume data:/opt/data:rw --out jobs/web.nomad.hcl
+""",
+    )
     hv_add.add_argument("name", help="Host volume name")
     hv_add.add_argument(
         "--path",
