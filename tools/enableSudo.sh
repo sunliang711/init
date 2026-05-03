@@ -1,144 +1,345 @@
-#!/bin/bash
-if [ -z "${BASH_SOURCE}" ]; then
-    this=${PWD}
-else
-    rpath="$(readlink ${BASH_SOURCE})"
-    if [ -z "$rpath" ]; then
-        rpath=${BASH_SOURCE}
-    elif echo "$rpath" | grep -q '^/'; then
-        # absolute path
-        echo
-    else
-        # relative path
-        rpath="$(dirname ${BASH_SOURCE})/$rpath"
-    fi
-    this="$(cd $(dirname $rpath) && pwd)"
-fi
+#!/usr/bin/env bash
+set -euo pipefail
 
-search_dir="${this}"
-shelllib_path=""
-while [ "${search_dir}" != "/" ]; do
-    if [ -r "${search_dir}/config/shell/shared/shelllib.sh" ]; then
-        shelllib_path="${search_dir}/config/shell/shared/shelllib.sh"
-        break
-    fi
-    search_dir="$(dirname "${search_dir}")"
-done
+SCRIPT_NAME="$(basename "$0")"
+RULE_FILE="/etc/sudoers.d/init-nopasswd"
+RULE_HEADER="# Managed by tools/enableSudo.sh. Do not edit manually."
+DRY_RUN=0
+PARSED_ARGS=()
 
-if [ -r "${shelllib_path}" ]; then
-    # shellcheck source=/dev/null
-    source "${shelllib_path}"
-elif [ -r /tmp/shelllib.sh ]; then
-    # shellcheck source=/dev/null
-    source /tmp/shelllib.sh
-else
-    shelllibURL=https://gitee.com/sunliang711/init2/raw/master/shell/shellrc.d/shelllib
-    curl -fsSL -o /tmp/shelllib.sh "${shelllibURL}"
-    if [ -r /tmp/shelllib.sh ]; then
-        # shellcheck source=/dev/null
-        source /tmp/shelllib.sh
-    fi
-fi
+usage() {
+    cat <<EOF
+Usage:
+  ${SCRIPT_NAME} enable [options] USER
+  ${SCRIPT_NAME} disable [options] USER
+  ${SCRIPT_NAME} status USER
+  ${SCRIPT_NAME} list
 
-###############################################################################
-# write your code below (just define function[s])
-# function is hidden when begin with '_'
-###############################################################################
-# TODO
+Options:
+  --dry-run                Print planned changes without writing sudoers files.
+  -h, --help               Show this help.
 
-beginLine="# Begin enable sudo"
-endLine="# End enable sudo"
-customRule=/etc/sudoers.d/nopass
-rootId=0
+Examples:
+  ${SCRIPT_NAME} enable alice --dry-run
+  ${SCRIPT_NAME} enable alice
+  ${SCRIPT_NAME} disable alice
+  ${SCRIPT_NAME} status alice
+EOF
+}
 
-_root(){
-    if [ $EUID -ne ${rootId} ];then
-        echo "need run as root."
-        exit 1
-    fi
-    if ! command -v sudo >/dev/null 2>&1;then
-        echo "Please install sudo."
-        exit 1
+die() {
+    printf 'ERROR: %s\n' "$*" >&2
+    exit 1
+}
+
+log() {
+    printf '%s\n' "$*"
+}
+
+quote_cmd() {
+    local arg
+    printf '+'
+    for arg in "$@"; do
+        printf ' %q' "${arg}"
+    done
+    printf '\n'
+}
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "Command is required: $1"
+}
+
+require_root_for_write() {
+    if [ "${DRY_RUN}" -eq 0 ] && [ "${EUID}" -ne 0 ]; then
+        die "Root privilege is required when not using --dry-run."
     fi
 }
 
-enable(){
-    _root
-    user=${1:?'missing user'}
-    set -xe
-    if grep -q "${beginLine}" ${customRule} 2>/dev/null;then
-        echo "Already enabled,exit."
+parse_common_options() {
+    PARSED_ARGS=()
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --dry-run)
+            DRY_RUN=1
+            shift
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        --)
+            shift
+            while [ "$#" -gt 0 ]; do
+                PARSED_ARGS+=("$1")
+                shift
+            done
+            break
+            ;;
+        -*)
+            die "Unknown option: $1"
+            ;;
+        *)
+            PARSED_ARGS+=("$1")
+            shift
+            ;;
+        esac
+    done
+}
+
+normalize_user() {
+    local user="${1:-}"
+
+    [ -n "${user}" ] || die "Missing USER."
+
+    case "${user}" in
+    ALL | all)
+        die "Refuse unsafe user name: ${user}"
+        ;;
+    esac
+
+    if ! printf '%s\n' "${user}" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+        die "Invalid USER: ${user}"
+    fi
+
+    if ! id "${user}" >/dev/null 2>&1; then
+        die "User does not exist: ${user}"
+    fi
+
+    printf '%s\n' "${user}"
+}
+
+sudoers_line_for_user() {
+    local user="$1"
+    printf '%s ALL=(ALL:ALL) NOPASSWD:ALL\n' "${user}"
+}
+
+load_managed_users() {
+    local line
+    local user
+
+    if [ -e "${RULE_FILE}" ] && [ ! -r "${RULE_FILE}" ]; then
+        die "Cannot read ${RULE_FILE}. Run as root."
+    fi
+
+    [ -r "${RULE_FILE}" ] || return 0
+
+    while IFS= read -r line; do
+        case "${line}" in
+        "" | \#*)
+            continue
+            ;;
+        esac
+        user="${line%%[[:space:]]*}"
+        if [ -n "${user}" ]; then
+            printf '%s\n' "${user}"
+        fi
+    done <"${RULE_FILE}"
+}
+
+user_is_enabled() {
+    local user="$1"
+    local managed_user
+
+    while IFS= read -r managed_user; do
+        [ "${managed_user}" = "${user}" ] && return 0
+    done < <(load_managed_users)
+
+    return 1
+}
+
+write_rule_content() {
+    local user
+
+    printf '%s\n' "${RULE_HEADER}"
+    for user in "$@"; do
+        sudoers_line_for_user "${user}"
+    done
+}
+
+validate_sudoers_file() {
+    local file="$1"
+
+    require_command sudo
+    require_command visudo
+    visudo -cf "${file}" >/dev/null
+}
+
+install_rule_file() {
+    local source_file="$1"
+
+    require_command install
+    quote_cmd install -m 0440 "${source_file}" "${RULE_FILE}"
+    if [ "${DRY_RUN}" -eq 0 ]; then
+        install -m 0440 "${source_file}" "${RULE_FILE}"
+    fi
+}
+
+remove_rule_file() {
+    quote_cmd rm -f "${RULE_FILE}"
+    if [ "${DRY_RUN}" -eq 0 ]; then
+        rm -f "${RULE_FILE}"
+    fi
+}
+
+apply_users() {
+    local user_count="$#"
+    local tmp_file=""
+
+    require_command mktemp
+    require_root_for_write
+
+    if [ "${user_count}" -eq 0 ]; then
+        remove_rule_file
         return 0
+    fi
+
+    tmp_file="$(mktemp)"
+    write_rule_content "$@" >"${tmp_file}"
+
+    validate_sudoers_file "${tmp_file}"
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log "Dry-run sudoers content for ${RULE_FILE}:"
+        cat "${tmp_file}"
+    fi
+
+    install_rule_file "${tmp_file}"
+    rm -f "${tmp_file}"
+}
+
+enable() {
+    local user
+    local managed_users=()
+    local managed_user
+
+    parse_common_options "$@"
+    if [ "${#PARSED_ARGS[@]}" -gt 0 ]; then
+        set -- "${PARSED_ARGS[@]}"
     else
-        cat>>${customRule}<<-EOF
-		${beginLine}
-		$user ALL=(ALL:ALL) NOPASSWD:ALL
-		${endLine}
-		EOF
+        set --
     fi
-}
+    [ "$#" -eq 1 ] || die "Usage: ${SCRIPT_NAME} enable [options] USER"
 
-disable(){
-    _root
-    if grep -q "${beginLine}" ${customRule};then
-        perl -lne "print unless /${beginLine}/../${endLine}/" ${customRule} >${customRule}.tmp
-        mv ${customRule}.tmp ${customRule}
+    user="$(normalize_user "$1")"
+    if user_is_enabled "${user}"; then
+        log "Already enabled: ${user}"
+        return 0
     fi
-}
 
-em(){
-    $editor $0
-}
-
-###############################################################################
-# write your code above
-###############################################################################
-function _help(){
-    cat<<EOF2
-Usage: $(basename $0) ${bold}CMD${reset}
-
-${bold}CMD${reset}:
-EOF2
-    # perl -lne 'print "\t$1" if /^\s*(\w+)\(\)\{$/' $(basename ${BASH_SOURCE})
-    # perl -lne 'print "\t$2" if /^\s*(function)?\s*(\w+)\(\)\{$/' $(basename ${BASH_SOURCE}) | grep -v '^\t_'
-    perl -lne 'print "\t$2" if /^\s*(function)?\s*(\w+)\(\)\{$/' $(basename ${BASH_SOURCE}) | perl -lne "print if /^\t[^_]/"
-}
-
-function _loadENV(){
-    if [ -z "$INIT_HTTP_PROXY" ];then
-        echo "INIT_HTTP_PROXY is empty"
-        echo -n "Enter http proxy: (if you need) "
-        read INIT_HTTP_PROXY
-    fi
-    if [ -n "$INIT_HTTP_PROXY" ];then
-        echo "set http proxy to $INIT_HTTP_PROXY"
-        export http_proxy=$INIT_HTTP_PROXY
-        export https_proxy=$INIT_HTTP_PROXY
-        export HTTP_PROXY=$INIT_HTTP_PROXY
-        export HTTPS_PROXY=$INIT_HTTP_PROXY
-        git config --global http.proxy $INIT_HTTP_PROXY
-        git config --global https.proxy $INIT_HTTP_PROXY
+    while IFS= read -r managed_user; do
+        managed_users+=("${managed_user}")
+    done < <(load_managed_users)
+    managed_users+=("${user}")
+    apply_users "${managed_users[@]}"
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log "Dry-run: would enable passwordless sudo for: ${user}"
     else
-        echo "No use http proxy"
+        log "Enabled passwordless sudo for: ${user}"
     fi
 }
 
-function _unloadENV(){
-    if [ -n "$https_proxy" ];then
-        unset http_proxy
-        unset https_proxy
-        unset HTTP_PROXY
-        unset HTTPS_PROXY
-        git config --global --unset-all http.proxy
-        git config --global --unset-all https.proxy
+disable() {
+    local user
+    local managed_user
+    local next_users=()
+    local found=0
+
+    parse_common_options "$@"
+    if [ "${#PARSED_ARGS[@]}" -gt 0 ]; then
+        set -- "${PARSED_ARGS[@]}"
+    else
+        set --
+    fi
+    [ "$#" -eq 1 ] || die "Usage: ${SCRIPT_NAME} disable [options] USER"
+
+    user="$(normalize_user "$1")"
+    while IFS= read -r managed_user; do
+        if [ "${managed_user}" != "${user}" ]; then
+            next_users+=("${managed_user}")
+        else
+            found=1
+        fi
+    done < <(load_managed_users)
+
+    if [ "${found}" -eq 0 ]; then
+        log "Already disabled: ${user}"
+        return 0
+    fi
+
+    if [ "${#next_users[@]}" -gt 0 ]; then
+        apply_users "${next_users[@]}"
+    else
+        apply_users
+    fi
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log "Dry-run: would disable passwordless sudo for: ${user}"
+    else
+        log "Disabled passwordless sudo for: ${user}"
     fi
 }
 
+status() {
+    local user
 
-case "$1" in
-     ""|-h|--help|help)
-        _help
+    parse_common_options "$@"
+    if [ "${#PARSED_ARGS[@]}" -gt 0 ]; then
+        set -- "${PARSED_ARGS[@]}"
+    else
+        set --
+    fi
+    [ "$#" -eq 1 ] || die "Usage: ${SCRIPT_NAME} status USER"
+
+    user="$(normalize_user "$1")"
+    if user_is_enabled "${user}"; then
+        log "enabled: ${user}"
+    else
+        log "disabled: ${user}"
+        return 1
+    fi
+}
+
+list() {
+    local managed_users=()
+    local user
+
+    parse_common_options "$@"
+    if [ "${#PARSED_ARGS[@]}" -gt 0 ]; then
+        set -- "${PARSED_ARGS[@]}"
+    else
+        set --
+    fi
+    [ "$#" -eq 0 ] || die "Usage: ${SCRIPT_NAME} list"
+
+    while IFS= read -r user; do
+        managed_users+=("${user}")
+    done < <(load_managed_users)
+    if [ "${#managed_users[@]}" -eq 0 ]; then
+        log "No managed passwordless sudo users."
+        return 0
+    fi
+
+    log "Managed passwordless sudo users:"
+    for user in "${managed_users[@]}"; do
+        log "  ${user}"
+    done
+}
+
+main() {
+    local command="${1:-}"
+
+    case "${command}" in
+    "" | -h | --help | help)
+        usage
+        ;;
+    enable | disable | status | list)
+        shift
+        "${command}" "$@"
         ;;
     *)
-        "$@"
-esac
+        die "Unknown command: ${command}"
+        ;;
+    esac
+}
+
+main "$@"
