@@ -1057,8 +1057,23 @@ curl_stdout() {
 curl_download() {
   local url="$1"
   local output="$2"
+  local curl_args=(
+    --fail
+    --location
+    --show-error
+    --retry 3
+    --connect-timeout 10
+    --max-time 300
+    --output "$output"
+  )
 
-  curl --fail --location --show-error --silent --retry 3 --connect-timeout 10 --max-time 300 --output "$output" "$url"
+  if [ -t 2 ]; then
+    curl_args+=(--progress-bar)
+  else
+    curl_args+=(--silent)
+  fi
+
+  curl "${curl_args[@]}" "$url"
 }
 
 fetch_latest_version() {
@@ -1642,19 +1657,35 @@ ensure_vault_user() {
   run_root useradd --system --gid "$VAULT_GROUP" --home "$STATE_DIR" --shell "$shell_path" "$VAULT_USER"
 }
 
+install_vault_dir() {
+  local mode="$1"
+  local owner="$2"
+  local group="$3"
+  local path="$4"
+
+  if [ -e "$path" ] && [ ! -d "$path" ]; then
+    fatal "Path exists but is not a directory: $path"
+  fi
+
+  if ! run_root install -d -m "$mode" -o "$owner" -g "$group" "$path"; then
+    log_error "Failed to create directory: $path"
+    return 1
+  fi
+}
+
 install_directories() {
   log_info "Creating Vault directories"
-  run_root install -d -m 0755 -o root -g root "$VAULT_ROOT_DIR"
-  run_root install -d -m 0755 -o root -g root "$BIN_DIR"
-  run_root install -d -m 0755 -o root -g root "${VAULT_ROOT_DIR}/etc"
-  run_root install -d -m 0755 -o root -g root "${VAULT_ROOT_DIR}/data"
-  run_root install -d -m 0755 -o root -g root "${VAULT_ROOT_DIR}/lib"
-  run_root install -d -m 0750 -o root -g root "${VAULT_ROOT_DIR}/log"
-  run_root install -d -m 0755 -o root -g root "$CONFIG_DIR"
-  run_root install -d -m 0755 -o root -g root "$TLS_DIR"
-  run_root install -d -m 0750 -o "$VAULT_USER" -g "$VAULT_GROUP" "$STATE_DIR"
-  run_root install -d -m 0750 -o "$VAULT_USER" -g "$VAULT_GROUP" "$DATA_DIR"
-  run_root install -d -m 0700 -o root -g root "$INIT_DIR"
+  install_vault_dir 0755 root root "$VAULT_ROOT_DIR"
+  install_vault_dir 0755 root root "$BIN_DIR"
+  install_vault_dir 0755 root root "${VAULT_ROOT_DIR}/etc"
+  install_vault_dir 0755 root root "${VAULT_ROOT_DIR}/data"
+  install_vault_dir 0755 root root "${VAULT_ROOT_DIR}/lib"
+  install_vault_dir 0750 root root "${VAULT_ROOT_DIR}/log"
+  install_vault_dir 0755 root root "$CONFIG_DIR"
+  install_vault_dir 0755 root root "$TLS_DIR"
+  install_vault_dir 0750 "$VAULT_USER" "$VAULT_GROUP" "$STATE_DIR"
+  install_vault_dir 0750 "$VAULT_USER" "$VAULT_GROUP" "$DATA_DIR"
+  install_vault_dir 0700 root root "$INIT_DIR"
 }
 
 download_vault() {
