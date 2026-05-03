@@ -406,7 +406,7 @@ _verify_docker_install() {
     }
 }
 
-install() {
+install_docker() {
     local dryRun=0
     local replaceConflicts=0
 
@@ -453,22 +453,27 @@ install() {
 ###############################################################################
 
 em() {
-    $ed $0
+    $ed "$0"
 }
 
 function _help() {
-    cd "${this}"
+    cd "${this}" || exit
     cat <<EOF2
-Usage: $(basename $0) ${bold}CMD${reset}
+Usage: $(basename "$0") ${bold}CMD${reset}
 
 ${bold}CMD${reset}:
 EOF2
-    perl -lne 'print "\t$2" if /^\s*(function)?\s*(\S+)\s*\(\)\s*\{$/' $(basename ${BASH_SOURCE}) | perl -lne "print if /^\t[^_]/"
+    printf '\tinstall\n'
+    perl -lne 'print "\t$2" if /^\s*(function)?\s*(\S+)\s*\(\)\s*\{$/' "$(basename "${BASH_SOURCE[0]}")" | perl -lne "print if /^\t[^_]/ && !/^\tinstall_docker$/"
 }
 
 case "$1" in
 "" | -h | --help | help)
     _help
+    ;;
+install)
+    shift
+    install_docker "$@"
     ;;
 *)
     "$@"
