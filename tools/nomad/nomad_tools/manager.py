@@ -88,6 +88,7 @@ AUDIT_LOG_FILE = TOOL_LOG_DIR / "manager.audit.log"
 DATA_POINTER_FILE = DATA_DIR / ".managed-by-nomad-init-tools"
 RELEASE_INDEX_URL = "https://releases.hashicorp.com/nomad/"
 NOMAD_ADDR = "http://127.0.0.1:4646"
+DEFAULT_VAULT_ADDR = "http://127.0.0.1:8200"
 LOCAL_NO_PROXY = "127.0.0.1,localhost,::1"
 MANAGED_MARKER = "# Managed by tools/nomad/nomad-manager"
 TLS_CONFIG = CONFIG_DIR / "30-tls.hcl"
@@ -846,6 +847,14 @@ def vault_ca_cert_file(address: str = "") -> str:
     return vault_client_env_file_value("VAULT_CACERT")
 
 
+def detected_vault_addr() -> str:
+    return os.environ.get("VAULT_ADDR", "") or vault_client_env_file_value("VAULT_ADDR") or DEFAULT_VAULT_ADDR
+
+
+def shell_export_line(name: str, value: str) -> str:
+    return f"export {name}={shlex.quote(value)}"
+
+
 def doctor_nomad_config() -> int:
     if not BIN_PATH.exists():
         doctor_check("FAIL", f"Nomad binary not found: {BIN_PATH}")
@@ -889,6 +898,9 @@ def cmd_vault_doctor(args: argparse.Namespace) -> int:
         if command_exists("vault"):
             env = os.environ.copy()
             env["VAULT_ADDR"] = base
+            cacert = vault_ca_cert_file(base)
+            if cacert:
+                env.setdefault("VAULT_CACERT", cacert)
             if namespace:
                 env["VAULT_NAMESPACE"] = namespace
             if run(["vault", "status"], check=False, env=env, capture=True).returncode == 0:
@@ -1986,6 +1998,14 @@ def cmd_quickstart(_: argparse.Namespace) -> int:
 
 def cmd_tutor(args: argparse.Namespace) -> int:
     topic = args.topic or "overview"
+    vault_addr = detected_vault_addr()
+    vault_cacert = vault_ca_cert_file(vault_addr)
+    vault_cacert_export = f"  {shell_export_line('VAULT_CACERT', vault_cacert)}\n" if vault_cacert else ""
+    vault_secret_path = "kv/data/app/*"
+    vault_enable_command = shell_command([NOMAD_MANAGER_CMD, "vault", "enable", "--address", vault_addr])
+    vault_jwt_apply_command_line = shell_command([NOMAD_MANAGER_CMD, "vault-jwt", "apply", "--profile", "default", "--vault-addr", vault_addr, "--nomad-addr", NOMAD_ADDR])
+    vault_secret_plan_command = shell_command([NOMAD_MANAGER_CMD, "vault-jwt", "plan", "--profile", "default", "--vault-addr", vault_addr, "--nomad-addr", NOMAD_ADDR, "--secret-path", vault_secret_path])
+    vault_secret_apply_command = shell_command([NOMAD_MANAGER_CMD, "vault-jwt", "apply", "--profile", "default", "--vault-addr", vault_addr, "--nomad-addr", NOMAD_ADDR, "--secret-path", vault_secret_path])
     topics = {
         "overview": f"""Nomad manager tutor:
   Purpose:
@@ -2001,8 +2021,8 @@ def cmd_tutor(args: argparse.Namespace) -> int:
         "install": f"Install a single node:\n  {NOMAD_MANAGER_CMD} install --version {DEFAULT_NOMAD_VERSION}",
         "docker": f"Enable Docker support:\n  {NOMAD_MANAGER_CMD} docker enable --allow-privileged --volumes",
         "cni": f"Enable CNI bridge networking:\n  {NOMAD_MANAGER_CMD} cni plan\n  {NOMAD_MANAGER_CMD} cni enable\n  {NOMAD_MANAGER_CMD} cni status",
-        "vault": f"Point Nomad at Vault:\n  {NOMAD_MANAGER_CMD} vault enable --address http://127.0.0.1:8200",
-        "vault-jwt": f"Link workload identity:\n  {NOMAD_MANAGER_CMD} vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://127.0.0.1:4646",
+        "vault": f"Point Nomad at Vault:\n  {vault_enable_command}",
+        "vault-jwt": f"Link workload identity:\n  {vault_jwt_apply_command_line}",
         "consul": f"Point Nomad at Consul:\n  {NOMAD_MANAGER_CMD} consul enable --address 127.0.0.1:8500",
         "ui": f"Enable UI settings:\n  {NOMAD_MANAGER_CMD} ui enable",
         "workflows": f"""Workflow topics:
@@ -2012,13 +2032,13 @@ def cmd_tutor(args: argparse.Namespace) -> int:
   {NOMAD_MANAGER_CMD} tutor web-service-job
 """,
         "vault-secret-job": f"""Run a Vault-backed job workflow:
-  export VAULT_ADDR=http://127.0.0.1:8200
-  export VAULT_TOKEN=<root-token-or-admin-token>
+  {shell_export_line('VAULT_ADDR', vault_addr)}
+{vault_cacert_export}  export VAULT_TOKEN=<root-token-or-admin-token>
   vault secrets enable -path=kv kv-v2
   vault kv put kv/app/config value='my-secret-value' username='app-user' password='app-password' api_key='app-api-key'
   vault kv get kv/app/config
-  {NOMAD_MANAGER_CMD} vault-jwt plan --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://127.0.0.1:4646 --secret-path kv/data/app/*
-  {NOMAD_MANAGER_CMD} vault-jwt apply --profile default --vault-addr http://127.0.0.1:8200 --nomad-addr http://127.0.0.1:4646 --secret-path kv/data/app/*
+  {vault_secret_plan_command}
+  {vault_secret_apply_command}
   {NOMAD_MANAGER_CMD} vault-jwt job-example --profile default --job web --secret kv/data/app/config --out jobs/web.nomad.hcl
   nomad-job validate jobs/web.nomad.hcl
   nomad-job plan jobs/web.nomad.hcl

@@ -32,6 +32,8 @@ from .common import (
 
 
 NOMAD_ROOT_DIR = Path("/opt/nomad")
+DEFAULT_VAULT_ADDR = "http://127.0.0.1:8200"
+VAULT_CLIENT_ENV_FILE = Path("/opt/vault/etc/vault.d/client.env")
 HOST_VOLUME_DIR = NOMAD_ROOT_DIR / "volumes"
 TOOL_LOG_DIR = NOMAD_ROOT_DIR / "log" / "nomad-init-tools"
 AUDIT_LOG_FILE = TOOL_LOG_DIR / "job.audit.log"
@@ -639,6 +641,27 @@ def shell_command(args: list[str]) -> str:
     return " ".join(shlex.quote(item) for item in args)
 
 
+def vault_client_env_file_value(name: str) -> str:
+    if not VAULT_CLIENT_ENV_FILE.is_file():
+        return ""
+    try:
+        lines = VAULT_CLIENT_ENV_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, raw_value = stripped.split("=", 1)
+        if key.strip() == name:
+            return raw_value.strip().strip("'\"")
+    return ""
+
+
+def detected_vault_addr() -> str:
+    return os.environ.get("VAULT_ADDR", "") or vault_client_env_file_value("VAULT_ADDR") or DEFAULT_VAULT_ADDR
+
+
 def host_volume_setup_commands(args: argparse.Namespace) -> list[str]:
     paths = getattr(args, "host_volume_paths", {}) or {}
     commands: list[str] = []
@@ -701,7 +724,7 @@ def vault_setup_commands(args: argparse.Namespace) -> list[str]:
         "--profile",
         "default",
         "--vault-addr",
-        "http://127.0.0.1:8200",
+        detected_vault_addr(),
         "--nomad-addr",
         "http://127.0.0.1:4646",
         "--role",

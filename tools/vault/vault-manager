@@ -576,6 +576,21 @@ EOF
 
 tutor_usage() {
   local topic="${1:-overview}"
+  local quoted_vault_addr=""
+  local quoted_vault_cacert=""
+  local vault_cacert_export_line=""
+  local vault_inline_env=""
+  local curl_cacert_arg=""
+
+  printf -v quoted_vault_addr "%q" "$VC_ADDR"
+  vault_inline_env="VAULT_ADDR=${quoted_vault_addr}"
+  if [ -n "$VC_CACERT" ]; then
+    printf -v quoted_vault_cacert "%q" "$VC_CACERT"
+    vault_cacert_export_line="   export VAULT_CACERT=${quoted_vault_cacert}
+"
+    vault_inline_env="${vault_inline_env} VAULT_CACERT=${quoted_vault_cacert}"
+    curl_cacert_arg=" --cacert ${quoted_vault_cacert}"
+  fi
 
   case "$topic" in
     overview | help | -h | --help)
@@ -683,7 +698,7 @@ Before you start:
    ${VAULT_MANAGER_CMD} status --token-file ${INIT_DIR}/vault-init.json
 
 4. Check health:
-   ${VAULT_MANAGER_CMD} doctor --addr ${DEFAULT_VAULT_ADDR}
+   ${VAULT_MANAGER_CMD} doctor --addr ${quoted_vault_addr}
 
 Verify:
   ${VAULT_MANAGER_CMD} status shows initialized=true and sealed=false.
@@ -716,8 +731,8 @@ Before you start:
    ${VAULT_MANAGER_CMD} unseal --keys-file ${INIT_DIR}/vault-init.json
 
 2. Export Vault address and a setup token:
-   export VAULT_ADDR=${DEFAULT_VAULT_ADDR}
-   export VAULT_TOKEN=<root-token-from-${INIT_DIR}/vault-init.json>
+   export VAULT_ADDR=${quoted_vault_addr}
+${vault_cacert_export_line}   export VAULT_TOKEN=<root-token-from-${INIT_DIR}/vault-init.json>
 
 3. Enable KV v2 once at path kv:
    vault secrets enable -path=kv kv-v2
@@ -728,7 +743,7 @@ Before you start:
    vault kv get -field=value kv/app
 
 5. Allow a Nomad job to read that secret:
-   nomad-manager vault-jwt apply --profile default --vault-addr ${DEFAULT_VAULT_ADDR} --nomad-addr http://127.0.0.1:4646 --secret-path kv/data/app
+   nomad-manager vault-jwt apply --profile default --vault-addr ${quoted_vault_addr} --nomad-addr http://127.0.0.1:4646 --secret-path kv/data/app
    nomad-manager vault-jwt job-example --profile default --job app --secret kv/data/app --out jobs/app-vault.nomad.hcl
 
 Verify:
@@ -851,17 +866,17 @@ Before you start:
    export VAULT_TOKEN=<redacted>
 
 3. Run the linked Nomad workflow:
-   nomad-manager vault-jwt plan --profile default --vault-addr ${DEFAULT_VAULT_ADDR} --nomad-addr http://10.2.37.64:4646
-   nomad-manager vault-jwt apply --profile default --vault-addr ${DEFAULT_VAULT_ADDR} --nomad-addr http://10.2.37.64:4646 --secret-path kv/data/app
+   nomad-manager vault-jwt plan --profile default --vault-addr ${quoted_vault_addr} --nomad-addr http://10.2.37.64:4646
+   nomad-manager vault-jwt apply --profile default --vault-addr ${quoted_vault_addr} --nomad-addr http://10.2.37.64:4646 --secret-path kv/data/app
 
 4. Check Vault pieces manually when needed:
    ${VAULT_MANAGER_CMD} auth read jwt-nomad/config --token-file ${INIT_DIR}/vault-init.json
    ${VAULT_MANAGER_CMD} policy read nomad-workloads --token-file ${INIT_DIR}/vault-init.json
-   VAULT_ADDR=${DEFAULT_VAULT_ADDR} vault read auth/jwt-nomad/role/nomad-workloads
+   ${vault_inline_env} vault read auth/jwt-nomad/role/nomad-workloads
 
 Verify:
   nomad-manager vault-jwt doctor --profile default
-  VAULT_ADDR=${DEFAULT_VAULT_ADDR} vault read auth/jwt-nomad/role/nomad-workloads
+  ${vault_inline_env} vault read auth/jwt-nomad/role/nomad-workloads
 
 Common failures:
   Vault cannot reach Nomad's JWKS endpoint.
@@ -885,7 +900,7 @@ Before you start:
 
 1. Check whether Vault is initialized, sealed or unavailable:
    ${VAULT_MANAGER_CMD} status
-   ${VAULT_MANAGER_CMD} doctor --addr ${DEFAULT_VAULT_ADDR}
+   ${VAULT_MANAGER_CMD} doctor --addr ${quoted_vault_addr}
 
 2. If Vault is sealed, unseal it from the saved init JSON:
    ${VAULT_MANAGER_CMD} unseal --keys-file ${INIT_DIR}/vault-init.json
@@ -896,8 +911,8 @@ Before you start:
 
 4. If the root token was lost but another admin token exists:
    export VAULT_TOKEN=<admin-token>
-   VAULT_ADDR=${DEFAULT_VAULT_ADDR} vault token lookup
-   VAULT_ADDR=${DEFAULT_VAULT_ADDR} vault token create -policy=<admin-policy>
+   ${vault_inline_env} vault token lookup
+   ${vault_inline_env} vault token create -policy=<admin-policy>
 
 5. If local raft data or init output was removed:
    Restore ${STATE_DIR} and ${INIT_DIR} from backup before starting Vault.
@@ -965,8 +980,8 @@ Before you start:
 
 2. Check Vault status and health:
    ${VAULT_MANAGER_CMD} status
-   ${VAULT_MANAGER_CMD} doctor --addr ${DEFAULT_VAULT_ADDR}
-   curl --noproxy '*' ${DEFAULT_VAULT_ADDR}/v1/sys/health
+   ${VAULT_MANAGER_CMD} doctor --addr ${quoted_vault_addr}
+   curl --noproxy '*'${curl_cacert_arg} ${quoted_vault_addr}/v1/sys/health
 
 3. Check seal state and unseal when needed:
    ${VAULT_MANAGER_CMD} status
@@ -982,7 +997,7 @@ Before you start:
 
 Verify:
   ${VAULT_MANAGER_CMD} status returns a clear initialized/sealed state.
-  ${VAULT_MANAGER_CMD} doctor --addr ${DEFAULT_VAULT_ADDR} reaches the health endpoint.
+  ${VAULT_MANAGER_CMD} doctor --addr ${quoted_vault_addr} reaches the health endpoint.
 
 Common failures:
   Vault service is running but sealed.
@@ -3087,6 +3102,7 @@ dispatch_tutor() {
   local topic="${1:-overview}"
 
   [ "$#" -le 1 ] || fatal "tutor accepts at most one topic"
+  reset_vault_cli_opts
   if ! tutor_usage "$topic"; then
     tutor_usage >&2
     fatal "Unknown tutor topic: ${topic}"
