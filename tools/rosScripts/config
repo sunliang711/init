@@ -23,6 +23,7 @@ mappings=(
 "udp|4000-4400|10.1.1.33||ss1 udp"
 
 "udp|51820|10.1.1.33||wireguard"
+"tcp|2200|10.1.1.33|22|33 tcp"
 
 "tcp|8443|10.1.1.99||syncthing discovery"
 "tcp|22067|10.1.1.99||syncthing relay"
