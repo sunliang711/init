@@ -15,3 +15,5 @@
 /tools/docker/useful-docker-compose/filebrowser/data
 
 /tools/dns/env
+
+__pycache__/
