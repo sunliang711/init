@@ -1503,20 +1503,83 @@ def exported_job_filename(job_id: str) -> str:
     return f"{safe_name}.nomad.hcl"
 
 
+def job_id_from_status_item(item: object) -> str:
+    if isinstance(item, str):
+        return item
+    if not isinstance(item, dict):
+        return ""
+    for key in ("ID", "JobID", "Name"):
+        value = item.get(key)
+        if value:
+            return str(value)
+    for key in ("Summary", "LatestDeployment"):
+        value = item.get(key)
+        if isinstance(value, dict) and value.get("JobID"):
+            return str(value["JobID"])
+    for key in ("Allocations", "Evaluations"):
+        value = item.get(key)
+        if isinstance(value, list):
+            for child in value:
+                if isinstance(child, dict) and child.get("JobID"):
+                    return str(child["JobID"])
+    return ""
+
+
+def extract_job_status_items(payload: object) -> list[object]:
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("Jobs", "jobs", "Items", "items"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+    return []
+
+
+def parse_nomad_job_status_text(output: str) -> list[str]:
+    job_ids: list[str] = []
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line or line == "ID" or line.startswith(("==>", "ID ", "ID\t", "No ")):
+            continue
+        parts = line.split()
+        if parts:
+            job_ids.append(parts[0])
+    return sorted(set(job_ids))
+
+
+def nomad_job_status_text_has_no_jobs(output: str) -> bool:
+    return any(
+        line.strip().lower().startswith("no ") and "job" in line.lower()
+        for line in output.splitlines()
+    )
+
+
 def list_nomad_job_ids() -> list[str]:
     require_command("nomad")
-    result = run(["nomad", "job", "status", "-json"], capture=True)
-    try:
-        payload = json.loads(result.stdout or "[]")
-    except json.JSONDecodeError as exc:
-        raise CLIError("Failed to parse nomad job status JSON") from exc
-    if not isinstance(payload, list):
-        raise CLIError("Unexpected nomad job status JSON")
-    job_ids: list[str] = []
-    for item in payload:
-        if isinstance(item, dict) and item.get("ID"):
-            job_ids.append(str(item["ID"]))
-    return sorted(job_ids)
+    text_result = run(["nomad", "job", "status"], capture=True, check=False)
+    if text_result.returncode != 0:
+        message = (text_result.stderr or text_result.stdout or "nomad job status failed").strip()
+        raise CLIError(message)
+    job_ids = parse_nomad_job_status_text(text_result.stdout)
+    if job_ids:
+        return job_ids
+    if nomad_job_status_text_has_no_jobs(text_result.stdout):
+        return []
+    json_result = run(["nomad", "job", "status", "-json"], capture=True, check=False)
+    if json_result.returncode == 0:
+        try:
+            payload = json.loads(json_result.stdout or "[]")
+        except json.JSONDecodeError:
+            payload = []
+        items = extract_job_status_items(payload)
+        job_ids = sorted({job_id for item in items if (job_id := job_id_from_status_item(item))})
+        if job_ids:
+            return job_ids
+        if items:
+            raise CLIError("Nomad job status JSON did not contain recognizable job IDs")
+    message = (json_result.stderr or "Nomad job status output did not contain recognizable job IDs").strip()
+    raise CLIError(message)
 
 
 def export_nomad_job(job_id: str, output_dir: Path, *, force: bool) -> Path:
