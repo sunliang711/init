@@ -1372,7 +1372,7 @@ def cmd_vault_jwt_apply(args: argparse.Namespace) -> int:
             ttl=data["ttl"],
             env=False,
             file=True,
-            ca_file="",
+            ca_file=vault_ca_cert_file(data["vault_addr"]),
             ca_path="",
             cert_file="",
             key_file="",
@@ -2002,7 +2002,10 @@ def cmd_tutor(args: argparse.Namespace) -> int:
     vault_cacert = vault_ca_cert_file(vault_addr)
     vault_cacert_export = f"  {shell_export_line('VAULT_CACERT', vault_cacert)}\n" if vault_cacert else ""
     vault_secret_path = "kv/data/app/*"
-    vault_enable_command = shell_command([NOMAD_MANAGER_CMD, "vault", "enable", "--address", vault_addr])
+    vault_enable_args = [NOMAD_MANAGER_CMD, "vault", "enable", "--address", vault_addr]
+    if vault_cacert:
+        vault_enable_args.extend(["--ca-file", vault_cacert])
+    vault_enable_command = shell_command(vault_enable_args)
     vault_jwt_apply_command_line = shell_command([NOMAD_MANAGER_CMD, "vault-jwt", "apply", "--profile", "default", "--vault-addr", vault_addr, "--nomad-addr", NOMAD_ADDR])
     vault_secret_plan_command = shell_command([NOMAD_MANAGER_CMD, "vault-jwt", "plan", "--profile", "default", "--vault-addr", vault_addr, "--nomad-addr", NOMAD_ADDR, "--secret-path", vault_secret_path])
     vault_secret_apply_command = shell_command([NOMAD_MANAGER_CMD, "vault-jwt", "apply", "--profile", "default", "--vault-addr", vault_addr, "--nomad-addr", NOMAD_ADDR, "--secret-path", vault_secret_path])
