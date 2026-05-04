@@ -273,6 +273,16 @@ build_common_ssh_args() {
   fi
 }
 
+report_ssh_failure() {
+  local status="$1"
+
+  log_error "SSH tunnel command failed with exit code: ${status}"
+  if [ -n "$LOG_FILE" ] && [ -s "$LOG_FILE" ]; then
+    log_error "SSH log tail (${LOG_FILE}):"
+    tail -n 20 "$LOG_FILE" >&2 || true
+  fi
+}
+
 run_tunnel() {
   local mode="$1"
   local forward_arg
@@ -280,6 +290,7 @@ run_tunnel() {
   local target
   local socket
   local flow
+  local ssh_status
 
   require_command ssh
   [ -n "$SSH_DEST" ] || fatal "Missing --ssh"
@@ -343,7 +354,13 @@ run_tunnel() {
 
   log_info "Starting ${mode} tunnel: ${listen} -> ${target} via ${SSH_DEST}"
   log_info "Flow: ${flow}"
-  "${SSH_ARGS[@]}"
+  if "${SSH_ARGS[@]}"; then
+    :
+  else
+    ssh_status="$?"
+    report_ssh_failure "$ssh_status"
+    return "$ssh_status"
+  fi
   if [ "$BACKGROUND" -eq 1 ]; then
     write_metadata "$NAME" "$mode" "$SSH_DEST" "$SSH_PORT" "$listen" "$target" "$LOG_FILE"
     log_info "Tunnel started: ${NAME}"
