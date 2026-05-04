@@ -335,7 +335,9 @@ confirm_inferred_values() {
   local renderer_source="${11}"
   local apply_mode="${12}"
   local apply_mode_source="${13}"
+  local conflict_files="${14:-}"
   local has_inferred=0
+  local needs_confirmation=0
   local answer
   local source
 
@@ -346,10 +348,14 @@ confirm_inferred_values() {
     fi
   done
 
-  [ "$has_inferred" -eq 1 ] || return 0
+  if [ "$has_inferred" -eq 1 ] || [ -n "$conflict_files" ]; then
+    needs_confirmation=1
+  fi
+
+  [ "$needs_confirmation" -eq 1 ] || return 0
 
   cat <<EOF
-The following values include inferred settings:
+The following values require confirmation:
 
   IP address: $ip_address ($(source_label "$ip_source"))
   Interface: $iface ($(source_label "$iface_source"))
@@ -360,12 +366,20 @@ The following values include inferred settings:
 
 EOF
 
+  if [ -n "$conflict_files" ]; then
+    cat <<EOF
+Existing netplan entries reference interface '$iface':
+$conflict_files
+
+EOF
+  fi
+
   if [ "$confirm" = "true" ]; then
     echo "Confirmation skipped because --confirm was provided."
     return 0
   fi
 
-  [ -t 0 ] || die "Inferred settings require --confirm in non-interactive mode."
+  [ -t 0 ] || die "Confirmation is required in non-interactive mode. Pass --confirm to continue."
 
   printf '%s' "Proceed with this netplan change? Type 'yes' to continue: "
   read -r answer
@@ -738,15 +752,6 @@ run_set() {
     is_ipv4 "$dns" || die "DNS '$dns' is not a valid IPv4 address."
   done
 
-  confirm_inferred_values \
-    "$cfg_confirm" \
-    "$cfg_ip_address" "$ip_source" \
-    "$cfg_iface" "$iface_source" \
-    "$cfg_gateway" "$gateway_source" \
-    "$cfg_dns_list" "$dns_source" \
-    "$cfg_renderer" "$renderer_source" \
-    "$cfg_apply_mode" "$apply_mode_source"
-
   if [ "$cfg_apply_mode" = "try" ] && [ ! -t 0 ]; then
     die "APPLY_MODE=try requires an interactive terminal. Set APPLY_MODE=apply for non-interactive runs."
   fi
@@ -758,14 +763,22 @@ run_set() {
   backup_file="${config_file}.bak.$(date +%Y%m%d%H%M%S)"
 
   if conflict_files="$(list_iface_config_conflicts "$cfg_iface" "$config_file")"; then
-    if [ "$cfg_allow_existing_iface_config" = "false" ]; then
-      die "Existing netplan entries reference interface '$cfg_iface':
-$conflict_files
-Set ALLOW_EXISTING_IFACE_CONFIG=true only after confirming these files will not conflict."
+    if [ "$cfg_allow_existing_iface_config" = "true" ]; then
+      warn "Existing netplan entries reference interface '$cfg_iface':"
+      printf '%s\n' "$conflict_files" >&2
+      conflict_files=""
     fi
-    warn "Existing netplan entries reference interface '$cfg_iface':"
-    printf '%s\n' "$conflict_files" >&2
   fi
+
+  confirm_inferred_values \
+    "$cfg_confirm" \
+    "$cfg_ip_address" "$ip_source" \
+    "$cfg_iface" "$iface_source" \
+    "$cfg_gateway" "$gateway_source" \
+    "$cfg_dns_list" "$dns_source" \
+    "$cfg_renderer" "$renderer_source" \
+    "$cfg_apply_mode" "$apply_mode_source" \
+    "$conflict_files"
 
   STAGE_ROOT="$(mktemp -d)"
   trap cleanup_stage_root EXIT

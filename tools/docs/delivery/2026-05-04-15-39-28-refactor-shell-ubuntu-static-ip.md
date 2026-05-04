@@ -23,6 +23,7 @@
 - 保留环境变量传参兼容，同时新增 `--ip`、`--gateway`、`--dns`、`--iface`、`--renderer`、`--mode`、`--timeout` 等长参数。
 - `IFACE`、`GATEWAY`、`DNS_LIST`、`RENDERER` 缺省时自动推断。
 - 只要存在任意推断值，就会打印完整配置摘要并要求输入 `yes`；非交互环境必须传 `--confirm`。
+- 同接口已有 netplan 配置时，会在同一次确认摘要中列出冲突文件，避免确认后才报错。
 - 默认 `APPLY_MODE` 改为 `try`，远程执行时优先使用 netplan 的确认窗口降低断网风险。
 - 在临时 root 目录中预生成 netplan 配置，并先执行 `netplan generate --root-dir`，通过后才写入 `/etc/netplan`。
 - 写入真实配置后再次执行 `netplan generate`，失败时自动恢复旧配置文件。
