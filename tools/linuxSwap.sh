@@ -17,40 +17,97 @@ die() {
 
 show_help() {
     cat <<EOF
-Usage: ${0##*/} [OPTION]
+Usage: ${0##*/} [OPTIONS]
 
 Create and enable a Linux swap file.
 
 Options:
-  -h, --help    Show this help message and exit
+  -f, --file PATH    Use a custom swap file path
+  -s, --size SIZE    Use a custom swap size, such as 2048, 2048M, or 2G
+  -h, --help         Show this help message and exit
 
 Defaults:
   Swap file:    $SWAP
   Swap size:    ${SWAP_SIZE_MB}MiB
   fstab file:   $FSTAB
 
+Examples:
+  sudo ${0##*/} --size 2G
+  sudo ${0##*/} --file /var/swapfile --size 2048M
+
 Notes:
   This script must be run as root unless --help is used.
   It creates the swap file if missing, enables it, and appends an fstab entry if needed.
+  The size option is only used when the swap file does not already exist.
 EOF
 }
 
-parse_args() {
-    if (($# > 1));then
-        die "Too many arguments."
+normalize_size() {
+    local number
+    local unit
+    local value
+
+    value=$1
+
+    if [[ ! "$value" =~ ^([1-9][0-9]*)([mMgG]?)$ ]];then
+        die "Swap size must be a positive integer with optional M or G suffix: $value"
     fi
 
-    case "${1:-}" in
-        -h|--help)
-            show_help
-            exit 0
+    number=${BASH_REMATCH[1]}
+    unit=${BASH_REMATCH[2]}
+
+    case "$unit" in
+        g|G)
+            SWAP_SIZE_MB=$((number * 1024))
             ;;
-        "")
-            ;;
-        *)
-            die "Unknown option: $1"
+        ""|m|M)
+            SWAP_SIZE_MB=$number
             ;;
     esac
+}
+
+validate_swap_path_value() {
+    if [[ -z "$SWAP" || "$SWAP" != /* || "$SWAP" == "/" ]];then
+        die "Invalid swap file path: $SWAP"
+    fi
+}
+
+parse_args() {
+    while (($# > 0));do
+        case "$1" in
+            -h|--help)
+                show_help
+                exit 0
+                ;;
+            -f|--file)
+                if (($# < 2));then
+                    die "Missing value for $1"
+                fi
+                SWAP=$2
+                shift 2
+                ;;
+            --file=*)
+                SWAP=${1#*=}
+                shift
+                ;;
+            -s|--size)
+                if (($# < 2));then
+                    die "Missing value for $1"
+                fi
+                normalize_size "$2"
+                shift 2
+                ;;
+            --size=*)
+                normalize_size "${1#*=}"
+                shift
+                ;;
+            *)
+                die "Unknown option: $1"
+                ;;
+        esac
+    done
+
+    validate_swap_path_value
 }
 
 require_root() {
@@ -79,9 +136,7 @@ validate_paths() {
     local swap_dir
 
     # 写入系统文件前先校验路径，避免空路径、目录或符号链接导致误操作。
-    if [[ -z "$SWAP" || "$SWAP" != /* || "$SWAP" == "/" ]];then
-        die "Invalid swap file path: $SWAP"
-    fi
+    validate_swap_path_value
 
     if [[ -L "$SWAP" ]];then
         die "Swap file must not be a symbolic link: $SWAP"
