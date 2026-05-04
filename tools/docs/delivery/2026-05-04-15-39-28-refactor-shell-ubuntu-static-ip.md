@@ -19,6 +19,10 @@
 
 ## 主要优化
 
+- 支持 `sudo ./ubuntu-static-ip.sh set 192.168.66.88/24` 形式调用，`IP_ADDRESS` 是唯一必填业务参数。
+- 保留环境变量传参兼容，同时新增 `--ip`、`--gateway`、`--dns`、`--iface`、`--renderer`、`--mode`、`--timeout` 等长参数。
+- `IFACE`、`GATEWAY`、`DNS_LIST`、`RENDERER` 缺省时自动推断。
+- 只要存在任意推断值，就会打印完整配置摘要并要求输入 `yes`；非交互环境必须传 `--confirm`。
 - 默认 `APPLY_MODE` 改为 `try`，远程执行时优先使用 netplan 的确认窗口降低断网风险。
 - 在临时 root 目录中预生成 netplan 配置，并先执行 `netplan generate --root-dir`，通过后才写入 `/etc/netplan`。
 - 写入真实配置后再次执行 `netplan generate`，失败时自动恢复旧配置文件。
@@ -32,6 +36,8 @@
 - `bash -n ubuntu-static-ip.sh` 通过。
 - `shellcheck ubuntu-static-ip.sh` 通过。
 - `./ubuntu-static-ip.sh help` 可正常输出帮助信息。
+- `./ubuntu-static-ip.sh set --help` 可在非 root 下正常输出帮助信息。
+- 非 root 执行真实 `set` 会在修改系统配置前报错退出。
 
 ## 残余风险
 
