@@ -2050,6 +2050,8 @@ def cmd_tutor(args: argparse.Namespace) -> int:
 Notes:
   vault kv put uses the KV CLI path kv/app/config.
   Nomad templates and Vault policies use the KV v2 API path kv/data/app/config.
+  The apply command above is the simplified default form.
+  For exact options, run plan first and use the full Next command it prints.
   If kv/ is already enabled, skip the vault secrets enable command.
   Avoid putting real secret values directly in shared shell history.
 """,
