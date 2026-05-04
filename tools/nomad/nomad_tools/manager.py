@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import pwd
@@ -1492,6 +1493,55 @@ EOH
     return 0
 
 
+def exported_job_filename(job_id: str) -> str:
+    safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", job_id).strip("._")
+    if not safe_name:
+        safe_name = "job"
+    if safe_name != job_id:
+        digest = hashlib.sha256(job_id.encode("utf-8")).hexdigest()[:8]
+        safe_name = f"{safe_name}-{digest}"
+    return f"{safe_name}.nomad.hcl"
+
+
+def list_nomad_job_ids() -> list[str]:
+    require_command("nomad")
+    result = run(["nomad", "job", "status", "-json"], capture=True)
+    try:
+        payload = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError as exc:
+        raise CLIError("Failed to parse nomad job status JSON") from exc
+    if not isinstance(payload, list):
+        raise CLIError("Unexpected nomad job status JSON")
+    job_ids: list[str] = []
+    for item in payload:
+        if isinstance(item, dict) and item.get("ID"):
+            job_ids.append(str(item["ID"]))
+    return sorted(job_ids)
+
+
+def export_nomad_job(job_id: str, output_dir: Path, *, force: bool) -> Path:
+    require_command("nomad")
+    result = run(["nomad", "job", "inspect", "-hcl", job_id], capture=True)
+    content = result.stdout if result.stdout.endswith("\n") else result.stdout + "\n"
+    output_path = output_dir / exported_job_filename(job_id)
+    atomic_write_text(output_path, content, force=force)
+    return output_path
+
+
+def cmd_export(args: argparse.Namespace) -> int:
+    jobs = list(args.jobs)
+    if not jobs:
+        jobs = list_nomad_job_ids()
+    if not jobs:
+        log_warn("No Nomad jobs found")
+        return 0
+    output_dir = Path(args.out_dir)
+    for job_id in jobs:
+        output_path = export_nomad_job(job_id, output_dir, force=args.force)
+        log_success(f"Exported Nomad job {job_id}: {output_path}")
+    return 0
+
+
 def create_install_tmpdir(prefix: str) -> Path:
     parent = Path(os.environ.get("TMPDIR", "/var/tmp"))
     if not parent.is_dir() or not os.access(parent, os.W_OK):
@@ -2110,6 +2160,7 @@ def build_parser() -> argparse.ArgumentParser:
   {NOMAD_MANAGER_CMD} install --version {DEFAULT_NOMAD_VERSION}
   {NOMAD_MANAGER_CMD} tools update
   {NOMAD_MANAGER_CMD} doctor
+  {NOMAD_MANAGER_CMD} export web api
   {NOMAD_MANAGER_CMD} docker enable --allow-privileged --volumes
   {NOMAD_MANAGER_CMD} uninstall --dry-run
 """,
@@ -2138,6 +2189,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     quickstart = sub.add_parser("quickstart", help="Show a copyable setup workflow")
     quickstart.set_defaults(func=cmd_quickstart)
+
+    export = sub.add_parser("export", help="Export submitted Nomad jobs as HCL")
+    export.add_argument("jobs", nargs="*", help="Job IDs to export; exports all jobs when omitted")
+    export.add_argument("--out-dir", default="jobs/exported", help="Output directory for exported HCL files")
+    export.add_argument("--force", action="store_true", help="Overwrite existing exported files")
+    export.set_defaults(func=cmd_export)
 
     tools = sub.add_parser("tools", help="Manage installed tool files")
     tools_sub = tools.add_subparsers(dest="tools_command")
