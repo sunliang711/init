@@ -94,6 +94,7 @@ TLS_CONFIG = CONFIG_DIR / "30-tls.hcl"
 UI_CONFIG = CONFIG_DIR / "35-ui.hcl"
 TELEMETRY_CONFIG = CONFIG_DIR / "40-telemetry.hcl"
 VAULT_CONFIG = CONFIG_DIR / "60-vault.hcl"
+VAULT_CLIENT_ENV_FILE = Path("/opt/vault/etc/vault.d/client.env")
 CONSUL_CONFIG = CONFIG_DIR / "60-consul.hcl"
 META_CONFIG = CONFIG_DIR / "72-client-meta.hcl"
 DOCKER_CONFIG = CONFIG_DIR / "80-docker.hcl"
@@ -814,6 +815,37 @@ def doctor_config_file(path: Path, label: str) -> int:
     return 1
 
 
+def vault_client_env_file_value(name: str) -> str:
+    if not VAULT_CLIENT_ENV_FILE.is_file():
+        return ""
+    try:
+        lines = VAULT_CLIENT_ENV_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, raw_value = stripped.split("=", 1)
+        if key.strip() == name:
+            return raw_value.strip().strip("'\"")
+    return ""
+
+
+def normalized_vault_addr(address: str) -> str:
+    return with_default_scheme(address, "http").rstrip("/")
+
+
+def vault_ca_cert_file(address: str = "") -> str:
+    value = os.environ.get("VAULT_CACERT", "")
+    if value:
+        return value
+    client_addr = vault_client_env_file_value("VAULT_ADDR")
+    if address and client_addr and normalized_vault_addr(address) != normalized_vault_addr(client_addr):
+        return ""
+    return vault_client_env_file_value("VAULT_CACERT")
+
+
 def doctor_nomad_config() -> int:
     if not BIN_PATH.exists():
         doctor_check("FAIL", f"Nomad binary not found: {BIN_PATH}")
@@ -846,7 +878,7 @@ def cmd_vault_doctor(args: argparse.Namespace) -> int:
     else:
         base = with_default_scheme(address, "http")
         health_url = f"{base.rstrip('/')}/v1/sys/health"
-        code = http_status(health_url)
+        code = http_status(health_url, cafile=vault_ca_cert_file(base))
         if code in {200, 429, 472, 473}:
             doctor_check("OK", f"Vault health endpoint reachable: {health_url} ({code})")
         elif code in {501, 503}:
@@ -1116,6 +1148,9 @@ def write_profile(data: dict[str, Any]) -> None:
 def vault_env(data: dict[str, Any]) -> dict[str, str]:
     env = os.environ.copy()
     env["VAULT_ADDR"] = data["vault_addr"]
+    cacert = vault_ca_cert_file(data["vault_addr"])
+    if cacert:
+        env.setdefault("VAULT_CACERT", cacert)
     if data.get("vault_namespace"):
         env["VAULT_NAMESPACE"] = data["vault_namespace"]
     return env
@@ -1163,7 +1198,7 @@ def vault_jwt_preflight(data: dict[str, Any]) -> int:
         return failures
 
     health_url = f"{str(data['vault_addr']).rstrip('/')}/v1/sys/health"
-    code = http_status(health_url)
+    code = http_status(health_url, cafile=vault_ca_cert_file(data["vault_addr"]))
     if code in {200, 429, 472, 473, 501, 503}:
         doctor_check("OK", f"Vault health endpoint reachable: {health_url} ({code})")
     else:

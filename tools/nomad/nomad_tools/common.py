@@ -7,6 +7,7 @@ import os
 import platform
 import re
 import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -340,15 +341,21 @@ def with_default_scheme(address: str, scheme: str) -> str:
     return f"{scheme}://{address}"
 
 
-def http_status(url: str, *, timeout: int = 5) -> int:
+def http_status(url: str, *, timeout: int = 5, cafile: str = "") -> int:
     try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        context = ssl.create_default_context(cafile=cafile) if cafile and url.startswith("https://") else None
+        handlers: list[object] = [urllib.request.ProxyHandler({})]
+        if context is not None:
+            handlers.append(urllib.request.HTTPSHandler(context=context))
+        opener = urllib.request.build_opener(*handlers)
         request = urllib.request.Request(url, headers={"User-Agent": "nomad-init-tools/1"})
         with opener.open(request, timeout=timeout) as response:
             return int(response.status)
     except urllib.error.HTTPError as exc:  # type: ignore[attr-defined]
         return int(exc.code)
     except urllib.error.URLError:
+        return 0
+    except OSError:
         return 0
 
 
