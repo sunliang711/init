@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-DEFAULT_SSH_PORT="22"
+DEFAULT_SSH_PORT=""
 DEFAULT_LISTEN_BIND="127.0.0.1"
 DEFAULT_SERVER_ALIVE_INTERVAL="30"
 DEFAULT_SERVER_ALIVE_COUNT_MAX="3"
@@ -45,7 +45,7 @@ Common use cases:
 
 Options:
   --ssh <user@host>                 SSH destination.
-  --ssh-port <port>                 SSH port, default: 22.
+  --ssh-port <port>                 Override SSH port. Omitted uses SSH config/default.
   --listen [bind:]port              Listen address. Port-only uses 127.0.0.1:port.
   --target host:port                Target endpoint.
   --name <name>                     Tunnel name. Required with --background.
@@ -238,19 +238,24 @@ tunnel_is_running() {
   ssh_dest="$(read_metadata_value "$name" "ssh_dest" || true)"
   ssh_port="$(read_metadata_value "$name" "ssh_port" || true)"
   [ -n "$ssh_dest" ] || return 1
-  [ -n "$ssh_port" ] || return 1
   [ -S "$socket" ] || return 1
-  ssh -S "$socket" -p "$ssh_port" -O check "$ssh_dest" >/dev/null 2>&1
+  if [ -n "$ssh_port" ]; then
+    ssh -S "$socket" -p "$ssh_port" -O check "$ssh_dest" >/dev/null 2>&1
+  else
+    ssh -S "$socket" -O check "$ssh_dest" >/dev/null 2>&1
+  fi
 }
 
 build_common_ssh_args() {
   SSH_ARGS=(
     "ssh"
-    "-p" "$SSH_PORT"
     "-o" "ExitOnForwardFailure=yes"
     "-o" "ServerAliveInterval=${SERVER_ALIVE_INTERVAL}"
     "-o" "ServerAliveCountMax=${SERVER_ALIVE_COUNT_MAX}"
   )
+  if [ -n "$SSH_PORT" ]; then
+    SSH_ARGS+=("-p" "$SSH_PORT")
+  fi
   if [ -n "$IDENTITY_FILE" ]; then
     SSH_ARGS+=("-i" "$IDENTITY_FILE")
   fi
@@ -280,7 +285,7 @@ run_tunnel() {
   [ -n "$SSH_DEST" ] || fatal "Missing --ssh"
   [ -n "$LISTEN_RAW" ] || fatal "Missing --listen"
   [ -n "$TARGET_RAW" ] || fatal "Missing --target"
-  validate_port "$SSH_PORT"
+  [ -z "$SSH_PORT" ] || validate_port "$SSH_PORT"
   parse_listen "$LISTEN_RAW"
   parse_target "$TARGET_RAW"
 
@@ -494,10 +499,14 @@ cmd_stop() {
   socket="$(control_path "$name")"
   ssh_dest="$(read_metadata_value "$name" "ssh_dest" || true)"
   ssh_port="$(read_metadata_value "$name" "ssh_port" || true)"
-  if [ -z "$ssh_dest" ] || [ -z "$ssh_port" ]; then
+  if [ -z "$ssh_dest" ]; then
     fatal "Tunnel metadata not found: ${name}"
   fi
-  ssh -S "$socket" -p "$ssh_port" -O exit "$ssh_dest" >/dev/null 2>&1 || fatal "Failed to stop tunnel: ${name}"
+  if [ -n "$ssh_port" ]; then
+    ssh -S "$socket" -p "$ssh_port" -O exit "$ssh_dest" >/dev/null 2>&1 || fatal "Failed to stop tunnel: ${name}"
+  else
+    ssh -S "$socket" -O exit "$ssh_dest" >/dev/null 2>&1 || fatal "Failed to stop tunnel: ${name}"
+  fi
   rm -f -- "$socket" "$(metadata_path "$name")"
   log_info "Tunnel stopped: ${name}"
 }
