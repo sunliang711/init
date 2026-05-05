@@ -325,6 +325,94 @@ insert_paths() {
 
 #BEGIN function
 if command -v git >/dev/null 2>&1; then
+    function gitremote() {
+        local mode="${1:-toggle}"
+        local remote="${2:-origin}"
+        local current_url=""
+        local new_url=""
+        local host=""
+        local repo_path=""
+
+        case "${mode}" in
+        https|git|toggle)
+            ;;
+        *)
+            echo "Usage: gitremote [https|git] [remote]" >&2
+            return 1
+            ;;
+        esac
+
+        if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            echo "Not a git repository" >&2
+            return 1
+        fi
+
+        current_url="$(git remote get-url "${remote}" 2>/dev/null)" || {
+            echo "Remote not found: ${remote}" >&2
+            return 1
+        }
+
+        # 识别当前 remote 格式，拆出 host 和仓库路径。
+        case "${current_url}" in
+        https://*/*)
+            host="${current_url#https://}"
+            host="${host%%/*}"
+            repo_path="${current_url#https://${host}/}"
+            [ "${mode}" = "toggle" ] && mode="git"
+            ;;
+        git@*:*)
+            host="${current_url#git@}"
+            host="${host%%:*}"
+            repo_path="${current_url#git@${host}:}"
+            [ "${mode}" = "toggle" ] && mode="https"
+            ;;
+        ssh://git@*/*)
+            host="${current_url#ssh://git@}"
+            host="${host%%/*}"
+            repo_path="${current_url#ssh://git@${host}/}"
+            [ "${mode}" = "toggle" ] && mode="https"
+            ;;
+        *)
+            echo "Unsupported remote url: ${current_url}" >&2
+            return 1
+            ;;
+        esac
+
+        if [ -z "${host}" ] || [ -z "${repo_path}" ]; then
+            echo "Failed to parse remote url: ${current_url}" >&2
+            return 1
+        fi
+
+        # SSH 格式统一补齐 .git，避免 git@host:user/repo 形式不够明确。
+        case "${mode}" in
+        https)
+            new_url="https://${host}/${repo_path}"
+            ;;
+        git)
+            case "${repo_path}" in
+            *.git)
+                ;;
+            *)
+                repo_path="${repo_path}.git"
+                ;;
+            esac
+            new_url="git@${host}:${repo_path}"
+            ;;
+        esac
+
+        if [ "${current_url}" = "${new_url}" ]; then
+            echo "${remote} already uses ${mode}: ${current_url}"
+            return 0
+        fi
+
+        git remote set-url "${remote}" "${new_url}" || {
+            echo "Failed to update ${remote}" >&2
+            return 1
+        }
+
+        echo "${remote}: ${current_url} -> ${new_url}"
+    }
+
     function ghclone() {
         p=${1:?"Usage: ghclone githubAccount/xx.git [newDir]"}
         local user_proj="$(echo $p | perl -lne 'print $2 if /^\s*(https:\/\/github.com\/)?([^\/]+\/[^\/]+)/')"
