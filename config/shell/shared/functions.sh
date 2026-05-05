@@ -4278,6 +4278,99 @@ readx509(){
     openssl x509 -in "$pemfile" -text -noout
 }
 
+td() {
+  local dir="${1:-$PWD}"
+  dir="$(cd "$dir" && pwd)" || {
+    echo "td: directory not found: $dir" >&2
+    return 1
+  }
+
+  # -----------------------------
+  # required dependencies
+  # -----------------------------
+  local required_cmds=(
+    tmux
+    tmuxp
+    zsh
+    codex
+    nvim
+    lazygit
+  )
+
+  local missing_required=()
+
+  for cmd in "${required_cmds[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      missing_required+=("$cmd")
+    fi
+  done
+
+  if (( ${#missing_required[@]} > 0 )); then
+    echo "td: missing required dependencies:" >&2
+    printf '  - %s\n' "${missing_required[@]}" >&2
+    echo >&2
+    echo "Install examples:" >&2
+    echo "  macOS:" >&2
+    echo "    brew install tmux tmuxp neovim lazygit" >&2
+    echo "  Debian/Ubuntu:" >&2
+    echo "    sudo apt install tmux zsh neovim" >&2
+    echo "    pipx install tmuxp" >&2
+    echo >&2
+    echo "Note: codex needs to be installed separately according to your own CLI setup." >&2
+    return 1
+  fi
+
+  # -----------------------------
+  # session name
+  # -----------------------------
+  local project
+  project="$(basename "$dir")"
+
+  local session
+  session="dev-${project}"
+  session="${session//[^a-zA-Z0-9_-]/_}"
+
+  if tmux has-session -t "$session" 2>/dev/null; then
+    if [ -n "$TMUX" ]; then
+      tmux switch-client -t "$session"
+    else
+      tmux attach -t "$session"
+    fi
+    return
+  fi
+
+  # -----------------------------
+  # generate tmuxp config
+  # -----------------------------
+  local config_dir="${XDG_CACHE_HOME:-$HOME/.cache}/tmuxp-generated"
+  mkdir -p "$config_dir"
+
+  local config_file="${config_dir}/${session}.yaml"
+
+  cat > "$config_file" <<EOF
+session_name: "${session}"
+start_directory: "${dir}"
+
+windows:
+  - window_name: main
+    focus: true
+    layout: main-vertical
+    options:
+      main-pane-width: 50%
+    panes:
+      - shell_command: codex
+        focus: true
+      - shell_command: nvim .
+      - shell_command: lazygit
+
+  - window_name: shell
+    panes:
+      - shell_command: zsh
+EOF
+
+  tmuxp load "$config_file"
+}
+
 
 #END function
 
