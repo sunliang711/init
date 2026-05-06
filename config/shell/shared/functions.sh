@@ -1473,6 +1473,75 @@ function sshCopy() {
         ssh-copy-id "$userAtHost"
     fi
 }
+
+function ssh-clean-host() {
+    local known_hosts="${HOME}/.ssh/known_hosts"
+    local target="${1:-}"
+    local port="${2:-}"
+    local confirm=""
+
+    case "${target}" in
+    -h|--help|"")
+        cat <<EOF
+Usage: ssh-clean-host HOST [PORT]
+       ssh-clean-host [HOST]:PORT
+       ssh-clean-host --all
+
+Remove one host entry from ~/.ssh/known_hosts with ssh-keygen -R.
+Use --all to remove the whole known_hosts file.
+EOF
+        [ -n "${target}" ] && return 0
+        return 1
+        ;;
+    --all)
+        if [ ! -e "${known_hosts}" ]; then
+            echo "No known_hosts file: ${known_hosts}"
+            return 0
+        fi
+        if [ ! -f "${known_hosts}" ]; then
+            echo "Not a regular file: ${known_hosts}" >&2
+            return 1
+        fi
+
+        echo -n "Remove ${known_hosts}? [y/N] "
+        read -r confirm
+        case "${confirm}" in
+        y|Y|yes|YES)
+            rm "${known_hosts}"
+            ;;
+        *)
+            echo "Canceled"
+            return 1
+            ;;
+        esac
+        ;;
+    *)
+        if ! command -v ssh-keygen >/dev/null 2>&1; then
+            echo "Need ssh-keygen command" >&2
+            return 1
+        fi
+        if [ ! -e "${known_hosts}" ]; then
+            echo "No known_hosts file: ${known_hosts}"
+            return 0
+        fi
+        if [ ! -f "${known_hosts}" ]; then
+            echo "Not a regular file: ${known_hosts}" >&2
+            return 1
+        fi
+
+        if [ -n "${port}" ]; then
+            if ! echo "${port}" | grep '^[0-9]\+$' >/dev/null 2>&1; then
+                echo "Port must be number: ${port}" >&2
+                return 1
+            fi
+            target="[${target}]:${port}"
+        fi
+
+        # 优先删除指定主机条目，避免清空所有 SSH 主机指纹记录。
+        ssh-keygen -R "${target}" -f "${known_hosts}"
+        ;;
+    esac
+}
 function whouseport() {
     if (($# < 2)); then
         echo "Usage: whouseport protocol port"
