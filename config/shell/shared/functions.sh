@@ -325,6 +325,94 @@ insert_paths() {
 
 #BEGIN function
 if command -v git >/dev/null 2>&1; then
+    function gitremote() {
+        local mode="${1:-toggle}"
+        local remote="${2:-origin}"
+        local current_url=""
+        local new_url=""
+        local host=""
+        local repo_path=""
+
+        case "${mode}" in
+        https|git|toggle)
+            ;;
+        *)
+            echo "Usage: gitremote [https|git] [remote]" >&2
+            return 1
+            ;;
+        esac
+
+        if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+            echo "Not a git repository" >&2
+            return 1
+        fi
+
+        current_url="$(git remote get-url "${remote}" 2>/dev/null)" || {
+            echo "Remote not found: ${remote}" >&2
+            return 1
+        }
+
+        # 识别当前 remote 格式，拆出 host 和仓库路径。
+        case "${current_url}" in
+        https://*/*)
+            host="${current_url#https://}"
+            host="${host%%/*}"
+            repo_path="${current_url#https://${host}/}"
+            [ "${mode}" = "toggle" ] && mode="git"
+            ;;
+        git@*:*)
+            host="${current_url#git@}"
+            host="${host%%:*}"
+            repo_path="${current_url#git@${host}:}"
+            [ "${mode}" = "toggle" ] && mode="https"
+            ;;
+        ssh://git@*/*)
+            host="${current_url#ssh://git@}"
+            host="${host%%/*}"
+            repo_path="${current_url#ssh://git@${host}/}"
+            [ "${mode}" = "toggle" ] && mode="https"
+            ;;
+        *)
+            echo "Unsupported remote url: ${current_url}" >&2
+            return 1
+            ;;
+        esac
+
+        if [ -z "${host}" ] || [ -z "${repo_path}" ]; then
+            echo "Failed to parse remote url: ${current_url}" >&2
+            return 1
+        fi
+
+        # SSH 格式统一补齐 .git，避免 git@host:user/repo 形式不够明确。
+        case "${mode}" in
+        https)
+            new_url="https://${host}/${repo_path}"
+            ;;
+        git)
+            case "${repo_path}" in
+            *.git)
+                ;;
+            *)
+                repo_path="${repo_path}.git"
+                ;;
+            esac
+            new_url="git@${host}:${repo_path}"
+            ;;
+        esac
+
+        if [ "${current_url}" = "${new_url}" ]; then
+            echo "${remote} already uses ${mode}: ${current_url}"
+            return 0
+        fi
+
+        git remote set-url "${remote}" "${new_url}" || {
+            echo "Failed to update ${remote}" >&2
+            return 1
+        }
+
+        echo "${remote}: ${current_url} -> ${new_url}"
+    }
+
     function ghclone() {
         p=${1:?"Usage: ghclone githubAccount/xx.git [newDir]"}
         local user_proj="$(echo $p | perl -lne 'print $2 if /^\s*(https:\/\/github.com\/)?([^\/]+\/[^\/]+)/')"
@@ -1384,6 +1472,75 @@ function sshCopy() {
     else
         ssh-copy-id "$userAtHost"
     fi
+}
+
+function ssh-clean-host() {
+    local known_hosts="${HOME}/.ssh/known_hosts"
+    local target="${1:-}"
+    local port="${2:-}"
+    local confirm=""
+
+    case "${target}" in
+    -h|--help|"")
+        cat <<EOF
+Usage: ssh-clean-host HOST [PORT]
+       ssh-clean-host [HOST]:PORT
+       ssh-clean-host --all
+
+Remove one host entry from ~/.ssh/known_hosts with ssh-keygen -R.
+Use --all to remove the whole known_hosts file.
+EOF
+        [ -n "${target}" ] && return 0
+        return 1
+        ;;
+    --all)
+        if [ ! -e "${known_hosts}" ]; then
+            echo "No known_hosts file: ${known_hosts}"
+            return 0
+        fi
+        if [ ! -f "${known_hosts}" ]; then
+            echo "Not a regular file: ${known_hosts}" >&2
+            return 1
+        fi
+
+        echo -n "Remove ${known_hosts}? [y/N] "
+        read -r confirm
+        case "${confirm}" in
+        y|Y|yes|YES)
+            rm "${known_hosts}"
+            ;;
+        *)
+            echo "Canceled"
+            return 1
+            ;;
+        esac
+        ;;
+    *)
+        if ! command -v ssh-keygen >/dev/null 2>&1; then
+            echo "Need ssh-keygen command" >&2
+            return 1
+        fi
+        if [ ! -e "${known_hosts}" ]; then
+            echo "No known_hosts file: ${known_hosts}"
+            return 0
+        fi
+        if [ ! -f "${known_hosts}" ]; then
+            echo "Not a regular file: ${known_hosts}" >&2
+            return 1
+        fi
+
+        if [ -n "${port}" ]; then
+            if ! echo "${port}" | grep '^[0-9]\+$' >/dev/null 2>&1; then
+                echo "Port must be number: ${port}" >&2
+                return 1
+            fi
+            target="[${target}]:${port}"
+        fi
+
+        # 优先删除指定主机条目，避免清空所有 SSH 主机指纹记录。
+        ssh-keygen -R "${target}" -f "${known_hosts}"
+        ;;
+    esac
 }
 function whouseport() {
     if (($# < 2)); then
@@ -4188,6 +4345,99 @@ readx509(){
         return 1
     fi
     openssl x509 -in "$pemfile" -text -noout
+}
+
+td() {
+  local dir="${1:-$PWD}"
+  dir="$(cd "$dir" && pwd)" || {
+    echo "td: directory not found: $dir" >&2
+    return 1
+  }
+
+  # -----------------------------
+  # required dependencies
+  # -----------------------------
+  local required_cmds=(
+    tmux
+    tmuxp
+    zsh
+    codex
+    nvim
+    lazygit
+  )
+
+  local missing_required=()
+
+  for cmd in "${required_cmds[@]}"; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      missing_required+=("$cmd")
+    fi
+  done
+
+  if (( ${#missing_required[@]} > 0 )); then
+    echo "td: missing required dependencies:" >&2
+    printf '  - %s\n' "${missing_required[@]}" >&2
+    echo >&2
+    echo "Install examples:" >&2
+    echo "  macOS:" >&2
+    echo "    brew install tmux tmuxp neovim lazygit" >&2
+    echo "  Debian/Ubuntu:" >&2
+    echo "    sudo apt install tmux zsh neovim" >&2
+    echo "    pipx install tmuxp" >&2
+    echo >&2
+    echo "Note: codex needs to be installed separately according to your own CLI setup." >&2
+    return 1
+  fi
+
+  # -----------------------------
+  # session name
+  # -----------------------------
+  local project
+  project="$(basename "$dir")"
+
+  local session
+  session="dev-${project}"
+  session="${session//[^a-zA-Z0-9_-]/_}"
+
+  if tmux has-session -t "$session" 2>/dev/null; then
+    if [ -n "$TMUX" ]; then
+      tmux switch-client -t "$session"
+    else
+      tmux attach -t "$session"
+    fi
+    return
+  fi
+
+  # -----------------------------
+  # generate tmuxp config
+  # -----------------------------
+  local config_dir="${XDG_CACHE_HOME:-$HOME/.cache}/tmuxp-generated"
+  mkdir -p "$config_dir"
+
+  local config_file="${config_dir}/${session}.yaml"
+
+  cat > "$config_file" <<EOF
+session_name: "${session}"
+start_directory: "${dir}"
+
+windows:
+  - window_name: main
+    focus: true
+    layout: main-vertical
+    options:
+      main-pane-width: 50%
+    panes:
+      - shell_command: codex
+        focus: true
+      - shell_command: nvim .
+      - shell_command: lazygit
+
+  - window_name: shell
+    panes:
+      - shell_command: zsh
+EOF
+
+  tmuxp load "$config_file"
 }
 
 
