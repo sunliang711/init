@@ -12,8 +12,8 @@ usage() {
 SSH tunnel helper
 
 Usage:
-  sshTunnel local  --ssh <user@host> --listen [bind:]port --target host:port [options]
-  sshTunnel remote --ssh <user@host> --listen [bind:]port --target host:port [options]
+  sshTunnel local  --ssh <user@host> [--listen [bind:]port] --target host:port [options]
+  sshTunnel remote --ssh <user@host> [--listen [bind:]port] --target host:port [options]
   sshTunnel status <name>
   sshTunnel stop <name>
   sshTunnel list
@@ -32,6 +32,7 @@ Modes:
 Address rules:
   --listen port       Means 127.0.0.1:port, visible only from the listening host.
   --listen ip:port    Binds the listening side to a specific address.
+  Omitted --listen    Uses 127.0.0.1:<target-port>.
   --target host:port  Is resolved from the exit side of the tunnel.
                       local mode: target is reached from the SSH server.
                       remote mode: target is reached from this machine.
@@ -46,7 +47,7 @@ Common use cases:
 Options:
   --ssh <user@host>                 SSH destination.
   --ssh-port <port>                 Override SSH port. Omitted uses SSH config/default.
-  --listen [bind:]port              Listen address. Port-only uses 127.0.0.1:port.
+  --listen [bind:]port              Listen address. Omitted uses 127.0.0.1:<target-port>.
   --target host:port                Target endpoint.
   --name <name>                     Tunnel name. Required with --background.
   --background                      Run tunnel in background with ControlPath.
@@ -294,11 +295,16 @@ run_tunnel() {
 
   require_command ssh
   [ -n "$SSH_DEST" ] || fatal "Missing --ssh"
-  [ -n "$LISTEN_RAW" ] || fatal "Missing --listen"
   [ -n "$TARGET_RAW" ] || fatal "Missing --target"
   [ -z "$SSH_PORT" ] || validate_port "$SSH_PORT"
-  parse_listen "$LISTEN_RAW"
-  parse_target "$TARGET_RAW"
+  if [ -n "$LISTEN_RAW" ]; then
+    parse_listen "$LISTEN_RAW"
+    parse_target "$TARGET_RAW"
+  else
+    parse_target "$TARGET_RAW"
+    parse_listen "${DEFAULT_LISTEN_BIND}:${TARGET_PORT}"
+    log_info "No --listen provided; using ${LISTEN_BIND}:${LISTEN_PORT} from --target port"
+  fi
 
   listen="${LISTEN_BIND}:${LISTEN_PORT}"
   target="${TARGET_HOST}:${TARGET_PORT}"
