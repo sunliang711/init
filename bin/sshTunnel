@@ -49,8 +49,7 @@ Options:
   --ssh-port <port>                 Override SSH port. Omitted uses SSH config/default.
   --listen [bind:]port              Listen address. Omitted uses 127.0.0.1:<target-port>.
   --target host:port                Target endpoint.
-  --name <name>                     Tunnel name. Required with --background.
-  --background                      Run tunnel in background with ControlPath.
+  --name <name>                     Tunnel name. Runs tunnel in background with ControlPath.
   --identity-file <file>            SSH identity file.
   --jump <jump-host>                SSH jump host, maps to -J.
   --strict-host-key-checking <mode> Set StrictHostKeyChecking, for example accept-new.
@@ -63,10 +62,10 @@ Examples:
   sshTunnel local --ssh user@example.com --listen 8080 --target 127.0.0.1:80
 
   # Local tunnel for a database, running in background.
-  sshTunnel local --ssh user@example.com --listen 127.0.0.1:3306 --target 127.0.0.1:3306 --background --name mysql
+  sshTunnel local --ssh user@example.com --listen 127.0.0.1:3306 --target 127.0.0.1:3306 --name mysql
 
   # Remote tunnel: open 0.0.0.0:8080 on the SSH server, reach 127.0.0.1:80 on this machine.
-  sshTunnel remote --ssh user@example.com --listen 0.0.0.0:8080 --target 127.0.0.1:80 --background --name web
+  sshTunnel remote --ssh user@example.com --listen 0.0.0.0:8080 --target 127.0.0.1:80 --name web
 
   sshTunnel status mysql
   sshTunnel stop mysql
@@ -329,7 +328,7 @@ run_tunnel() {
 
   build_common_ssh_args
   if [ "$BACKGROUND" -eq 1 ]; then
-    [ -n "$NAME" ] || fatal "--name is required with --background"
+    [ -n "$NAME" ] || fatal "--name is required for background tunnels"
     validate_name "$NAME"
     mkdir -p "$TUNNEL_DIR"
     chmod 0700 "$TUNNEL_DIR"
@@ -419,8 +418,6 @@ parse_tunnel_options() {
         shift
         [ "$#" -gt 0 ] || fatal "Missing value for --name"
         NAME="$1"
-        ;;
-      --background)
         BACKGROUND=1
         ;;
       --identity-file)
