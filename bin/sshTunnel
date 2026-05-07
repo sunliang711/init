@@ -15,6 +15,7 @@ Usage:
   sshTunnel local  --ssh <user@host> [--listen [bind:]port] --target host:port [options]
   sshTunnel remote --ssh <user@host> [--listen [bind:]port] --target host:port [options]
   sshTunnel status <name>
+  sshTunnel reconnect <name> [--dry-run]
   sshTunnel stop <name>
   sshTunnel list
   sshTunnel clean
@@ -68,6 +69,7 @@ Examples:
   sshTunnel remote --ssh user@example.com --listen 0.0.0.0:8080 --target 127.0.0.1:80 --name web
 
   sshTunnel status mysql
+  sshTunnel reconnect mysql
   sshTunnel stop mysql
   sshTunnel clean
 EOF
@@ -200,6 +202,7 @@ write_metadata() {
 
   path="$(metadata_path "$name")"
   {
+    printf 'metadata_version=2\n'
     printf 'name=%s\n' "$name"
     printf 'mode=%s\n' "$mode"
     printf 'ssh_dest=%s\n' "$ssh_dest"
@@ -207,6 +210,12 @@ write_metadata() {
     printf 'listen=%s\n' "$listen"
     printf 'target=%s\n' "$target"
     printf 'log_file=%s\n' "$log_file"
+    printf 'identity_file=%s\n' "${IDENTITY_FILE:-}"
+    printf 'jump_host=%s\n' "${JUMP_HOST:-}"
+    printf 'strict_host_key_checking=%s\n' "${STRICT_HOST_KEY_CHECKING:-}"
+    printf 'server_alive_interval=%s\n' "${SERVER_ALIVE_INTERVAL:-$DEFAULT_SERVER_ALIVE_INTERVAL}"
+    printf 'server_alive_count_max=%s\n' "${SERVER_ALIVE_COUNT_MAX:-$DEFAULT_SERVER_ALIVE_COUNT_MAX}"
+    printf 'verbose=%s\n' "${VERBOSE:-0}"
     printf 'started_at=%s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date)"
   } >"$path"
   chmod 0600 "$path"
@@ -338,7 +347,11 @@ run_tunnel() {
     fi
     socket="$(control_path "$NAME")"
     if [ -S "$socket" ]; then
-      fatal "Tunnel control socket already exists: ${socket}"
+      if [ "${RECONNECT_MODE:-0}" -eq 1 ] && [ "$DRY_RUN" -eq 1 ]; then
+        :
+      else
+        fatal "Tunnel control socket already exists: ${socket}"
+      fi
     fi
     SSH_ARGS+=("-M" "-S" "$socket" "-fN")
   else
@@ -390,6 +403,7 @@ parse_tunnel_options() {
   LOG_FILE=""
   SERVER_ALIVE_INTERVAL="$DEFAULT_SERVER_ALIVE_INTERVAL"
   SERVER_ALIVE_COUNT_MAX="$DEFAULT_SERVER_ALIVE_COUNT_MAX"
+  RECONNECT_MODE=0
 
   shift
   while [ "$#" -gt 0 ]; do
@@ -508,6 +522,93 @@ cmd_status() {
   printf 'log_file=%s\n' "$log_file"
 }
 
+load_metadata_for_reconnect() {
+  local name="$1"
+
+  SSH_DEST="$(read_metadata_value "$name" "ssh_dest" || true)"
+  SSH_PORT="$(read_metadata_value "$name" "ssh_port" || true)"
+  LISTEN_RAW="$(read_metadata_value "$name" "listen" || true)"
+  TARGET_RAW="$(read_metadata_value "$name" "target" || true)"
+  NAME="$name"
+  BACKGROUND=1
+  IDENTITY_FILE="$(read_metadata_value "$name" "identity_file" || true)"
+  JUMP_HOST="$(read_metadata_value "$name" "jump_host" || true)"
+  STRICT_HOST_KEY_CHECKING="$(read_metadata_value "$name" "strict_host_key_checking" || true)"
+  LOG_FILE="$(read_metadata_value "$name" "log_file" || true)"
+  SERVER_ALIVE_INTERVAL="$(read_metadata_value "$name" "server_alive_interval" || true)"
+  SERVER_ALIVE_COUNT_MAX="$(read_metadata_value "$name" "server_alive_count_max" || true)"
+  VERBOSE="$(read_metadata_value "$name" "verbose" || true)"
+  RECONNECT_MODE=1
+
+  [ -n "$SERVER_ALIVE_INTERVAL" ] || SERVER_ALIVE_INTERVAL="$DEFAULT_SERVER_ALIVE_INTERVAL"
+  [ -n "$SERVER_ALIVE_COUNT_MAX" ] || SERVER_ALIVE_COUNT_MAX="$DEFAULT_SERVER_ALIVE_COUNT_MAX"
+  [ -n "$VERBOSE" ] || VERBOSE=0
+  case "$VERBOSE" in
+    0 | 1)
+      ;;
+    *)
+      fatal "Invalid verbose metadata for tunnel: ${name}"
+      ;;
+  esac
+  [ -n "$SSH_DEST" ] || fatal "Tunnel metadata missing ssh_dest: ${name}"
+  [ -n "$LISTEN_RAW" ] || fatal "Tunnel metadata missing listen: ${name}"
+  [ -n "$TARGET_RAW" ] || fatal "Tunnel metadata missing target: ${name}"
+}
+
+cmd_reconnect() {
+  local name="${1:-}"
+  local mode
+  local socket
+
+  [ -n "$name" ] || fatal "Usage: sshTunnel reconnect <name> [--dry-run]"
+  case "$name" in
+    -h | --help)
+      usage
+      return 0
+      ;;
+  esac
+  validate_name "$name"
+  shift
+  DRY_RUN=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --dry-run)
+        DRY_RUN=1
+        ;;
+      -h | --help)
+        usage
+        return 0
+        ;;
+      *)
+        fatal "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
+  if ! metadata_exists "$name"; then
+    fatal "Tunnel metadata not found: ${name}"
+  fi
+  if tunnel_is_running "$name"; then
+    log_info "Tunnel already running: ${name}"
+    return 0
+  fi
+
+  mode="$(read_metadata_value "$name" "mode" || true)"
+  [ -n "$mode" ] || fatal "Tunnel metadata missing mode: ${name}"
+  load_metadata_for_reconnect "$name"
+  socket="$(control_path "$name")"
+  if [ -e "$socket" ]; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+      log_info "Would remove stale control socket: ${socket}"
+    else
+      log_info "Removing stale control socket: ${socket}"
+      rm -f -- "$socket"
+    fi
+  fi
+  log_info "Reconnecting tunnel: ${name}"
+  run_tunnel "$mode"
+}
+
 cmd_stop() {
   local name="${1:-}"
   local socket
@@ -596,6 +697,9 @@ main() {
       ;;
     status)
       cmd_status "$@"
+      ;;
+    reconnect)
+      cmd_reconnect "$@"
       ;;
     stop)
       cmd_stop "$@"
