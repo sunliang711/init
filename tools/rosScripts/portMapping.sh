@@ -19,15 +19,21 @@ use the forllowing to remove all rules(numbers: from index len-1 to 1 ) except m
 EOF
 
 for mapping in "${mappings[@]}";do
-    IFS=$'|' read -r protocol dstPort toAddresses toPorts comment <<< "$mapping"
+    IFS=$'|' read -r protocol dstPort toAddresses toPorts comment srcAddress <<< "$mapping"
     protocol="$(trim "$protocol")"
     dstPort="$(trim "$dstPort")"
     toAddresses="$(trim "$toAddresses")"
     toPorts="$(trim "$toPorts")"
     comment="$(trim "$comment")"
+    srcAddress="$(trim "$srcAddress")"
 
     if [ -z "$toPorts" ];then
         toPorts="$dstPort"
+    fi
+    if [ -n "$srcAddress" ];then
+        srcAddressArg=" src-address=$srcAddress"
+    else
+        srcAddressArg=""
     fi
 
 # dnat
@@ -37,13 +43,13 @@ echo "#$comment"
 # 如果是多端口
 if echo "$toPorts" | grep -qE '(,|-)';then
 cat<<EOF
-/ip firewall nat add chain=dstnat action=dst-nat protocol=$protocol dst-address-list=${addressList} dst-port=$dstPort to-addresses=$toAddresses comment="$comment"
+/ip firewall nat add chain=dstnat action=dst-nat protocol=$protocol dst-address-list=${addressList}${srcAddressArg} dst-port=$dstPort to-addresses=$toAddresses comment="$comment"
 /ip firewall nat add chain=srcnat action=masquerade protocol=$protocol src-address=$subnet out-interface=$bridge dst-address=$toAddresses dst-port=$dstPort comment="$comment $hairpinTag"
 
 EOF
 else
 cat<<EOF
-/ip firewall nat add chain=dstnat action=dst-nat protocol=$protocol dst-address-list=${addressList} dst-port=$dstPort to-addresses=$toAddresses to-ports=$toPorts comment="$comment"
+/ip firewall nat add chain=dstnat action=dst-nat protocol=$protocol dst-address-list=${addressList}${srcAddressArg} dst-port=$dstPort to-addresses=$toAddresses to-ports=$toPorts comment="$comment"
 /ip firewall nat add chain=srcnat action=masquerade protocol=$protocol src-address=$subnet out-interface=$bridge dst-address=$toAddresses dst-port=$toPorts comment="$comment $hairpinTag"
 
 EOF
