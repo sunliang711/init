@@ -191,10 +191,6 @@ function parseSetupArgs(){
                 fi
                 shift
                 ;;
-            --run-after-reset)
-                runAfterReset="yes"
-                shift
-                ;;
             --*=*)
                 option="${1%%=*}"
                 value="${1#*=}"
@@ -445,12 +441,8 @@ function setup(){
   setupFirewall
   setupUser
   echo "}"
-  if [ "$runAfterReset" = "yes" ]; then
-      echo "\$setup"
-      log "run-after-reset mode enabled, setup will run after import"
-  else
-      log "run \$setup in routerOS to apply"
-  fi
+  echo "\$setup"
+  log "setup will run after RouterOS reset imports it"
 
 }
 
@@ -524,7 +516,6 @@ function help(){
     echo "  --br-name NAME"
     echo "  --pool-name NAME"
     echo "  --pppoe-name NAME"
-    echo "  --run-after-reset: append \$setup for run-after-reset imports"
     echo "setup config/env vars:"
     echo "  subnet: subnet, default: 10.1.0.0/24"
     echo "  pppoeUser: pppoe user"
@@ -544,15 +535,11 @@ function help(){
     echo "rsc workflow:"
     echo "  1. Generate rsc file:"
     echo "     $0 setup -c config/home.conf > setup.rsc"
-    echo "     $0 setup -c config/home.conf --run-after-reset > setup.rsc"
     echo "  2. Serve rsc file from this directory:"
     echo "     python3 -m http.server 18080"
-    echo "  3. Download and import on RouterOS:"
+    echo "  3. Download setup.rsc on RouterOS:"
     echo "     /tool fetch url=\"http://HOST_IP:18080/setup.rsc\" mode=http dst-path=setup.rsc"
-    echo "     /import file-name=setup.rsc verbose=yes"
-    echo "  4. For normal import, run setup manually after import:"
-    echo "     \$setup"
-    echo "  5. For reset auto-run, generate with --run-after-reset, then run:"
+    echo "  4. Reset RouterOS and run setup.rsc after reset:"
     echo "     /system/reset-configuration no-defaults=yes skip-backup=yes run-after-reset=setup.rsc"
     echo "GNS3 test workflow:"
     echo "  1. Add a Cloud node and bind it to a host-only/VMnet/TAP interface."
@@ -562,12 +549,11 @@ function help(){
     echo "  4. Ping the host IP before fetch:"
     echo "     /ping 192.168.56.1"
     echo "  5. Replace HOST_IP in the fetch command with the reachable host IP."
-    echo "  Note: if ether1 is also the WAN port, import may rename it and disconnect the temporary link."
+    echo "  Note: if ether1 is also the WAN port, reset setup may rename it and disconnect the temporary link."
 }
 
 cmd=${1:-}
 configFile=""
-runAfterReset="no"
 setupArgKeys=()
 setupArgValues=()
 case $cmd in
