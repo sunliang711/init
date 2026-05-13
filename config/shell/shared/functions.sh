@@ -326,19 +326,71 @@ insert_paths() {
 #BEGIN function
 if command -v git >/dev/null 2>&1; then
     function gitremote() {
-        local mode="${1:-toggle}"
-        local remote="${2:-origin}"
+        local mode="toggle"
+        local remote="origin"
         local current_url=""
         local new_url=""
+        local https_url=""
+        local git_url=""
+        local browser_url=""
+        local authority=""
         local host=""
         local repo_path=""
 
-        case "${mode}" in
-        https|git|toggle)
+        case "${1:-}" in
+        "")
+            ;;
+        https|git|toggle|url|show)
+            mode="${1}"
+            remote="${2:-origin}"
+            ;;
+        -h|--help|help)
+            cat <<-'EOF'
+Usage:
+  gitremote
+      Toggle origin between HTTPS and SSH.
+
+  gitremote <remote>
+      Toggle the named remote.
+
+  gitremote https [remote]
+      Set the remote URL to HTTPS.
+
+  gitremote git [remote]
+      Set the remote URL to SSH: git@host:path.git.
+
+  gitremote toggle [remote]
+      Toggle the remote URL between HTTPS and SSH.
+
+  gitremote url [remote]
+      Print the browser HTTPS URL only. This does not change the remote.
+
+  gitremote show [remote]
+      Show the current URL and derived HTTPS, SSH, and browser URLs.
+
+Arguments:
+  remote
+      Git remote name. Defaults to origin.
+
+Supported current remote URL formats:
+  https://host/owner/repo[.git]
+  git@host:owner/repo[.git]
+  ssh://git@host/owner/repo[.git]
+
+Examples:
+  gitremote
+  gitremote upstream
+  gitremote url
+  gitremote url upstream
+  gitremote show
+  gitremote show upstream
+  gitremote https upstream
+EOF
+            return 0
             ;;
         *)
-            echo "Usage: gitremote [https|git] [remote]" >&2
-            return 1
+            mode="toggle"
+            remote="${1}"
             ;;
         esac
 
@@ -355,21 +407,25 @@ if command -v git >/dev/null 2>&1; then
         # 识别当前 remote 格式，拆出 host 和仓库路径。
         case "${current_url}" in
         https://*/*)
-            host="${current_url#https://}"
-            host="${host%%/*}"
-            repo_path="${current_url#https://${host}/}"
+            authority="${current_url#https://}"
+            authority="${authority%%/*}"
+            host="${authority##*@}"
+            repo_path="${current_url#https://}"
+            repo_path="${repo_path#"${authority}"/}"
             [ "${mode}" = "toggle" ] && mode="git"
             ;;
         git@*:*)
             host="${current_url#git@}"
             host="${host%%:*}"
-            repo_path="${current_url#git@${host}:}"
+            repo_path="${current_url#git@}"
+            repo_path="${repo_path#"${host}":}"
             [ "${mode}" = "toggle" ] && mode="https"
             ;;
         ssh://git@*/*)
             host="${current_url#ssh://git@}"
             host="${host%%/*}"
-            repo_path="${current_url#ssh://git@${host}/}"
+            repo_path="${current_url#ssh://git@}"
+            repo_path="${repo_path#"${host}"/}"
             [ "${mode}" = "toggle" ] && mode="https"
             ;;
         *)
@@ -383,20 +439,44 @@ if command -v git >/dev/null 2>&1; then
             return 1
         fi
 
+        https_url="https://${host}/${repo_path}"
+        git_url="git@${host}:${repo_path}"
+        case "${git_url}" in
+        *.git)
+            ;;
+        *)
+            git_url="${git_url}.git"
+            ;;
+        esac
+        browser_url="${https_url}"
+        case "${browser_url}" in
+        *.git)
+            browser_url="${browser_url%.git}"
+            ;;
+        esac
+
+        # url 模式只输出浏览器用 HTTPS 链接，不修改 remote。
+        if [ "${mode}" = "url" ]; then
+            echo "${browser_url}"
+            return 0
+        fi
+
+        if [ "${mode}" = "show" ]; then
+            printf '%-8s %s\n' "remote:" "${remote}"
+            printf '%-8s %s\n' "current:" "${current_url}"
+            printf '%-8s %s\n' "https:" "${https_url}"
+            printf '%-8s %s\n' "git:" "${git_url}"
+            printf '%-8s %s\n' "browser:" "${browser_url}"
+            return 0
+        fi
+
         # SSH 格式统一补齐 .git，避免 git@host:user/repo 形式不够明确。
         case "${mode}" in
         https)
             new_url="https://${host}/${repo_path}"
             ;;
         git)
-            case "${repo_path}" in
-            *.git)
-                ;;
-            *)
-                repo_path="${repo_path}.git"
-                ;;
-            esac
-            new_url="git@${host}:${repo_path}"
+            new_url="${git_url}"
             ;;
         esac
 
