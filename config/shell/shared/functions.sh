@@ -325,52 +325,69 @@ insert_paths() {
 
 #BEGIN function
 if command -v git >/dev/null 2>&1; then
-    function gitremote() {
-        local mode="toggle"
-        local remote="origin"
+    function gitr() {
+        local mode="show"
+        local remote=""
+        local target_kind=""
         local current_url=""
+        local current_kind=""
         local new_url=""
         local https_url=""
-        local git_url=""
-        local browser_url=""
+        local ssh_url=""
         local authority=""
         local host=""
         local repo_path=""
+        local marker=""
 
         case "${1:-}" in
         "")
             ;;
-        https|git|toggle|url|show)
+        show)
+            mode="${1}"
+            remote="${2:-}"
+            ;;
+        set)
+            mode="${1}"
+            remote="${2:-}"
+            target_kind="${3:-}"
+            if [ -z "${remote}" ] || [ -z "${target_kind}" ]; then
+                echo "Usage: gitr set <remote> <https|ssh>" >&2
+                return 1
+            fi
+            case "${target_kind}" in
+            https|ssh)
+                ;;
+            *)
+                echo "Unsupported remote URL kind: ${target_kind}" >&2
+                return 1
+                ;;
+            esac
+            ;;
+        switch|current)
             mode="${1}"
             remote="${2:-origin}"
             ;;
         -h|--help|help)
             cat <<-'EOF'
 Usage:
-  gitremote
-      Toggle origin between HTTPS and SSH.
+  gitr
+      Show all remotes grouped by remote.
 
-  gitremote <remote>
-      Toggle the named remote.
+  gitr show [remote]
+      Show all remotes grouped by remote, or show the named remote only.
 
-  gitremote https [remote]
-      Set the remote URL to HTTPS.
+  gitr set <remote> <https|ssh>
+      Set the remote URL to HTTPS or SSH.
 
-  gitremote git [remote]
-      Set the remote URL to SSH: git@host:path.git.
+  gitr switch [remote]
+      Switch the remote URL between HTTPS and SSH. Defaults to origin.
 
-  gitremote toggle [remote]
-      Toggle the remote URL between HTTPS and SSH.
-
-  gitremote url [remote]
-      Print the browser HTTPS URL only. This does not change the remote.
-
-  gitremote show [remote]
-      Show the current URL and derived HTTPS, SSH, and browser URLs.
+  gitr current [remote]
+      Print the current remote URL. Defaults to origin.
 
 Arguments:
   remote
-      Git remote name. Defaults to origin.
+      Git remote name.
 
 Supported current remote URL formats:
   https://host/owner/repo[.git]
@@ -378,19 +395,20 @@ Supported current remote URL formats:
   ssh://git@host/owner/repo[.git]
 
 Examples:
-  gitremote
-  gitremote upstream
-  gitremote url
-  gitremote url upstream
-  gitremote show
-  gitremote show upstream
-  gitremote https upstream
+  gitr
+  gitr show
+  gitr show upstream
+  gitr set origin ssh
+  gitr set upstream https
+  gitr switch origin
+  gitr current upstream
 EOF
             return 0
             ;;
         *)
-            mode="toggle"
-            remote="${1}"
+            echo "Unknown subcommand: ${1}" >&2
+            echo "Run 'gitr --help' for usage." >&2
+            return 1
             ;;
         esac
 
@@ -399,34 +417,57 @@ EOF
             return 1
         fi
 
+        if [ "${mode}" = "show" ] && [ -z "${remote}" ]; then
+            local show_remote=""
+            local show_first="1"
+            local show_status=0
+
+            for show_remote in $(git remote); do
+                if [ "${show_first}" = "1" ]; then
+                    show_first="0"
+                else
+                    echo
+                fi
+                gitr show "${show_remote}" || show_status=1
+            done
+
+            return "${show_status}"
+        fi
+
         current_url="$(git remote get-url "${remote}" 2>/dev/null)" || {
             echo "Remote not found: ${remote}" >&2
             return 1
         }
 
+        # current 模式只输出当前 remote URL，不修改 remote。
+        if [ "${mode}" = "current" ]; then
+            echo "${current_url}"
+            return 0
+        fi
+
         # 识别当前 remote 格式，拆出 host 和仓库路径。
         case "${current_url}" in
         https://*/*)
+            current_kind="https"
             authority="${current_url#https://}"
             authority="${authority%%/*}"
             host="${authority##*@}"
             repo_path="${current_url#https://}"
             repo_path="${repo_path#"${authority}"/}"
-            [ "${mode}" = "toggle" ] && mode="git"
             ;;
         git@*:*)
+            current_kind="ssh"
             host="${current_url#git@}"
             host="${host%%:*}"
             repo_path="${current_url#git@}"
             repo_path="${repo_path#"${host}":}"
-            [ "${mode}" = "toggle" ] && mode="https"
             ;;
         ssh://git@*/*)
+            current_kind="ssh"
             host="${current_url#ssh://git@}"
             host="${host%%/*}"
             repo_path="${current_url#ssh://git@}"
             repo_path="${repo_path#"${host}"/}"
-            [ "${mode}" = "toggle" ] && mode="https"
             ;;
         *)
             echo "Unsupported remote url: ${current_url}" >&2
@@ -440,48 +481,68 @@ EOF
         fi
 
         https_url="https://${host}/${repo_path}"
-        git_url="git@${host}:${repo_path}"
-        case "${git_url}" in
+        ssh_url="git@${host}:${repo_path}"
+        case "${ssh_url}" in
         *.git)
             ;;
         *)
-            git_url="${git_url}.git"
+            ssh_url="${ssh_url}.git"
             ;;
         esac
-        browser_url="${https_url}"
-        case "${browser_url}" in
-        *.git)
-            browser_url="${browser_url%.git}"
-            ;;
-        esac
-
-        # url 模式只输出浏览器用 HTTPS 链接，不修改 remote。
-        if [ "${mode}" = "url" ]; then
-            echo "${browser_url}"
-            return 0
-        fi
-
         if [ "${mode}" = "show" ]; then
-            printf '%-8s %s\n' "remote:" "${remote}"
-            printf '%-8s %s\n' "current:" "${current_url}"
-            printf '%-8s %s\n' "https:" "${https_url}"
-            printf '%-8s %s\n' "git:" "${git_url}"
-            printf '%-8s %s\n' "browser:" "${browser_url}"
+            printf '%s\n' "${remote}"
+            if [ "${current_kind}" = "https" ]; then
+                marker="*"
+            else
+                marker=" "
+            fi
+            printf '%s %-5s %s\n' "${marker}" "https" "${https_url}"
+            if [ "${current_kind}" = "ssh" ]; then
+                marker="*"
+            else
+                marker=" "
+            fi
+            printf '%s %-5s %s\n' "${marker}" "ssh" "${ssh_url}"
             return 0
         fi
 
         # SSH 格式统一补齐 .git，避免 git@host:user/repo 形式不够明确。
         case "${mode}" in
-        https)
-            new_url="https://${host}/${repo_path}"
+        set)
+            case "${target_kind}" in
+            https)
+                new_url="${https_url}"
+                ;;
+            ssh)
+                new_url="${ssh_url}"
+                ;;
+            esac
             ;;
-        git)
-            new_url="${git_url}"
+        switch)
+            case "${current_kind}" in
+            https)
+                target_kind="ssh"
+                new_url="${ssh_url}"
+                ;;
+            ssh)
+                target_kind="https"
+                new_url="${https_url}"
+                ;;
+            esac
             ;;
         esac
 
+        if [ -z "${new_url}" ]; then
+            echo "Failed to build remote URL" >&2
+            return 1
+        fi
+
+        if [ -z "${target_kind}" ]; then
+            target_kind="${mode}"
+        fi
+
         if [ "${current_url}" = "${new_url}" ]; then
-            echo "${remote} already uses ${mode}: ${current_url}"
+            echo "${remote} already uses ${target_kind}: ${current_url}"
             return 0
         fi
 
