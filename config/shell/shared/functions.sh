@@ -638,7 +638,7 @@ function mysolana() {
 }
 
 _linux() {
-    if [ $(uname) != "Linux" ]; then
+    if [ "$(uname)" != "Linux" ]; then
         echo "Need run on Linux"
         return 1
     fi
@@ -649,9 +649,9 @@ _restartDocker() {
         return 1
     fi
     echo "systemctl daemon-reload..."
-    runAsRoot systemctl daemon-reload
+    runAsRoot systemctl daemon-reload || return 1
     echo "restart docker..."
-    runAsRoot systemctl restart docker
+    runAsRoot systemctl restart docker || return 1
 }
 
 _command_exists() {
@@ -831,38 +831,50 @@ runAsRoot2() {
 dockerproxyon() {
     local dest=/etc/systemd/system/docker.service.d
     local cfg=${dest}/proxy.conf
-    if ! checkRoot;then
-    	return 1
-    fi
-
     if ! _linux; then
         return 1
     fi
-    local proxy="$(parseProxy "$@")"
+
+    if ! checkRoot;then
+        return 1
+    fi
+
+    local proxy
+    proxy="$(parseProxy "$@")"
     if [ -z "${proxy}" ]; then
         echo "Cannot get proxy value,exit."
         return 1
     fi
 
-    if [ ! -d ${dest} ]; then
+    if [ ! -d "${dest}" ]; then
         echo "mkdir ${dest}..."
-        runAsRoot mkdir "${dest}"
+        runAsRoot mkdir -p "${dest}" || return 1
     fi
 
-    if [ -e ${cfg} ]; then
+    if [ -e "${cfg}" ]; then
         echo "${cfg} already exists,exit."
         return
     fi
 
-    local tmpFile=/tmp/tmpdockerconf
-    cat <<-EOF >${tmpFile}
-		[Service]
-		Environment="HTTP_PROXY=${proxy}"
-		Environment="HTTPS_PROXY=${proxy}"
-	EOF
+    # 使用 mktemp 避免固定 /tmp 路径导致的冲突或符号链接风险。
+    local tmpFile
+    tmpFile="$(mktemp)" || return 1
+    if ! cat <<-EOF >"${tmpFile}"
+			[Service]
+			Environment="HTTP_PROXY=${proxy}"
+			Environment="HTTPS_PROXY=${proxy}"
+		EOF
+    then
+        rm -f "${tmpFile}"
+        return 1
+    fi
 
     echo "Write proxy info to file: ${cfg}"
-    runAsRoot mv "${tmpFile}" "${cfg}"
+    if ! runAsRoot install -m 0644 "${tmpFile}" "${cfg}"; then
+        rm -f "${tmpFile}"
+        return 1
+    fi
+    rm -f "${tmpFile}"
 
     _restartDocker
 }
@@ -870,12 +882,26 @@ dockerproxyon() {
 dockerproxyoff() {
     local dest=/etc/systemd/system/docker.service.d
     local cfg=${dest}/proxy.conf
-    runAsRoot rm "${cfg}"
+
+    if ! _linux; then
+        return 1
+    fi
+
+    if ! checkRoot;then
+        return 1
+    fi
+
+    if [ ! -e "${cfg}" ]; then
+        echo "${cfg} not exists,skip."
+        return
+    fi
+
+    runAsRoot rm "${cfg}" || return 1
     _restartDocker
 }
 
 aptproxyon() {
-    if [ $(uname) != "Linux" ]; then
+    if [ "$(uname)" != "Linux" ]; then
         echo "Only on Linux"
         return 1
     fi
@@ -888,23 +914,35 @@ aptproxyon() {
         return 1
     fi
 
-    local proxy="$(parseProxy "$@")"
+    local proxy
+    proxy="$(parseProxy "$@")"
     if [ -z "${proxy}" ]; then
         echo "Cannot get proxy value,exit."
         return 1
     fi
 
     local proxyFile=/etc/apt/apt.conf.d/httpProxy
+    local tmpFile
     echo "use proxy: $proxy"
-    cat >/tmp/httpProxy <<EOF
+    tmpFile="$(mktemp)" || return 1
+    if ! cat >"${tmpFile}" <<EOF
 Acquire::http::proxy "$proxy";
 Acquire::https::proxy "$proxy";
 EOF
-    runAsRoot mv /tmp/httpProxy $proxyFile
+    then
+        rm -f "${tmpFile}"
+        return 1
+    fi
+
+    if ! runAsRoot install -m 0644 "${tmpFile}" "${proxyFile}"; then
+        rm -f "${tmpFile}"
+        return 1
+    fi
+    rm -f "${tmpFile}"
 }
 
 aptproxyoff() {
-    if [ $(uname) != "Linux" ]; then
+    if [ "$(uname)" != "Linux" ]; then
         echo "Only on Linux"
         return 1
     fi
@@ -913,16 +951,25 @@ aptproxyoff() {
         return 1
     fi
     if ! checkRoot;then
-    	return 1
+        return 1
     fi
 
     local proxyFile=/etc/apt/apt.conf.d/httpProxy
-    runAsRoot /bin/rm -rf "${proxyFile}" || { echo "remove ${proxyFile} failed, please remove it mannually!"; }
+    if [ ! -e "${proxyFile}" ]; then
+        echo "${proxyFile} not exists,skip."
+        return
+    fi
+
+    runAsRoot rm "${proxyFile}" || {
+        echo "remove ${proxyFile} failed, please remove it manually!"
+        return 1
+    }
 
 }
 
 macproxyon() {
-    local proxy="$(parseProxy "$@")"
+    local proxy
+    proxy="$(parseProxy "$@")"
     if [ -z "${proxy}" ]; then
         echo "Cannot get proxy value,exit."
         return 1
@@ -930,10 +977,14 @@ macproxyon() {
 
     # proxy format: http://[user:pass]@host:port
     # parse user pass host port
-    local user="$(echo ${proxy} | perl -lne 'print $3 if /^(http:\/\/)?(([^:]+):)?(([^@]+)@)?([^:]+):(\d+)$/')"
-    local pass="$(echo ${proxy} | perl -lne 'print $5 if /^(http:\/\/)?(([^:]+):)?(([^@]+)@)?([^:]+):(\d+)$/')"
-    local host="$(echo ${proxy} | perl -lne 'print $6 if /^(http:\/\/)?(([^:]+):)?(([^@]+)@)?([^:]+):(\d+)$/')"
-    local port="$(echo ${proxy} | perl -lne 'print $7 if /^(http:\/\/)?(([^:]+):)?(([^@]+)@)?([^:]+):(\d+)$/')"
+    local user
+    local pass
+    local host
+    local port
+    user="$(printf '%s\n' "${proxy}" | perl -lne 'print $3 if /^(http:\/\/)?(([^:]+):)?(([^@]+)@)?([^:]+):(\d+)$/')"
+    pass="$(printf '%s\n' "${proxy}" | perl -lne 'print $5 if /^(http:\/\/)?(([^:]+):)?(([^@]+)@)?([^:]+):(\d+)$/')"
+    host="$(printf '%s\n' "${proxy}" | perl -lne 'print $6 if /^(http:\/\/)?(([^:]+):)?(([^@]+)@)?([^:]+):(\d+)$/')"
+    port="$(printf '%s\n' "${proxy}" | perl -lne 'print $7 if /^(http:\/\/)?(([^:]+):)?(([^@]+)@)?([^:]+):(\d+)$/')"
 
     if [ -z "${host}" ]; then
         echo "hostname is empty,exit."
@@ -945,21 +996,22 @@ macproxyon() {
         return 1
     fi
 
-    local option="-h ${host}"
+    local -a option
+    option=(-h "${host}")
 
     if [ -n "${user}" ]; then
-        option="${option} -u ${user}"
+        option+=(-u "${user}")
     fi
 
     if [ -n "${pass}" ]; then
-        option="${option} -p ${pass}"
+        option+=(-p "${pass}")
     fi
 
-    option="${option} ${port}"
+    option+=("${port}")
 
     echo "Set mac system proxy to ${proxy}"
-    eval "setMacProxy http ${option} >/dev/null"
-    eval "setMacProxy https ${option} >/dev/null"
+    setMacProxy http "${option[@]}" >/dev/null || return 1
+    setMacProxy https "${option[@]}" >/dev/null || return 1
 }
 
 macproxyoff() {
@@ -1018,7 +1070,7 @@ parseProxy() {
                 if [ "${verbose}" -eq 1 ]; then
                     echo "Use PROXY_FILE env." >&2
                 fi
-                proxy="$(perl -lne 'print $1 if /^http_proxy=(.+)$/' ${PROXY_FILE})"
+                proxy="$(perl -lne 'if (/^(?:http_proxy|https_proxy)=(.+)$/) { print $1; exit }' "${PROXY_FILE}")"
             else
                 if [ "${verbose}" -eq 1 ]; then
                     echo "The file specified by \${PROXY_FILE}: ${PROXY_FILE} not exist,exit." >&2
@@ -1039,7 +1091,12 @@ parseProxy() {
 
 envProxyOn() {
     local proxy="${1:?'missing proxy'}"
-    local save="${2}"
+    local save="${2:-}"
+
+    if [[ "$save" == "-s" ]] && [ -z "${PROXY_FILE}" ]; then
+        echo "\${PROXY_FILE} is empty,exit."
+        return 1
+    fi
 
     echo "Set http_proxy https_proxy all_proxy to ${proxy}"
     export http_proxy="${proxy}"
@@ -1052,15 +1109,18 @@ envProxyOn() {
     export ALL_PROXY="${proxy}"
 
     if [[ "$save" == "-s" ]]; then
-        cat <<-EOF >${PROXY_FILE}
-		http_proxy=${proxy}
-		https_proxy=${proxy}
-		EOF
+        if ! cat <<-EOF >"${PROXY_FILE}"
+			http_proxy=${proxy}
+			https_proxy=${proxy}
+			EOF
+        then
+            return 1
+        fi
     fi
 }
 
 envProxyOff() {
-    local save="${1}"
+    local save="${1:-}"
 
     unset http_proxy
     unset https_proxy
@@ -1071,17 +1131,24 @@ envProxyOff() {
     unset ALL_PROXY
 
     if [[ "${save}" == "-s" ]]; then
-        [ -e "${PROXY_FILE}" ] && rm "${PROXY_FILE}"
+        if [ -z "${PROXY_FILE}" ]; then
+            echo "\${PROXY_FILE} is empty,exit."
+            return 1
+        fi
+        if [ -e "${PROXY_FILE}" ]; then
+            rm "${PROXY_FILE}" || return 1
+        fi
     fi
 }
 
 # detect git proxy as http_proxy https_proxy env
 detectProxyEnv() {
-    local proxy="$(parseProxy "$@")"
+    local proxy
+    proxy="$(parseProxy "$@")"
     if [ -n "$proxy" ]; then
         envProxyOn "${proxy}"
     else
-        envProxyOff
+        envProxyOff ""
     fi
     # if ! command -v git >/dev/null 2>&1; then
     #     echo "No git command,exit."
@@ -1098,15 +1165,26 @@ gitproxyon() {
         echo "No git command."
         return 1
     fi
-    local proxy="$(parseProxy "$@")"
+    local proxy
+    proxy="$(parseProxy "$@")"
     if [ -z "${proxy}" ]; then
         echo "Cannot get proxy value,exit."
         return 1
     fi
     echo -n "Set git http  proxy to ${proxy} .. "
-    git config --global http.proxy $proxy && echo "OK" || echo "Failed"
+    if git config --global http.proxy "${proxy}"; then
+        echo "OK"
+    else
+        echo "Failed"
+        return 1
+    fi
     echo -n "Set git https proxy to ${proxy} .. "
-    git config --global https.proxy $proxy && echo "OK" || echo "Failed"
+    if git config --global https.proxy "${proxy}"; then
+        echo "OK"
+    else
+        echo "Failed"
+        return 1
+    fi
 }
 
 gitproxyoff() {
@@ -1162,7 +1240,12 @@ pipproxyoff() {
 }
 
 proxyon() {
-    local proxy="$(parseProxy "$@")"
+    local proxy
+    proxy="$(parseProxy "$@")"
+    if [ -z "${proxy}" ]; then
+        echo "Cannot get proxy value,exit."
+        return 1
+    fi
 
     gitproxyon "${proxy}"
     envProxyOn "${proxy}" -s
