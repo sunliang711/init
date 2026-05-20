@@ -3604,6 +3604,115 @@ cdtools() {
     cd "${INIT_REPO_ROOT}/tools"
 }
 
+cda() {
+    local target=""
+
+    if ! command -v z >/dev/null 2>&1; then
+        echo "z command is not available" >&2
+        return 127
+    fi
+
+    if [ -z "${LOCAL_APP_ROOT:-}" ]; then
+        echo "LOCAL_APP_ROOT is not available" >&2
+        return 1
+    fi
+
+    if [ $# -eq 0 ]; then
+        z "${LOCAL_APP_ROOT}"
+        return
+    fi
+
+    target="${LOCAL_APP_ROOT}/${1}"
+    if [ $# -eq 1 ] && [ -d "${target}" ]; then
+        z "${target}"
+        return
+    fi
+
+    z "${LOCAL_APP_ROOT}" "$@"
+}
+
+cdi() {
+    if ! command -v z >/dev/null 2>&1; then
+        echo "z command is not available" >&2
+        return 127
+    fi
+
+    if [ -z "${INIT_REPO_ROOT:-}" ]; then
+        echo "INIT_REPO_ROOT is not available" >&2
+        return 1
+    fi
+
+    z "${INIT_REPO_ROOT}"
+}
+
+cdt() {
+    if ! command -v z >/dev/null 2>&1; then
+        echo "z command is not available" >&2
+        return 127
+    fi
+
+    if [ -z "${INIT_REPO_ROOT:-}" ]; then
+        echo "INIT_REPO_ROOT is not available" >&2
+        return 1
+    fi
+
+    z "${INIT_REPO_ROOT}/tools"
+}
+
+zv() {
+    local dir=""
+    local ed=vi
+
+    if ! command -v zoxide >/dev/null 2>&1; then
+        echo "zoxide is not installed" >&2
+        return 127
+    fi
+
+    if command -v vim >/dev/null 2>&1; then
+        ed=vim
+    fi
+    if command -v nvim >/dev/null 2>&1; then
+        ed=nvim
+    fi
+
+    dir="$(zoxide query "$@")" || return 1
+    cd "${dir}" || return 1
+    "${ed}" .
+}
+
+zt() {
+    local dir=""
+    local name=""
+
+    if ! command -v zoxide >/dev/null 2>&1; then
+        echo "zoxide is not installed" >&2
+        return 127
+    fi
+
+    if ! command -v tmux >/dev/null 2>&1; then
+        echo "tmux is not installed" >&2
+        return 127
+    fi
+
+    dir="$(zoxide query "$@")" || return 1
+    cd "${dir}" || return 1
+    name="$(basename "${dir}")"
+
+    if tmux has-session -t "${name}" >/dev/null 2>&1; then
+        if [ -n "${TMUX:-}" ]; then
+            tmux switch-client -t "${name}"
+        else
+            tmux attach -t "${name}"
+        fi
+    else
+        if [ -n "${TMUX:-}" ]; then
+            tmux new-session -d -s "${name}" -c "${dir}" && tmux switch-client -t "${name}"
+        else
+            tmux new-session -s "${name}" -c "${dir}"
+        fi
+    fi
+}
+
 cdgo() {
     local dest="${workspace}/go/src"
     if [ ! -d "$dest" ]; then
