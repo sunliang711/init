@@ -1,20 +1,16 @@
 #!/bin/bash
-rpath="$(readlink ${BASH_SOURCE})"
+rpath="$(readlink "${BASH_SOURCE[0]}")"
 if [ -z "$rpath" ];then
-    rpath=${BASH_SOURCE}
+    rpath=${BASH_SOURCE[0]}
 fi
-thisDir="$(cd $(dirname $rpath) && pwd)"
-cd "$thisDir"
+thisDir="$(cd "$(dirname "$rpath")" && pwd)"
+cd "$thisDir" || exit 1
 
 user="${SUDO_USER:-$(whoami)}"
-home="$(eval echo ~$user)"
+home="$(eval echo ~"$user")"
 
 red=$(tput setaf 1)
-green=$(tput setaf 2)
-yellow=$(tput setaf 3)
-blue=$(tput setaf 4)
-cyan=$(tput setaf 5)
-        bold=$(tput bold)
+bold=$(tput bold)
 reset=$(tput sgr0)
 function runAsRoot(){
     verbose=0
@@ -30,7 +26,7 @@ function runAsRoot(){
         esac
     done
     shift $((OPTIND-1))
-    cmd="$@"
+    cmd="$*"
     if [ -z "$cmd" ];then
         echo "${red}Need cmd${reset}"
         exit 1
@@ -40,7 +36,7 @@ function runAsRoot(){
         echo "run cmd:\"${red}$cmd${reset}\" as root."
     fi
 
-    if (($EUID==0));then
+    if ((EUID==0));then
         sh -c "$cmd"
     else
         if ! command -v sudo >/dev/null 2>&1;then
@@ -66,60 +62,289 @@ function agentname(){
         echo "need agent name."
         exit 1
     fi
+    if [[ "$name" == */* ]];then
+        echo "Agent name must not contain slash."
+        exit 1
+    fi
+    if [[ ! "$name" =~ ^[A-Za-z0-9._-]+$ ]];then
+        echo "Agent name can only contain letters, numbers, dot, underscore and hyphen."
+        exit 1
+    fi
     name=${name%.plist}.plist
-    agentfullname=$agentPath/$name
+    agentfullname="$agentPath/$name"
+}
+
+# 从 agent plist 路径取默认 Label。
+function defaultAgentLabel(){
+    basename "$agentfullname" .plist
+}
+
+# 校验目标 plist 存在，避免后续命令作用在错误路径上。
+function ensureAgentFile(){
+    if [ ! -f "$agentfullname" ];then
+        echo "${red}Agent file not found: $agentfullname${reset}"
+        exit 1
+    fi
+}
+
+# start/stop 需要 LaunchAgent Label，优先从 plist 读取。
+function agentlabel(){
+    ensureAgentFile
+    agentLabel=$(/usr/libexec/PlistBuddy -c "Print :Label" "$agentfullname" 2>/dev/null)
+    if [ -z "$agentLabel" ];then
+        agentLabel="$(defaultAgentLabel)"
+    fi
+}
+
+# 校验新建目标不存在，避免覆盖现有 plist。
+function ensureNewAgentFile(){
+    if [ -e "$agentfullname" ];then
+        echo "${red}Agent file already exists: $agentfullname${reset}"
+        exit 1
+    fi
+}
+
+# 确保 LaunchAgents 目录存在，新建 plist 前使用。
+function ensureAgentPath(){
+    if [ ! -d "$agentPath" ];then
+        mkdir -p "$agentPath"
+    fi
 }
 
 load(){
-    agentname $1
+    agentname "$1"
+    ensureAgentFile
     launchctl load -w "$agentfullname"
 }
 
 unload(){
-    agentname $1
+    agentname "$1"
+    ensureAgentFile
     launchctl unload -w "$agentfullname"
 }
 
 reload(){
-    agentname $1
+    agentname "$1"
+    ensureAgentFile
     launchctl unload -w "$agentfullname"
     launchctl load -w "$agentfullname"
 }
 
 start(){
-    agentname $1
-    launchctl start "$agentfullname"
+    agentname "$1"
+    agentlabel
+    launchctl start "$agentLabel"
 }
 
 stop(){
-    agentname $1
-    launchctl stop "$agentfullname"
+    agentname "$1"
+    agentlabel
+    launchctl stop "$agentLabel"
 }
 
 list(){
-    ls $agentPath
+    ls "$agentPath"
+}
+
+# 新建基础 LaunchAgent plist，默认 ProgramArguments 使用安全占位命令。
+new(){
+    agentname "$1"
+    ensureAgentPath
+    ensureNewAgentFile
+    local label tmpfile editor answer
+    label="$(defaultAgentLabel)"
+    tmpfile="$(mktemp -t lctl)"
+    if [ -z "$tmpfile" ];then
+        echo "${red}Failed to create temp plist file.${reset}"
+        exit 1
+    fi
+    if ! cat > "$tmpfile" <<EOF2
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Label: launchd job 的唯一标识，通常和文件名保持一致。 -->
+    <key>Label</key>
+    <string>$label</string>
+
+    <!-- ProgramArguments: 要执行的命令和参数；第一个 string 必须是可执行文件路径。 -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/true</string>
+    </array>
+
+    <!-- RunAtLoad: load 后是否立即执行一次。 -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <!-- KeepAlive: 进程退出后是否自动重启；常驻服务可改为 true 或 dict。 -->
+    <key>KeepAlive</key>
+    <false/>
+
+    <!-- StartInterval: 按秒重复执行，适合简单周期任务；示例为每 300 秒执行一次。 -->
+    <!--
+    <key>StartInterval</key>
+    <integer>300</integer>
+    -->
+
+    <!-- StartCalendarInterval: 按固定时间执行，适合定时任务；示例为每天 09:30 执行。 -->
+    <!--
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>9</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    -->
+
+    <!-- WatchPaths: 监听文件或目录变化后执行，路径应使用绝对路径。 -->
+    <!--
+    <key>WatchPaths</key>
+    <array>
+        <string>/path/to/watch</string>
+    </array>
+    -->
+
+    <!-- QueueDirectories: 目录内存在待处理文件时执行，适合消费队列目录。 -->
+    <!--
+    <key>QueueDirectories</key>
+    <array>
+        <string>/path/to/queue</string>
+    </array>
+    -->
+
+    <!-- StandardOutPath: 标准输出日志路径，建议放到用户可写目录。 -->
+    <!--
+    <key>StandardOutPath</key>
+    <string>/tmp/$label.out.log</string>
+    -->
+
+    <!-- StandardErrorPath: 标准错误日志路径，建议和 StandardOutPath 分开。 -->
+    <!--
+    <key>StandardErrorPath</key>
+    <string>/tmp/$label.err.log</string>
+    -->
+
+    <!-- WorkingDirectory: 任务运行时的工作目录，适合依赖相对路径的脚本。 -->
+    <!--
+    <key>WorkingDirectory</key>
+    <string>$home</string>
+    -->
+
+    <!-- EnvironmentVariables: 任务运行时注入的环境变量，适合补充 PATH 或配置项。 -->
+    <!--
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    -->
+</dict>
+</plist>
+EOF2
+    then
+        echo "${red}Failed to write temp plist file: $tmpfile${reset}"
+        /bin/rm -f "$tmpfile"
+        exit 1
+    fi
+
+    editor="vi"
+    if command -v vim >/dev/null 2>&1;then
+        editor="vim"
+    fi
+    if ! "$editor" "$tmpfile";then
+        echo "Canceled."
+        /bin/rm -f "$tmpfile"
+        exit 1
+    fi
+
+    if ! plutil -lint "$tmpfile" >/dev/null;then
+        echo "${red}Invalid plist, not saved to LaunchAgents.${reset}"
+        echo "Temp file kept: $tmpfile"
+        exit 1
+    fi
+
+    echo -n "Save to $agentfullname? [y/N] "
+    read -r answer
+    case "$answer" in
+        y|Y|yes|YES)
+            ensureNewAgentFile
+            if ! /bin/cp "$tmpfile" "$agentfullname";then
+                echo "${red}Failed to save: $agentfullname${reset}"
+                echo "Temp file kept: $tmpfile"
+                exit 1
+            fi
+            if ! chmod 644 "$agentfullname";then
+                echo "${red}Failed to chmod: $agentfullname${reset}"
+                /bin/rm -f "$agentfullname"
+                echo "Temp file kept: $tmpfile"
+                exit 1
+            fi
+            /bin/rm -f "$tmpfile"
+            echo "Created: $agentfullname"
+            ;;
+        *)
+            echo "Canceled."
+            /bin/rm -f "$tmpfile"
+            exit 1
+            ;;
+    esac
+}
+
+# 复制已有 LaunchAgent plist，并将 Label 更新为目标名称。
+dump(){
+    agentname "$1"
+    local src="$agentfullname"
+    ensureAgentFile
+
+    agentname "$2"
+    local dst="$agentfullname"
+    ensureNewAgentFile
+
+    if ! /bin/cp "$src" "$dst";then
+        echo "${red}Failed to copy: $src -> $dst${reset}"
+        exit 1
+    fi
+    if ! /usr/libexec/PlistBuddy -c "Set :Label $(defaultAgentLabel)" "$dst" >/dev/null 2>&1;then
+        echo "${red}Failed to update Label: $dst${reset}"
+        /bin/rm -f "$dst"
+        exit 1
+    fi
+    echo "Copied: $src -> $dst"
 }
 
 rm(){
-    agentname $1
-    /bin/rm -rf "$agentfullname"
+    agentname "$1"
+    ensureAgentFile
+    echo -n "Remove $agentfullname? [y/N] "
+    read -r answer
+    case "$answer" in
+        y|Y|yes|YES)
+            /bin/rm -f "$agentfullname"
+            ;;
+        *)
+            echo "Canceled."
+            ;;
+    esac
 }
 
 edit(){
-    agentname $1
-    editor=vi
+    agentname "$1"
+    ensureAgentFile
+    editor="vi"
     if command -v vim >/dev/null 2>&1;then
-        editor=vim
+        editor="vim"
     fi
-    $editor $agentfullname
+    "$editor" "$agentfullname"
 }
 
 em(){
-    editor=vi
+    editor="vi"
     if command -v vim >/dev/null 2>&1;then
-        editor=vim
+        editor="vim"
     fi
-    $editor ${BASH_SOURCE}
+    "$editor" "${BASH_SOURCE[0]}"
 }
 
 
@@ -127,19 +352,43 @@ em(){
 ###############################################################################
 # write your code above
 ###############################################################################
+# 打印命令用法、参数说明和常见示例。
 function help(){
     cat<<EOF2
-Usage: $(basename $0) ${bold}CMD${reset}
+Usage:
+  $(basename "$0") ${bold}CMD${reset} [ARGS...]
 
-${bold}CMD${reset}:
+${bold}Commands${reset}:
+  help                         Show this help message
+  list                         List plist files in ~/Library/LaunchAgents
+  new NAME                     Create a plist from an editable template
+  dump SRC_NAME DST_NAME       Copy an existing plist and update its Label
+  edit NAME                    Edit an existing plist
+  rm NAME                      Remove an existing plist after confirmation
+  load NAME                    launchctl load -w the plist
+  unload NAME                  launchctl unload -w the plist
+  reload NAME                  unload, then load the plist
+  start NAME                   Start the job by plist Label
+  stop NAME                    Stop the job by plist Label
+  em                           Edit this script
+
+${bold}Examples${reset}:
+  $(basename "$0") new com.example.agent
+  $(basename "$0") dump com.eagle.sync-work com.example.agent
+  $(basename "$0") edit com.example.agent
+  $(basename "$0") load com.example.agent
+
+${bold}Notes${reset}:
+  NAME can omit the .plist suffix.
+  Files are managed under ~/Library/LaunchAgents.
+  new opens a temp plist first and saves only after you confirm with y/yes.
 EOF2
-    perl -lne 'print "\t$1" if /^\s*(\w+)\(\)\{$/' $(basename ${BASH_SOURCE}) | grep -v runAsRoot
 }
 function loadENV(){
     if [ -z "$INIT_HTTP_PROXY" ];then
         echo "INIT_HTTP_PROXY is empty"
         echo -n "Enter http proxy: (if you need) "
-        read INIT_HTTP_PROXY
+        read -r INIT_HTTP_PROXY
     fi
     if [ -n "$INIT_HTTP_PROXY" ];then
         echo "set http proxy to $INIT_HTTP_PROXY"
@@ -147,8 +396,8 @@ function loadENV(){
         export https_proxy=$INIT_HTTP_PROXY
         export HTTP_PROXY=$INIT_HTTP_PROXY
         export HTTPS_PROXY=$INIT_HTTP_PROXY
-        git config --global http.proxy $INIT_HTTP_PROXY
-        git config --global https.proxy $INIT_HTTP_PROXY
+        git config --global http.proxy "$INIT_HTTP_PROXY"
+        git config --global https.proxy "$INIT_HTTP_PROXY"
     else
         echo "No use http proxy"
     fi
@@ -170,6 +419,11 @@ case "$1" in
      ""|-h|--help|help)
         help
         ;;
-    *)
+    load|unload|reload|start|stop|list|new|dump|rm|edit|em)
         "$@"
+        ;;
+    *)
+        echo "Unknown cmd: $1"
+        help
+        exit 1
 esac
