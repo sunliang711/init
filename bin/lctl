@@ -111,23 +111,94 @@ function ensureAgentPath(){
     fi
 }
 
+# 生成当前用户 LaunchAgent 所在的 launchd domain。
+function launchctlDomain(){
+    local uid
+    uid="$(id -u "$user" 2>/dev/null || id -u)"
+    echo "gui/$uid"
+}
+
+# 从指定 plist 读取 Label，缺失时回退到文件名。
+function agentLabelFromFile(){
+    local plist name label
+    plist="$1"
+    name="$(basename "$plist")"
+    label=$(/usr/libexec/PlistBuddy -c "Print :Label" "$plist" 2>/dev/null)
+    if [ -z "$label" ];then
+        label="${name%.plist}"
+    fi
+    echo "$label"
+}
+
+# 查询指定 Label 的加载和运行状态，结果写入 launchStatus 等变量。
+function setLaunchStatus(){
+    local label domain info
+    label="$1"
+    domain="$(launchctlDomain)"
+    launchStatus="unloaded"
+    launchRunning="stopped"
+    launchPid="-"
+    launchMark="○"
+    if info="$(launchctl print "$domain/$label" 2>/dev/null)";then
+        launchStatus="loaded"
+        launchMark="●"
+        launchPid="$(printf "%s\n" "$info" | awk -F' = ' '/^[[:space:]]*pid = / {print $2; exit}')"
+        if [ -n "$launchPid" ];then
+            launchRunning="running"
+        else
+            launchPid="-"
+        fi
+    fi
+}
+
+# 打印状态表头，供 list/status 共用。
+function printLaunchStatusHeader(){
+    printf "%s %-10s %-8s %-8s %-45s %s\n" "MARK" "STATUS" "RUNNING" "PID" "LABEL" "PLIST"
+}
+
+# 打印单行 LaunchAgent 状态，供 list/status 共用。
+function printLaunchStatusRow(){
+    local label name
+    label="$1"
+    name="$2"
+    printf "%s    %-10s %-8s %-8s %-45s %s\n" "$launchMark" "$launchStatus" "$launchRunning" "$launchPid" "$label" "$name"
+}
+
+# 清理 new 命令创建的临时 plist，除非需要保留给用户修正。
+function cleanupNewTmpfile(){
+    if [ -n "$newTmpfile" ] && [ "$keepNewTmpfile" -eq 0 ];then
+        /bin/rm -f "$newTmpfile"
+    fi
+}
+
 load(){
     agentname "$1"
-    ensureAgentFile
-    launchctl load -w "$agentfullname"
+    agentlabel
+    local domain
+    domain="$(launchctlDomain)"
+    launchctl enable "$domain/$agentLabel" >/dev/null 2>&1 || true
+    launchctl bootstrap "$domain" "$agentfullname"
 }
 
 unload(){
     agentname "$1"
-    ensureAgentFile
-    launchctl unload -w "$agentfullname"
+    agentlabel
+    local domain rc
+    domain="$(launchctlDomain)"
+    launchctl bootout "$domain" "$agentfullname"
+    rc=$?
+    launchctl disable "$domain/$agentLabel" >/dev/null 2>&1 || true
+    return "$rc"
 }
 
 reload(){
     agentname "$1"
-    ensureAgentFile
-    launchctl unload -w "$agentfullname"
-    launchctl load -w "$agentfullname"
+    agentlabel
+    local domain
+    domain="$(launchctlDomain)"
+    launchctl bootout "$domain" "$agentfullname" >/dev/null 2>&1
+    launchctl enable "$domain/$agentLabel" >/dev/null 2>&1 || true
+    launchctl bootstrap "$domain" "$agentfullname"
 }
 
 start(){
@@ -142,8 +213,38 @@ stop(){
     launchctl stop "$agentLabel"
 }
 
+# 列出 LaunchAgent plist，并标记加载、运行和 PID 状态。
 list(){
-    ls "$agentPath"
+    local plist name label
+    if [ ! -d "$agentPath" ];then
+        echo "No LaunchAgents directory: $agentPath"
+        return 0
+    fi
+
+    printLaunchStatusHeader
+    for plist in "$agentPath"/*.plist;do
+        if [ ! -e "$plist" ];then
+            echo "No plist files in $agentPath"
+            return 0
+        fi
+
+        name="$(basename "$plist")"
+        label="$(agentLabelFromFile "$plist")"
+        setLaunchStatus "$label"
+        printLaunchStatusRow "$label" "$name"
+    done
+}
+
+# 查看单个 LaunchAgent plist 的加载、运行和 PID 状态。
+status(){
+    agentname "$1"
+    ensureAgentFile
+    local name label
+    name="$(basename "$agentfullname")"
+    label="$(agentLabelFromFile "$agentfullname")"
+    setLaunchStatus "$label"
+    printLaunchStatusHeader
+    printLaunchStatusRow "$label" "$name"
 }
 
 # 新建基础 LaunchAgent plist，默认 ProgramArguments 使用安全占位命令。
@@ -151,14 +252,16 @@ new(){
     agentname "$1"
     ensureAgentPath
     ensureNewAgentFile
-    local label tmpfile editor answer
+    local label editor answer
     label="$(defaultAgentLabel)"
-    tmpfile="$(mktemp -t lctl)"
-    if [ -z "$tmpfile" ];then
+    keepNewTmpfile=0
+    newTmpfile="$(mktemp -t lctl)"
+    trap cleanupNewTmpfile EXIT
+    if [ -z "$newTmpfile" ];then
         echo "${red}Failed to create temp plist file.${reset}"
         exit 1
     fi
-    if ! cat > "$tmpfile" <<EOF2
+    if ! cat > "$newTmpfile" <<EOF2
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -244,8 +347,7 @@ new(){
 </plist>
 EOF2
     then
-        echo "${red}Failed to write temp plist file: $tmpfile${reset}"
-        /bin/rm -f "$tmpfile"
+        echo "${red}Failed to write temp plist file: $newTmpfile${reset}"
         exit 1
     fi
 
@@ -253,15 +355,15 @@ EOF2
     if command -v vim >/dev/null 2>&1;then
         editor="vim"
     fi
-    if ! "$editor" "$tmpfile";then
+    if ! "$editor" "$newTmpfile";then
         echo "Canceled."
-        /bin/rm -f "$tmpfile"
         exit 1
     fi
 
-    if ! plutil -lint "$tmpfile" >/dev/null;then
+    if ! plutil -lint "$newTmpfile" >/dev/null;then
+        keepNewTmpfile=1
         echo "${red}Invalid plist, not saved to LaunchAgents.${reset}"
-        echo "Temp file kept: $tmpfile"
+        echo "Temp file kept: $newTmpfile"
         exit 1
     fi
 
@@ -270,23 +372,23 @@ EOF2
     case "$answer" in
         y|Y|yes|YES)
             ensureNewAgentFile
-            if ! /bin/cp "$tmpfile" "$agentfullname";then
+            if ! /bin/cp "$newTmpfile" "$agentfullname";then
+                keepNewTmpfile=1
                 echo "${red}Failed to save: $agentfullname${reset}"
-                echo "Temp file kept: $tmpfile"
+                echo "Temp file kept: $newTmpfile"
                 exit 1
             fi
             if ! chmod 644 "$agentfullname";then
+                keepNewTmpfile=1
                 echo "${red}Failed to chmod: $agentfullname${reset}"
                 /bin/rm -f "$agentfullname"
-                echo "Temp file kept: $tmpfile"
+                echo "Temp file kept: $newTmpfile"
                 exit 1
             fi
-            /bin/rm -f "$tmpfile"
             echo "Created: $agentfullname"
             ;;
         *)
             echo "Canceled."
-            /bin/rm -f "$tmpfile"
             exit 1
             ;;
     esac
@@ -360,14 +462,15 @@ Usage:
 
 ${bold}Commands${reset}:
   help                         Show this help message
-  list                         List plist files in ~/Library/LaunchAgents
+  list                         List plist files with loaded/running/PID status
+  status NAME                  Show one plist loaded/running/PID status
   new NAME                     Create a plist from an editable template
   dump SRC_NAME DST_NAME       Copy an existing plist and update its Label
   edit NAME                    Edit an existing plist
   rm NAME                      Remove an existing plist after confirmation
-  load NAME                    launchctl load -w the plist
-  unload NAME                  launchctl unload -w the plist
-  reload NAME                  unload, then load the plist
+  load NAME                    launchctl bootstrap the plist into current gui domain
+  unload NAME                  launchctl bootout the plist from current gui domain
+  reload NAME                  bootout, then bootstrap the plist
   start NAME                   Start the job by plist Label
   stop NAME                    Stop the job by plist Label
   em                           Edit this script
@@ -376,6 +479,7 @@ ${bold}Examples${reset}:
   $(basename "$0") new com.example.agent
   $(basename "$0") dump com.eagle.sync-work com.example.agent
   $(basename "$0") edit com.example.agent
+  $(basename "$0") status com.example.agent
   $(basename "$0") load com.example.agent
 
 ${bold}Notes${reset}:
@@ -419,7 +523,7 @@ case "$1" in
      ""|-h|--help|help)
         help
         ;;
-    load|unload|reload|start|stop|list|new|dump|rm|edit|em)
+    load|unload|reload|start|stop|list|status|new|dump|rm|edit|em)
         "$@"
         ;;
     *)
