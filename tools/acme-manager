@@ -1,0 +1,1785 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
+ACME_HOME="/root/.acme.sh"
+CERT_DIR="/etc/certs"
+DEFAULT_RELOAD_CMD="/usr/local/bin/acme_reload_hook.sh"
+RELOAD_CMD="${DEFAULT_RELOAD_CMD}"
+KEY_LENGTH="ec-256"
+HTTP_MODE="standalone"
+EMAIL=""
+CHALLENGE=""
+DNS_PROVIDER=""
+WEBROOT=""
+TASK_ID=""
+TASK_INSTALL_NAME=""
+TASK_CONFIG_HOME=""
+TASK_STATUS="enabled"
+APT_UPDATED=0
+
+MANAGER_DIR=""
+TASKS_DIR=""
+RUNTIME_DIR=""
+
+TASK_PRIMARY_DOMAIN=""
+TASK_DOMAINS=""
+TASK_EMAIL=""
+TASK_CHALLENGE=""
+TASK_DNS_PROVIDER=""
+TASK_HTTP_MODE=""
+TASK_WEBROOT=""
+TASK_CERT_DIR=""
+TASK_KEY_LENGTH=""
+TASK_RELOAD_CMD=""
+
+declare -a CERT_SPECS=()
+
+# 输出脚本日志，日志内容统一写入 stderr，避免污染正常输出。
+log() {
+    echo ">> $*" >&2
+}
+
+# 输出错误并退出，用于所有不可恢复的参数或执行错误。
+die() {
+    log "$*"
+    exit 1
+}
+
+# 根据 ACME_HOME 刷新管理器内部目录，支持通过 --acme-home 切换状态位置。
+refresh_manager_paths() {
+    MANAGER_DIR="${ACME_HOME}/acme-manager"
+    TASKS_DIR="${MANAGER_DIR}/tasks"
+    RUNTIME_DIR="${MANAGER_DIR}/runtime"
+}
+
+# 输出主帮助信息，描述 ID-first 的证书任务管理方式。
+usage() {
+    cat <<'EOF'
+用法:
+  acme-manager <command> [options]
+
+命令:
+  install
+      安装 acme.sh、依赖命令和默认 reload hook。
+
+  issue --id <id> --email <email> --challenge <dns01|http01> [options] -d <domains>
+      创建一个 ID 唯一的证书任务，签发证书并安装到证书目录。
+
+  list [--domain <domain>] [--status <enabled|disabled>]
+      列出当前由 acme-manager 管理的证书任务。
+
+  show <id>
+      查看指定任务的完整配置。
+
+  renew <id|--all> [--force]
+      手动续期指定任务，或续期所有 enabled 任务。
+
+  deploy <id>
+      不重新签发，只把任务已有证书重新安装到证书目录。
+
+  disable <id>
+      暂停任务参与 renew --all。
+
+  enable <id>
+      恢复任务参与 renew --all。
+
+  remove <id> [--purge-installed-files]
+      删除任务记录和内部运行目录。默认保留已安装证书文件。
+
+  revoke <id> --yes-i-understand-revoke
+      吊销证书。该操作不可逆，不会自动删除任务记录。
+
+  import --id <id> --domain <domain> [options]
+      将已有 acme.sh 证书纳入 acme-manager 管理。
+
+  rename <old-id> <new-id>
+      修改任务 ID。不会自动改动已安装证书文件名。
+
+  doctor
+      检查运行环境、acme.sh、reload hook 和任务状态。
+
+全局参数:
+  --acme-home <path>
+      acme.sh 安装目录，默认 /root/.acme.sh。
+
+  --cert-dir <path>
+      证书安装目录，默认 /etc/certs。
+
+  --key-length <value>
+      acme.sh 的密钥类型，默认 ec-256。
+      常见值: ec-256、ec-384、2048、4096。
+
+  --reloadcmd <command>
+      证书安装或后续自动续期成功后执行的 reload 命令。
+      默认值: /usr/local/bin/acme_reload_hook.sh。
+
+issue 参数:
+  --id <id>
+      任务唯一 ID。后续管理命令只使用该 ID。
+      允许字母、数字、点、下划线和中划线，且必须以字母或数字开头。
+
+  --install-name <name>
+      安装到 --cert-dir 时使用的文件名前缀，默认等于任务 ID。
+      输出文件为:
+        <install-name>.cer
+        <install-name>.key
+        <install-name>.pem
+
+  --email <email>
+      acme.sh 账户邮箱，安装 acme.sh 时使用。
+
+  --challenge <dns01|http01>
+      指定签发验证方式。
+
+  --dns-provider <provider>
+      dns01 模式必填，对应 acme.sh 的 DNS provider 名称。
+
+  --http-mode <standalone|webroot>
+      http01 模式使用，默认 standalone。
+
+  --webroot <path>
+      仅当 --http-mode webroot 时必填。
+
+  -d, --domain <domains>
+      当前任务的域名列表，多个域名之间使用英文逗号分隔。
+      第一个域名视为主域名。
+
+import 参数:
+  --id <id>
+      导入后的任务 ID。
+
+  --domain <domain>
+      已有 acme.sh 证书的主域名。
+
+  -d, --domain-list <domains>
+      可选。该证书的完整域名列表，默认等于 --domain。
+
+  --config-home <path>
+      已有证书所在的 acme.sh config home，默认等于 --acme-home。
+
+示例:
+  # 安装 acme.sh 和基础环境
+  acme-manager install --email admin@example.com
+
+  # 创建 DNS-01 证书任务
+  acme-manager issue \
+    --id web-main \
+    --email admin@example.com \
+    --challenge dns01 \
+    --dns-provider dns_cf \
+    -d example.com,www.example.com
+
+  # 创建同主域名的另一个任务
+  acme-manager issue \
+    --id api-main \
+    --email admin@example.com \
+    --challenge dns01 \
+    --dns-provider dns_cf \
+    -d example.com,api.example.com
+
+  # 查看、续期、暂停和移除
+  acme-manager list
+  acme-manager show web-main
+  acme-manager renew web-main --force
+  acme-manager disable web-main
+  acme-manager remove web-main --purge-installed-files
+
+常见 DNS Provider 环境变量:
+  dns_cf (Cloudflare)
+    export CF_Token="你的_api_token"
+    export CF_Account_ID="你的_account_id"
+
+  dns_ali (阿里云 DNS)
+    export Ali_Key="你的_access_key_id"
+    export Ali_Secret="你的_access_key_secret"
+
+  dns_tencent (腾讯云 DNSPod)
+    export Tencent_SecretId="你的_secret_id"
+    export Tencent_SecretKey="你的_secret_key"
+EOF
+}
+
+# 判断外部命令是否存在，用于依赖检查和按需安装。
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# 判断环境变量是否已设置且非空，用于 DNS provider 凭据检查。
+env_var_is_set() {
+    local var_name="${1:?missing env var name}"
+    [ -n "${!var_name:-}" ]
+}
+
+# 校验路径必须为绝对路径，避免相对路径导致写入位置不明确。
+require_absolute_path() {
+    local label="${1:?missing label}"
+    local path="${2:?missing path}"
+
+    case "${path}" in
+        /*)
+            ;;
+        *)
+            die "${label} must be an absolute path: ${path}"
+            ;;
+    esac
+}
+
+# 拒绝 registry 值中的换行和制表符，保证任务文件可被安全解析。
+reject_registry_control_chars() {
+    local label="${1:?missing label}"
+    local value="${2-}"
+
+    if [[ "${value}" == *$'\n'* || "${value}" == *$'\r'* || "${value}" == *$'\t'* ]]; then
+        die "${label} must not contain newline or tab characters"
+    fi
+}
+
+# 校验任务 ID，确保可安全用作文件名和命令主键。
+validate_task_id() {
+    local id="${1:?missing task id}"
+
+    if [[ ! "${id}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+        die "invalid task id: ${id}"
+    fi
+}
+
+# 校验证书安装文件名前缀，避免路径穿越和特殊字符。
+validate_install_name() {
+    local name="${1:?missing install name}"
+
+    if [[ ! "${name}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+        die "invalid install name: ${name}"
+    fi
+}
+
+# 校验域名格式，覆盖普通域名和通配符域名的基础字符约束。
+validate_domain_label() {
+    local domain="${1:?missing domain}"
+
+    if [[ ! "${domain}" =~ ^[A-Za-z0-9._*-]+$ ]]; then
+        die "invalid domain: ${domain}"
+    fi
+}
+
+# 规范化域名列表，去除空格并拒绝空项。
+normalize_cert_spec() {
+    local spec="${1:?missing spec}"
+    local cleaned="${spec// /}"
+
+    if [ -z "${cleaned}" ]; then
+        die "empty domain spec is not allowed"
+    fi
+
+    if [[ "${cleaned}" == *, || "${cleaned}" == ,* || "${cleaned}" == *,,* ]]; then
+        die "invalid domain spec: ${spec}"
+    fi
+
+    echo "${cleaned}"
+}
+
+# 从域名列表中取第一个域名作为 acme.sh 主域名。
+primary_domain_from_spec() {
+    local spec="${1:?missing cert spec}"
+    local -a domains=()
+
+    IFS=',' read -r -a domains <<< "${spec}"
+    echo "${domains[0]}"
+}
+
+# 校验域名列表中的每个域名，避免把非法参数传给 acme.sh。
+validate_domain_spec() {
+    local spec="${1:?missing cert spec}"
+    local -a domains=()
+    local domain=""
+
+    IFS=',' read -r -a domains <<< "${spec}"
+    for domain in "${domains[@]}"; do
+        validate_domain_label "${domain}"
+    done
+}
+
+# 返回 acme.sh 主程序路径。
+acme_bin() {
+    echo "${ACME_HOME}/acme.sh"
+}
+
+# 根据 key 类型推导 acme.sh 证书目录名。
+acme_cert_dir_name() {
+    local primary_domain="${1:?missing primary domain}"
+    local key_length="${2:?missing key length}"
+
+    case "${key_length}" in
+        ec-*|ecc)
+            echo "${primary_domain}_ecc"
+            ;;
+        *)
+            echo "${primary_domain}"
+            ;;
+    esac
+}
+
+# 返回当前任务在 acme.sh config home 中的证书文件路径。
+task_source_cert_file() {
+    local acme_domain_dir=""
+
+    acme_domain_dir="$(acme_cert_dir_name "${TASK_PRIMARY_DOMAIN}" "${TASK_KEY_LENGTH}")"
+    echo "${TASK_CONFIG_HOME}/${acme_domain_dir}/${TASK_PRIMARY_DOMAIN}.cer"
+}
+
+# 创建默认 reload hook，占位脚本只返回成功，便于后续用户替换。
+ensure_default_reload_hook() {
+    if [ "${RELOAD_CMD}" != "${DEFAULT_RELOAD_CMD}" ]; then
+        return 0
+    fi
+
+    if [ -e "${DEFAULT_RELOAD_CMD}" ]; then
+        return 0
+    fi
+
+    log "creating default reload hook at ${DEFAULT_RELOAD_CMD}"
+    mkdir -p "$(dirname "${DEFAULT_RELOAD_CMD}")"
+    cat > "${DEFAULT_RELOAD_CMD}" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+    chmod +x "${DEFAULT_RELOAD_CMD}"
+}
+
+# 检查脚本必须以 root 执行，因为会安装依赖并写入系统证书目录。
+require_root() {
+    if [ "${EUID}" -ne 0 ]; then
+        die "this script must be run as root"
+    fi
+}
+
+# 检查运行系统必须为 Linux。
+require_linux() {
+    if [ "$(uname -s)" != "Linux" ]; then
+        die "this script only supports Linux"
+    fi
+}
+
+# 创建 acme-manager 自身状态目录，写入前统一完成目录准备。
+ensure_manager_dirs() {
+    require_absolute_path "--acme-home" "${ACME_HOME}"
+    mkdir -p "${TASKS_DIR}" "${RUNTIME_DIR}"
+    chmod 700 "${MANAGER_DIR}" "${TASKS_DIR}" "${RUNTIME_DIR}"
+}
+
+# apt 索引只更新一次，避免多个依赖安装重复刷新。
+update_apt_once() {
+    if [ "${APT_UPDATED}" -eq 1 ]; then
+        return 0
+    fi
+
+    if ! command_exists apt-get; then
+        die "apt-get is required to install missing dependencies"
+    fi
+
+    log "updating apt index"
+    apt-get update >/dev/null
+    APT_UPDATED=1
+}
+
+# 按需安装缺失命令，保持安装阶段可重复执行。
+install_package() {
+    local cmd="${1:?missing command}"
+    local pkg="${2:-$1}"
+
+    if command_exists "${cmd}"; then
+        return 0
+    fi
+
+    update_apt_once
+    log "installing package ${pkg}"
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "${pkg}" >/dev/null
+}
+
+# 校验常见 DNS provider 所需环境变量，避免执行到 acme.sh 后才失败。
+require_dns_provider_env_vars() {
+    local missing_vars=()
+    local env_var=""
+
+    case "${DNS_PROVIDER}" in
+        dns_cf)
+            if env_var_is_set "CF_Token" || env_var_is_set "CF_Account_ID"; then
+                if ! env_var_is_set "CF_Token"; then
+                    missing_vars+=("CF_Token")
+                fi
+                if ! env_var_is_set "CF_Account_ID"; then
+                    missing_vars+=("CF_Account_ID")
+                fi
+            elif env_var_is_set "CF_Key" || env_var_is_set "CF_Email"; then
+                if ! env_var_is_set "CF_Key"; then
+                    missing_vars+=("CF_Key")
+                fi
+                if ! env_var_is_set "CF_Email"; then
+                    missing_vars+=("CF_Email")
+                fi
+            else
+                missing_vars+=("CF_Token" "CF_Account_ID")
+            fi
+            ;;
+        dns_ali)
+            for env_var in Ali_Key Ali_Secret; do
+                if ! env_var_is_set "${env_var}"; then
+                    missing_vars+=("${env_var}")
+                fi
+            done
+            ;;
+        dns_tencent)
+            for env_var in Tencent_SecretId Tencent_SecretKey; do
+                if ! env_var_is_set "${env_var}"; then
+                    missing_vars+=("${env_var}")
+                fi
+            done
+            ;;
+        *)
+            log "skip dns provider env check for ${DNS_PROVIDER}, please ensure required variables are exported"
+            return 0
+            ;;
+    esac
+
+    if [ "${#missing_vars[@]}" -gt 0 ]; then
+        die "missing required env vars for ${DNS_PROVIDER}: ${missing_vars[*]}"
+    fi
+}
+
+# 安装 acme.sh 本体和基础依赖，已安装时直接复用。
+install_acme() {
+    local email="${1:?email is required}"
+    local tmp_dir=""
+    local installer=""
+
+    install_package curl curl
+    install_package jq jq
+
+    if [ "${CHALLENGE:-}" = "http01" ] && [ "${HTTP_MODE}" = "standalone" ]; then
+        install_package socat socat
+    fi
+
+    if [ -x "$(acme_bin)" ]; then
+        log "acme.sh already installed, skip"
+        return 0
+    fi
+
+    tmp_dir="$(mktemp -d)"
+    installer="${tmp_dir}/acme-install.sh"
+
+    log "downloading acme.sh installer"
+    if ! curl -fsSL https://get.acme.sh -o "${installer}"; then
+        rm -rf "${tmp_dir}"
+        die "download acme.sh installer failed"
+    fi
+
+    log "installing acme.sh"
+    if ! sh "${installer}" --home "${ACME_HOME}" email="${email}" >/dev/null; then
+        rm -rf "${tmp_dir}"
+        die "acme.sh install failed"
+    fi
+
+    rm -rf "${tmp_dir}"
+
+    if [ ! -x "$(acme_bin)" ]; then
+        die "acme.sh install failed"
+    fi
+
+    log "acme.sh install success"
+}
+
+# 返回任务文件路径，所有任务均按 ID 单文件存储。
+task_file_path() {
+    local id="${1:?missing task id}"
+
+    echo "${TASKS_DIR}/${id}.task"
+}
+
+# 判断任务文件是否存在。
+task_exists() {
+    local id="${1:?missing task id}"
+
+    [ -e "$(task_file_path "${id}")" ]
+}
+
+# 重置当前任务变量，避免多次读取任务时残留旧值。
+reset_task_vars() {
+    TASK_ID=""
+    TASK_PRIMARY_DOMAIN=""
+    TASK_DOMAINS=""
+    TASK_EMAIL=""
+    TASK_CHALLENGE=""
+    TASK_DNS_PROVIDER=""
+    TASK_HTTP_MODE=""
+    TASK_WEBROOT=""
+    TASK_CERT_DIR=""
+    TASK_KEY_LENGTH=""
+    TASK_RELOAD_CMD=""
+    TASK_INSTALL_NAME=""
+    TASK_CONFIG_HOME=""
+    TASK_STATUS="enabled"
+}
+
+# 从 registry 文件读取任务配置，不执行文件内容，避免 source 带来的执行风险。
+load_task() {
+    local id="${1:?missing task id}"
+    local file=""
+    local key=""
+    local value=""
+
+    validate_task_id "${id}"
+    file="$(task_file_path "${id}")"
+
+    if [ ! -f "${file}" ]; then
+        die "task not found: ${id}"
+    fi
+
+    reset_task_vars
+    while IFS=$'\t' read -r key value; do
+        case "${key}" in
+            ID)
+                TASK_ID="${value}"
+                ;;
+            PRIMARY_DOMAIN)
+                TASK_PRIMARY_DOMAIN="${value}"
+                ;;
+            DOMAINS)
+                TASK_DOMAINS="${value}"
+                ;;
+            EMAIL)
+                TASK_EMAIL="${value}"
+                ;;
+            CHALLENGE)
+                TASK_CHALLENGE="${value}"
+                ;;
+            DNS_PROVIDER)
+                TASK_DNS_PROVIDER="${value}"
+                ;;
+            HTTP_MODE)
+                TASK_HTTP_MODE="${value}"
+                ;;
+            WEBROOT)
+                TASK_WEBROOT="${value}"
+                ;;
+            CERT_DIR)
+                TASK_CERT_DIR="${value}"
+                ;;
+            KEY_LENGTH)
+                TASK_KEY_LENGTH="${value}"
+                ;;
+            RELOAD_CMD)
+                TASK_RELOAD_CMD="${value}"
+                ;;
+            INSTALL_NAME)
+                TASK_INSTALL_NAME="${value}"
+                ;;
+            CONFIG_HOME)
+                TASK_CONFIG_HOME="${value}"
+                ;;
+            STATUS)
+                TASK_STATUS="${value}"
+                ;;
+            ""|\#*)
+                ;;
+            *)
+                log "ignore unknown task field ${key} in ${file}"
+                ;;
+        esac
+    done < "${file}"
+
+    if [ "${TASK_ID}" != "${id}" ]; then
+        die "task file id mismatch: ${file}"
+    fi
+
+    validate_loaded_task
+}
+
+# 校验已读取任务的必填字段，避免损坏的 registry 进入执行流程。
+validate_loaded_task() {
+    [ -n "${TASK_PRIMARY_DOMAIN}" ] || die "task ${TASK_ID} missing PRIMARY_DOMAIN"
+    [ -n "${TASK_DOMAINS}" ] || die "task ${TASK_ID} missing DOMAINS"
+    [ -n "${TASK_CERT_DIR}" ] || die "task ${TASK_ID} missing CERT_DIR"
+    [ -n "${TASK_KEY_LENGTH}" ] || die "task ${TASK_ID} missing KEY_LENGTH"
+    [ -n "${TASK_INSTALL_NAME}" ] || die "task ${TASK_ID} missing INSTALL_NAME"
+    [ -n "${TASK_CONFIG_HOME}" ] || die "task ${TASK_ID} missing CONFIG_HOME"
+
+    case "${TASK_STATUS}" in
+        enabled|disabled)
+            ;;
+        *)
+            die "task ${TASK_ID} has invalid status: ${TASK_STATUS}"
+            ;;
+    esac
+
+    require_absolute_path "task config home" "${TASK_CONFIG_HOME}"
+    require_absolute_path "task cert dir" "${TASK_CERT_DIR}"
+    validate_task_id "${TASK_ID}"
+    validate_install_name "${TASK_INSTALL_NAME}"
+    validate_domain_spec "${TASK_DOMAINS}"
+}
+
+# 写入单个 registry 字段，调用前会校验值不包含换行和制表符。
+write_task_field() {
+    local key="${1:?missing key}"
+    local value="${2-}"
+
+    reject_registry_control_chars "${key}" "${value}"
+    printf '%s\t%s\n' "${key}" "${value}"
+}
+
+# 将当前任务变量写入 registry 文件，使用临时文件再原子替换。
+write_task_file() {
+    local file=""
+    local tmp_file=""
+
+    validate_loaded_task
+    ensure_manager_dirs
+
+    file="$(task_file_path "${TASK_ID}")"
+    tmp_file="$(mktemp "${TASKS_DIR}/.${TASK_ID}.tmp.XXXXXX")"
+    chmod 600 "${tmp_file}"
+
+    {
+        write_task_field "ID" "${TASK_ID}"
+        write_task_field "PRIMARY_DOMAIN" "${TASK_PRIMARY_DOMAIN}"
+        write_task_field "DOMAINS" "${TASK_DOMAINS}"
+        write_task_field "EMAIL" "${TASK_EMAIL}"
+        write_task_field "CHALLENGE" "${TASK_CHALLENGE}"
+        write_task_field "DNS_PROVIDER" "${TASK_DNS_PROVIDER}"
+        write_task_field "HTTP_MODE" "${TASK_HTTP_MODE}"
+        write_task_field "WEBROOT" "${TASK_WEBROOT}"
+        write_task_field "CERT_DIR" "${TASK_CERT_DIR}"
+        write_task_field "KEY_LENGTH" "${TASK_KEY_LENGTH}"
+        write_task_field "RELOAD_CMD" "${TASK_RELOAD_CMD}"
+        write_task_field "INSTALL_NAME" "${TASK_INSTALL_NAME}"
+        write_task_field "CONFIG_HOME" "${TASK_CONFIG_HOME}"
+        write_task_field "STATUS" "${TASK_STATUS}"
+    } > "${tmp_file}"
+
+    mv "${tmp_file}" "${file}"
+    chmod 600 "${file}"
+}
+
+# 返回当前任务应使用的 acme.sh account.conf，导入任务优先使用外部配置。
+task_account_conf() {
+    if [ -e "${TASK_CONFIG_HOME}/account.conf" ]; then
+        echo "${TASK_CONFIG_HOME}/account.conf"
+    else
+        echo "${ACME_HOME}/account.conf"
+    fi
+}
+
+# 使用当前任务的 config home 调用 acme.sh，确保同域名多任务可以隔离。
+task_acme_cmd() {
+    "$(acme_bin)" \
+        --home "${ACME_HOME}" \
+        --config-home "${TASK_CONFIG_HOME}" \
+        --accountconf "$(task_account_conf)" \
+        "$@"
+}
+
+# 构造当前任务的 acme.sh issue 参数。
+build_issue_args_from_task() {
+    local -a domains=()
+    local domain=""
+    local issue_args=()
+
+    IFS=',' read -r -a domains <<< "${TASK_DOMAINS}"
+
+    for domain in "${domains[@]}"; do
+        validate_domain_label "${domain}"
+        issue_args+=("-d" "${domain}")
+    done
+
+    case "${TASK_CHALLENGE}" in
+        dns01)
+            issue_args+=("--dns" "${TASK_DNS_PROVIDER}")
+            ;;
+        http01)
+            if [ "${TASK_HTTP_MODE}" = "webroot" ]; then
+                issue_args+=("-w" "${TASK_WEBROOT}")
+            else
+                issue_args+=("--standalone")
+            fi
+            ;;
+        *)
+            die "unsupported challenge: ${TASK_CHALLENGE}"
+            ;;
+    esac
+
+    issue_args+=("--keylength" "${TASK_KEY_LENGTH}")
+    printf '%s\n' "${issue_args[@]}"
+}
+
+# 签发当前任务证书；证书已存在时跳过签发，仅进入后续安装流程。
+issue_current_task() {
+    local -a issue_args=()
+    local cert_file=""
+    local line=""
+
+    mkdir -p "${TASK_CONFIG_HOME}"
+    cert_file="$(task_source_cert_file)"
+
+    if [ -e "${cert_file}" ]; then
+        log "cert already exists for task ${TASK_ID}, skip issue"
+        return 0
+    fi
+
+    while IFS= read -r line; do
+        issue_args+=("${line}")
+    done < <(build_issue_args_from_task)
+
+    log "issuing cert for task ${TASK_ID}: ${TASK_DOMAINS}"
+    task_acme_cmd --issue "${issue_args[@]}"
+
+    if [ ! -e "${cert_file}" ]; then
+        die "issue cert failed for task ${TASK_ID}"
+    fi
+}
+
+# 将当前任务已有证书安装到业务证书目录，并写入 reloadcmd。
+deploy_current_task() {
+    local cert_file=""
+    local key_file=""
+    local fullchain_file=""
+    local source_cert_file=""
+    local -a install_args=()
+
+    source_cert_file="$(task_source_cert_file)"
+    if [ ! -e "${source_cert_file}" ]; then
+        die "source cert not found for task ${TASK_ID}: ${source_cert_file}"
+    fi
+
+    mkdir -p "${TASK_CERT_DIR}"
+    cert_file="${TASK_CERT_DIR}/${TASK_INSTALL_NAME}.cer"
+    key_file="${TASK_CERT_DIR}/${TASK_INSTALL_NAME}.key"
+    fullchain_file="${TASK_CERT_DIR}/${TASK_INSTALL_NAME}.pem"
+    install_args=(
+        "--install-cert"
+        "-d" "${TASK_PRIMARY_DOMAIN}"
+        "--keylength" "${TASK_KEY_LENGTH}"
+        "--cert-file" "${cert_file}"
+        "--key-file" "${key_file}"
+        "--fullchain-file" "${fullchain_file}"
+    )
+
+    if [ -n "${TASK_RELOAD_CMD}" ]; then
+        install_args+=("--reloadcmd" "${TASK_RELOAD_CMD}")
+    fi
+
+    log "deploying cert for task ${TASK_ID} to ${TASK_CERT_DIR}"
+    task_acme_cmd "${install_args[@]}"
+
+    if [ ! -e "${fullchain_file}" ] || [ ! -e "${key_file}" ]; then
+        die "cert deploy failed for task ${TASK_ID}"
+    fi
+}
+
+# 手动续期当前任务，续期成功后立即重新部署证书文件。
+renew_current_task() {
+    local force="${1:?missing force flag}"
+    local -a renew_args=()
+
+    renew_args=(
+        "--renew"
+        "-d" "${TASK_PRIMARY_DOMAIN}"
+        "--keylength" "${TASK_KEY_LENGTH}"
+    )
+
+    if [ "${force}" -eq 1 ]; then
+        renew_args+=("--force")
+    fi
+
+    log "renewing task ${TASK_ID}"
+    task_acme_cmd "${renew_args[@]}"
+    deploy_current_task
+}
+
+# 校验 issue 命令参数，将命令行参数收敛成一个任务配置。
+validate_issue_task_args() {
+    if [ -z "${TASK_ID}" ]; then
+        die "--id is required"
+    fi
+
+    validate_task_id "${TASK_ID}"
+
+    if task_exists "${TASK_ID}"; then
+        die "task already exists: ${TASK_ID}"
+    fi
+
+    if [ -z "${EMAIL}" ]; then
+        die "--email is required"
+    fi
+
+    case "${CHALLENGE}" in
+        dns01|http01)
+            ;;
+        *)
+            die "--challenge must be dns01 or http01"
+            ;;
+    esac
+
+    if [ "${#CERT_SPECS[@]}" -ne 1 ]; then
+        die "exactly one -d/--domain is required for one task"
+    fi
+
+    validate_domain_spec "${CERT_SPECS[0]}"
+
+    if [ "${CHALLENGE}" = "dns01" ] && [ -z "${DNS_PROVIDER}" ]; then
+        die "--dns-provider is required for dns01"
+    fi
+
+    if [ "${CHALLENGE}" = "dns01" ]; then
+        require_dns_provider_env_vars
+    fi
+
+    if [ "${CHALLENGE}" = "http01" ]; then
+        case "${HTTP_MODE}" in
+            standalone|webroot)
+                ;;
+            *)
+                die "--http-mode must be standalone or webroot"
+                ;;
+        esac
+
+        if [ "${HTTP_MODE}" = "webroot" ]; then
+            [ -n "${WEBROOT}" ] || die "--webroot is required when --http-mode webroot"
+            require_absolute_path "--webroot" "${WEBROOT}"
+        fi
+    fi
+
+    require_absolute_path "--cert-dir" "${CERT_DIR}"
+    require_absolute_path "--acme-home" "${ACME_HOME}"
+
+    if [ -z "${TASK_INSTALL_NAME}" ]; then
+        TASK_INSTALL_NAME="${TASK_ID}"
+    fi
+    validate_install_name "${TASK_INSTALL_NAME}"
+
+    TASK_PRIMARY_DOMAIN="$(primary_domain_from_spec "${CERT_SPECS[0]}")"
+    TASK_DOMAINS="${CERT_SPECS[0]}"
+    TASK_EMAIL="${EMAIL}"
+    TASK_CHALLENGE="${CHALLENGE}"
+    TASK_DNS_PROVIDER="${DNS_PROVIDER}"
+    TASK_HTTP_MODE="${HTTP_MODE}"
+    TASK_WEBROOT="${WEBROOT}"
+    TASK_CERT_DIR="${CERT_DIR}"
+    TASK_KEY_LENGTH="${KEY_LENGTH}"
+    TASK_RELOAD_CMD="${RELOAD_CMD}"
+    TASK_CONFIG_HOME="${RUNTIME_DIR}/${TASK_ID}"
+    TASK_STATUS="enabled"
+}
+
+# 解析 install 子命令参数并安装运行环境。
+cmd_install() {
+    local email=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --email)
+                [ $# -ge 2 ] || die "missing value for --email"
+                email="$2"
+                shift 2
+                ;;
+            --acme-home)
+                [ $# -ge 2 ] || die "missing value for --acme-home"
+                ACME_HOME="$2"
+                refresh_manager_paths
+                shift 2
+                ;;
+            --reloadcmd)
+                [ $# -ge 2 ] || die "missing value for --reloadcmd"
+                RELOAD_CMD="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                die "unknown install argument: $1"
+                ;;
+        esac
+    done
+
+    [ -n "${email}" ] || die "--email is required"
+
+    require_root
+    require_linux
+    ensure_manager_dirs
+    ensure_default_reload_hook
+    install_acme "${email}"
+    log "install completed"
+}
+
+# 解析 issue 子命令参数，创建任务、签发并部署证书。
+cmd_issue() {
+    reset_task_vars
+    CERT_SPECS=()
+    EMAIL=""
+    CHALLENGE=""
+    DNS_PROVIDER=""
+    HTTP_MODE="standalone"
+    WEBROOT=""
+    TASK_ID=""
+    TASK_INSTALL_NAME=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --id)
+                [ $# -ge 2 ] || die "missing value for --id"
+                TASK_ID="$2"
+                shift 2
+                ;;
+            --install-name)
+                [ $# -ge 2 ] || die "missing value for --install-name"
+                TASK_INSTALL_NAME="$2"
+                shift 2
+                ;;
+            --email)
+                [ $# -ge 2 ] || die "missing value for --email"
+                EMAIL="$2"
+                shift 2
+                ;;
+            --challenge)
+                [ $# -ge 2 ] || die "missing value for --challenge"
+                CHALLENGE="$2"
+                shift 2
+                ;;
+            --dns-provider)
+                [ $# -ge 2 ] || die "missing value for --dns-provider"
+                DNS_PROVIDER="$2"
+                shift 2
+                ;;
+            --http-mode)
+                [ $# -ge 2 ] || die "missing value for --http-mode"
+                HTTP_MODE="$2"
+                shift 2
+                ;;
+            --webroot)
+                [ $# -ge 2 ] || die "missing value for --webroot"
+                WEBROOT="$2"
+                shift 2
+                ;;
+            --cert-dir)
+                [ $# -ge 2 ] || die "missing value for --cert-dir"
+                CERT_DIR="$2"
+                shift 2
+                ;;
+            --acme-home)
+                [ $# -ge 2 ] || die "missing value for --acme-home"
+                ACME_HOME="$2"
+                refresh_manager_paths
+                shift 2
+                ;;
+            --key-length)
+                [ $# -ge 2 ] || die "missing value for --key-length"
+                KEY_LENGTH="$2"
+                shift 2
+                ;;
+            --reloadcmd)
+                [ $# -ge 2 ] || die "missing value for --reloadcmd"
+                RELOAD_CMD="$2"
+                shift 2
+                ;;
+            -d|--domain)
+                [ $# -ge 2 ] || die "missing value for --domain"
+                CERT_SPECS+=("$(normalize_cert_spec "$2")")
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                die "unknown issue argument: $1"
+                ;;
+        esac
+    done
+
+    require_root
+    require_linux
+    validate_issue_task_args
+    ensure_manager_dirs
+    ensure_default_reload_hook
+    install_acme "${EMAIL}"
+    issue_current_task
+    deploy_current_task
+    write_task_file
+    log "task ${TASK_ID} created"
+}
+
+# 判断任务域名列表是否包含指定域名，用于 list 过滤。
+task_matches_domain() {
+    local filter_domain="${1:?missing filter domain}"
+    local -a domains=()
+    local domain=""
+
+    IFS=',' read -r -a domains <<< "${TASK_DOMAINS}"
+    for domain in "${domains[@]}"; do
+        if [ "${domain}" = "${filter_domain}" ]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+# 解析 list 子命令参数并输出任务表。
+cmd_list() {
+    local filter_domain=""
+    local filter_status=""
+    local file=""
+    local id=""
+    local count=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --domain)
+                [ $# -ge 2 ] || die "missing value for --domain"
+                filter_domain="$2"
+                shift 2
+                ;;
+            --status)
+                [ $# -ge 2 ] || die "missing value for --status"
+                filter_status="$2"
+                shift 2
+                ;;
+            --acme-home)
+                [ $# -ge 2 ] || die "missing value for --acme-home"
+                ACME_HOME="$2"
+                refresh_manager_paths
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                die "unknown list argument: $1"
+                ;;
+        esac
+    done
+
+    case "${filter_status}" in
+        ""|enabled|disabled)
+            ;;
+        *)
+            die "--status must be enabled or disabled"
+            ;;
+    esac
+
+    printf '%-24s %-24s %-8s %-9s %-24s %s\n' "ID" "PRIMARY" "KEY" "STATUS" "INSTALL_NAME" "DOMAINS"
+    if [ -d "${TASKS_DIR}" ]; then
+        for file in "${TASKS_DIR}"/*.task; do
+            [ -e "${file}" ] || continue
+            id="$(basename "${file}" .task)"
+            load_task "${id}"
+
+            if [ -n "${filter_domain}" ] && ! task_matches_domain "${filter_domain}"; then
+                continue
+            fi
+
+            if [ -n "${filter_status}" ] && [ "${TASK_STATUS}" != "${filter_status}" ]; then
+                continue
+            fi
+
+            printf '%-24s %-24s %-8s %-9s %-24s %s\n' \
+                "${TASK_ID}" \
+                "${TASK_PRIMARY_DOMAIN}" \
+                "${TASK_KEY_LENGTH}" \
+                "${TASK_STATUS}" \
+                "${TASK_INSTALL_NAME}" \
+                "${TASK_DOMAINS}"
+            count=$((count + 1))
+        done
+    fi
+
+    if [ "${count}" -eq 0 ]; then
+        log "no tasks found"
+    fi
+}
+
+# 解析 show 子命令参数并输出单个任务详情。
+cmd_show() {
+    local id=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --acme-home)
+                [ $# -ge 2 ] || die "missing value for --acme-home"
+                ACME_HOME="$2"
+                refresh_manager_paths
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                if [ -n "${id}" ]; then
+                    die "show accepts exactly one task id"
+                fi
+                id="$1"
+                shift
+                ;;
+        esac
+    done
+
+    [ -n "${id}" ] || die "task id is required"
+    load_task "${id}"
+
+    cat <<EOF
+ID: ${TASK_ID}
+Status: ${TASK_STATUS}
+Primary domain: ${TASK_PRIMARY_DOMAIN}
+Domains: ${TASK_DOMAINS}
+Key length: ${TASK_KEY_LENGTH}
+Challenge: ${TASK_CHALLENGE}
+DNS provider: ${TASK_DNS_PROVIDER}
+HTTP mode: ${TASK_HTTP_MODE}
+Webroot: ${TASK_WEBROOT}
+Config home: ${TASK_CONFIG_HOME}
+Cert dir: ${TASK_CERT_DIR}
+Install name: ${TASK_INSTALL_NAME}
+Installed cert: ${TASK_CERT_DIR}/${TASK_INSTALL_NAME}.cer
+Installed key: ${TASK_CERT_DIR}/${TASK_INSTALL_NAME}.key
+Installed fullchain: ${TASK_CERT_DIR}/${TASK_INSTALL_NAME}.pem
+Reload command: ${TASK_RELOAD_CMD}
+EOF
+}
+
+# 解析 renew 子命令参数，支持单任务续期和 enabled 任务批量续期。
+cmd_renew() {
+    local id=""
+    local renew_all=0
+    local force=0
+    local file=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --all)
+                renew_all=1
+                shift
+                ;;
+            --force)
+                force=1
+                shift
+                ;;
+            --acme-home)
+                [ $# -ge 2 ] || die "missing value for --acme-home"
+                ACME_HOME="$2"
+                refresh_manager_paths
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                if [ -n "${id}" ]; then
+                    die "renew accepts one task id or --all"
+                fi
+                id="$1"
+                shift
+                ;;
+        esac
+    done
+
+    require_root
+    require_linux
+
+    if [ "${renew_all}" -eq 1 ]; then
+        [ -z "${id}" ] || die "renew accepts one task id or --all"
+        if [ ! -d "${TASKS_DIR}" ]; then
+            log "no tasks found"
+            return 0
+        fi
+
+        for file in "${TASKS_DIR}"/*.task; do
+            [ -e "${file}" ] || continue
+            load_task "$(basename "${file}" .task)"
+            if [ "${TASK_STATUS}" = "disabled" ]; then
+                log "skip disabled task ${TASK_ID}"
+                continue
+            fi
+            renew_current_task "${force}"
+        done
+        return 0
+    fi
+
+    [ -n "${id}" ] || die "task id or --all is required"
+    load_task "${id}"
+
+    if [ "${TASK_STATUS}" = "disabled" ]; then
+        log "task ${TASK_ID} is disabled, running manual renew anyway"
+    fi
+
+    renew_current_task "${force}"
+}
+
+# 解析 deploy 子命令参数，只重新安装已有证书。
+cmd_deploy() {
+    local id=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --acme-home)
+                [ $# -ge 2 ] || die "missing value for --acme-home"
+                ACME_HOME="$2"
+                refresh_manager_paths
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                if [ -n "${id}" ]; then
+                    die "deploy accepts exactly one task id"
+                fi
+                id="$1"
+                shift
+                ;;
+        esac
+    done
+
+    [ -n "${id}" ] || die "task id is required"
+    require_root
+    require_linux
+    load_task "${id}"
+    deploy_current_task
+}
+
+# 更新当前任务状态，用于 enable 和 disable 子命令。
+update_current_task_status() {
+    local status="${1:?missing status}"
+
+    TASK_STATUS="${status}"
+    write_task_file
+    log "task ${TASK_ID} status changed to ${TASK_STATUS}"
+}
+
+# 解析 enable/disable 子命令参数并更新任务状态。
+cmd_set_status() {
+    local status="${1:?missing status}"
+    local id=""
+
+    shift
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --acme-home)
+                [ $# -ge 2 ] || die "missing value for --acme-home"
+                ACME_HOME="$2"
+                refresh_manager_paths
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                if [ -n "${id}" ]; then
+                    die "${status} accepts exactly one task id"
+                fi
+                id="$1"
+                shift
+                ;;
+        esac
+    done
+
+    [ -n "${id}" ] || die "task id is required"
+    load_task "${id}"
+    update_current_task_status "${status}"
+}
+
+# 安全删除指定路径，拒绝空路径、根目录和关键系统目录。
+safe_remove_path() {
+    local path="${1:?missing path}"
+
+    case "${path}" in
+        ""|"/"|"/etc"|"/etc/"|"/root"|"/root/"|"/home"|"/home/"|"/usr"|"/usr/"|"/var"|"/var/")
+            die "refuse to remove unsafe path: ${path}"
+            ;;
+    esac
+
+    if [ -e "${path}" ] || [ -L "${path}" ]; then
+        rm -rf -- "${path}"
+    fi
+}
+
+# 删除当前任务安装到业务目录的证书文件。
+remove_installed_files() {
+    safe_remove_path "${TASK_CERT_DIR}/${TASK_INSTALL_NAME}.cer"
+    safe_remove_path "${TASK_CERT_DIR}/${TASK_INSTALL_NAME}.key"
+    safe_remove_path "${TASK_CERT_DIR}/${TASK_INSTALL_NAME}.pem"
+}
+
+# 删除当前任务的内部运行目录，外部导入的 config home 默认保留。
+remove_task_runtime() {
+    case "${TASK_CONFIG_HOME}" in
+        "${RUNTIME_DIR}/"*)
+            safe_remove_path "${TASK_CONFIG_HOME}"
+            ;;
+        *)
+            log "preserve external config home for task ${TASK_ID}: ${TASK_CONFIG_HOME}"
+            ;;
+    esac
+}
+
+# 解析 remove 子命令参数并删除任务记录，可选删除已安装证书文件。
+cmd_remove() {
+    local id=""
+    local purge_installed_files=0
+    local file=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --purge-installed-files)
+                purge_installed_files=1
+                shift
+                ;;
+            --acme-home)
+                [ $# -ge 2 ] || die "missing value for --acme-home"
+                ACME_HOME="$2"
+                refresh_manager_paths
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                if [ -n "${id}" ]; then
+                    die "remove accepts exactly one task id"
+                fi
+                id="$1"
+                shift
+                ;;
+        esac
+    done
+
+    [ -n "${id}" ] || die "task id is required"
+    require_root
+    require_linux
+    load_task "${id}"
+
+    if command_exists "$(acme_bin)"; then
+        if ! task_acme_cmd --remove -d "${TASK_PRIMARY_DOMAIN}" --keylength "${TASK_KEY_LENGTH}"; then
+            log "acme remove failed for task ${TASK_ID}, continue removing manager state"
+        fi
+    fi
+
+    if [ "${purge_installed_files}" -eq 1 ]; then
+        remove_installed_files
+    fi
+
+    remove_task_runtime
+    file="$(task_file_path "${TASK_ID}")"
+    safe_remove_path "${file}"
+    log "task ${TASK_ID} removed"
+}
+
+# 解析 revoke 子命令参数并吊销证书，强制要求显式确认参数。
+cmd_revoke() {
+    local id=""
+    local confirmed=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --yes-i-understand-revoke)
+                confirmed=1
+                shift
+                ;;
+            --acme-home)
+                [ $# -ge 2 ] || die "missing value for --acme-home"
+                ACME_HOME="$2"
+                refresh_manager_paths
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                if [ -n "${id}" ]; then
+                    die "revoke accepts exactly one task id"
+                fi
+                id="$1"
+                shift
+                ;;
+        esac
+    done
+
+    [ -n "${id}" ] || die "task id is required"
+    [ "${confirmed}" -eq 1 ] || die "revoke requires --yes-i-understand-revoke"
+    require_root
+    require_linux
+    load_task "${id}"
+    log "revoking cert for task ${TASK_ID}"
+    task_acme_cmd --revoke -d "${TASK_PRIMARY_DOMAIN}" --keylength "${TASK_KEY_LENGTH}"
+}
+
+# 解析 import 子命令参数，将已有 acme.sh 证书写入 manager registry。
+cmd_import() {
+    local primary_domain=""
+    local domain_list=""
+    local config_home=""
+
+    reset_task_vars
+    TASK_ID=""
+    TASK_INSTALL_NAME=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --id)
+                [ $# -ge 2 ] || die "missing value for --id"
+                TASK_ID="$2"
+                shift 2
+                ;;
+            --domain)
+                [ $# -ge 2 ] || die "missing value for --domain"
+                primary_domain="$2"
+                shift 2
+                ;;
+            -d|--domain-list)
+                [ $# -ge 2 ] || die "missing value for --domain-list"
+                domain_list="$(normalize_cert_spec "$2")"
+                shift 2
+                ;;
+            --install-name)
+                [ $# -ge 2 ] || die "missing value for --install-name"
+                TASK_INSTALL_NAME="$2"
+                shift 2
+                ;;
+            --config-home)
+                [ $# -ge 2 ] || die "missing value for --config-home"
+                config_home="$2"
+                shift 2
+                ;;
+            --cert-dir)
+                [ $# -ge 2 ] || die "missing value for --cert-dir"
+                CERT_DIR="$2"
+                shift 2
+                ;;
+            --acme-home)
+                [ $# -ge 2 ] || die "missing value for --acme-home"
+                ACME_HOME="$2"
+                refresh_manager_paths
+                shift 2
+                ;;
+            --key-length)
+                [ $# -ge 2 ] || die "missing value for --key-length"
+                KEY_LENGTH="$2"
+                shift 2
+                ;;
+            --reloadcmd)
+                [ $# -ge 2 ] || die "missing value for --reloadcmd"
+                RELOAD_CMD="$2"
+                shift 2
+                ;;
+            --status)
+                [ $# -ge 2 ] || die "missing value for --status"
+                TASK_STATUS="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                die "unknown import argument: $1"
+                ;;
+        esac
+    done
+
+    [ -n "${TASK_ID}" ] || die "--id is required"
+    [ -n "${primary_domain}" ] || die "--domain is required"
+    validate_task_id "${TASK_ID}"
+    validate_domain_label "${primary_domain}"
+
+    if task_exists "${TASK_ID}"; then
+        die "task already exists: ${TASK_ID}"
+    fi
+
+    if [ -z "${domain_list}" ]; then
+        domain_list="${primary_domain}"
+    fi
+    validate_domain_spec "${domain_list}"
+
+    if [ -z "${TASK_INSTALL_NAME}" ]; then
+        TASK_INSTALL_NAME="${TASK_ID}"
+    fi
+    validate_install_name "${TASK_INSTALL_NAME}"
+
+    if [ -z "${config_home}" ]; then
+        config_home="${ACME_HOME}"
+    fi
+    require_absolute_path "--config-home" "${config_home}"
+    require_absolute_path "--cert-dir" "${CERT_DIR}"
+
+    case "${TASK_STATUS}" in
+        enabled|disabled)
+            ;;
+        *)
+            die "--status must be enabled or disabled"
+            ;;
+    esac
+
+    TASK_PRIMARY_DOMAIN="${primary_domain}"
+    TASK_DOMAINS="${domain_list}"
+    TASK_EMAIL=""
+    TASK_CHALLENGE="imported"
+    TASK_DNS_PROVIDER=""
+    TASK_HTTP_MODE=""
+    TASK_WEBROOT=""
+    TASK_CERT_DIR="${CERT_DIR}"
+    TASK_KEY_LENGTH="${KEY_LENGTH}"
+    TASK_RELOAD_CMD="${RELOAD_CMD}"
+    TASK_CONFIG_HOME="${config_home}"
+
+    if [ ! -e "$(task_source_cert_file)" ]; then
+        die "source cert not found for import: $(task_source_cert_file)"
+    fi
+
+    ensure_manager_dirs
+    write_task_file
+    log "task ${TASK_ID} imported"
+}
+
+# 解析 rename 子命令参数并修改任务 ID。
+cmd_rename() {
+    local old_id=""
+    local new_id=""
+    local old_file=""
+    local old_config_home=""
+    local new_config_home=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --acme-home)
+                [ $# -ge 2 ] || die "missing value for --acme-home"
+                ACME_HOME="$2"
+                refresh_manager_paths
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                if [ -z "${old_id}" ]; then
+                    old_id="$1"
+                elif [ -z "${new_id}" ]; then
+                    new_id="$1"
+                else
+                    die "rename accepts old-id and new-id"
+                fi
+                shift
+                ;;
+        esac
+    done
+
+    [ -n "${old_id}" ] || die "old task id is required"
+    [ -n "${new_id}" ] || die "new task id is required"
+    validate_task_id "${new_id}"
+
+    if task_exists "${new_id}"; then
+        die "task already exists: ${new_id}"
+    fi
+
+    load_task "${old_id}"
+    old_file="$(task_file_path "${TASK_ID}")"
+    old_config_home="${TASK_CONFIG_HOME}"
+
+    case "${old_config_home}" in
+        "${RUNTIME_DIR}/${old_id}")
+            new_config_home="${RUNTIME_DIR}/${new_id}"
+            if [ -e "${new_config_home}" ]; then
+                die "target config home already exists: ${new_config_home}"
+            fi
+            if [ -e "${old_config_home}" ]; then
+                mv "${old_config_home}" "${new_config_home}"
+            fi
+            TASK_CONFIG_HOME="${new_config_home}"
+            ;;
+    esac
+
+    TASK_ID="${new_id}"
+    write_task_file
+    safe_remove_path "${old_file}"
+    log "task ${old_id} renamed to ${new_id}"
+}
+
+# 输出 doctor 检查项，便于定位环境和任务配置问题。
+doctor_check() {
+    local status="${1:?missing status}"
+    local message="${2:?missing message}"
+
+    printf '%-5s %s\n' "${status}" "${message}"
+}
+
+# 执行环境和任务健康检查，不主动修改系统状态。
+cmd_doctor() {
+    local file=""
+    local id=""
+    local task_count=0
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --acme-home)
+                [ $# -ge 2 ] || die "missing value for --acme-home"
+                ACME_HOME="$2"
+                refresh_manager_paths
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            *)
+                die "unknown doctor argument: $1"
+                ;;
+        esac
+    done
+
+    if [ "$(uname -s)" = "Linux" ]; then
+        doctor_check "OK" "platform is Linux"
+    else
+        doctor_check "FAIL" "platform is not Linux"
+    fi
+
+    if [ "${EUID}" -eq 0 ]; then
+        doctor_check "OK" "running as root"
+    else
+        doctor_check "WARN" "not running as root"
+    fi
+
+    if [ -x "$(acme_bin)" ]; then
+        doctor_check "OK" "acme.sh found: $(acme_bin)"
+    else
+        doctor_check "FAIL" "acme.sh not found: $(acme_bin)"
+    fi
+
+    if [ -d "${TASKS_DIR}" ]; then
+        doctor_check "OK" "tasks dir exists: ${TASKS_DIR}"
+    else
+        doctor_check "WARN" "tasks dir not found: ${TASKS_DIR}"
+    fi
+
+    if [ -x "${DEFAULT_RELOAD_CMD}" ]; then
+        doctor_check "OK" "default reload hook is executable: ${DEFAULT_RELOAD_CMD}"
+    else
+        doctor_check "WARN" "default reload hook is not executable: ${DEFAULT_RELOAD_CMD}"
+    fi
+
+    if [ -d "${TASKS_DIR}" ]; then
+        for file in "${TASKS_DIR}"/*.task; do
+            [ -e "${file}" ] || continue
+            id="$(basename "${file}" .task)"
+            load_task "${id}"
+            task_count=$((task_count + 1))
+
+            if [ -e "$(task_source_cert_file)" ]; then
+                doctor_check "OK" "task ${TASK_ID} source cert exists"
+            else
+                doctor_check "FAIL" "task ${TASK_ID} source cert missing: $(task_source_cert_file)"
+            fi
+        done
+    fi
+
+    doctor_check "OK" "managed task count: ${task_count}"
+}
+
+# 解析预置全局参数，然后分派到具体子命令。
+main() {
+    local command=""
+
+    refresh_manager_paths
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --acme-home)
+                [ $# -ge 2 ] || die "missing value for --acme-home"
+                ACME_HOME="$2"
+                refresh_manager_paths
+                shift 2
+                ;;
+            --cert-dir)
+                [ $# -ge 2 ] || die "missing value for --cert-dir"
+                CERT_DIR="$2"
+                shift 2
+                ;;
+            --key-length)
+                [ $# -ge 2 ] || die "missing value for --key-length"
+                KEY_LENGTH="$2"
+                shift 2
+                ;;
+            --reloadcmd)
+                [ $# -ge 2 ] || die "missing value for --reloadcmd"
+                RELOAD_CMD="$2"
+                shift 2
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            install|issue|list|show|renew|deploy|disable|enable|remove|revoke|import|rename|doctor)
+                command="$1"
+                shift
+                case "${command}" in
+                    install)
+                        cmd_install "$@"
+                        ;;
+                    issue)
+                        cmd_issue "$@"
+                        ;;
+                    list)
+                        cmd_list "$@"
+                        ;;
+                    show)
+                        cmd_show "$@"
+                        ;;
+                    renew)
+                        cmd_renew "$@"
+                        ;;
+                    deploy)
+                        cmd_deploy "$@"
+                        ;;
+                    disable)
+                        cmd_set_status "disabled" "$@"
+                        ;;
+                    enable)
+                        cmd_set_status "enabled" "$@"
+                        ;;
+                    remove)
+                        cmd_remove "$@"
+                        ;;
+                    revoke)
+                        cmd_revoke "$@"
+                        ;;
+                    import)
+                        cmd_import "$@"
+                        ;;
+                    rename)
+                        cmd_rename "$@"
+                        ;;
+                    doctor)
+                        cmd_doctor "$@"
+                        ;;
+                esac
+                return 0
+                ;;
+            *)
+                die "unknown command or global argument: $1"
+                ;;
+        esac
+    done
+
+    usage
+    exit 1
+}
+
+main "$@"
