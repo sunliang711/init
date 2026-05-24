@@ -349,26 +349,69 @@ _install_docker_packages() {
     esac
 }
 
+# 输出 Docker daemon 默认 IPv6 配置，适用于首次创建 daemon.json。
+_docker_default_daemon_config_content() {
+    cat <<'EOF'
+{
+  "ipv6": true,
+  "fixed-cidr-v6": "fd00::/80",
+  "ip6tables": true
+}
+EOF
+}
+
+# 合并已有 daemon.json，只覆盖 Docker IPv6 相关键并保留其他配置。
+_docker_merge_daemon_config_content() {
+    local dockerConfigFile="$1"
+
+    python3 - "${dockerConfigFile}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+
+try:
+    with path.open("r", encoding="utf-8") as file:
+        data = json.load(file)
+except json.JSONDecodeError as exc:
+    print(f"{path} is not valid JSON: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+
+if not isinstance(data, dict):
+    print(f"{path} JSON root must be an object", file=sys.stderr)
+    raise SystemExit(1)
+
+data["ipv6"] = True
+data["fixed-cidr-v6"] = "fd00::/80"
+data["ip6tables"] = True
+
+print(json.dumps(data, indent=2))
+PY
+}
+
+# 确保 Docker daemon.json 存在，并写入安装后需要的 IPv6 配置。
 _ensure_docker_daemon_config() {
     local dryRun="${1:-0}"
     local dockerConfigFile="/etc/docker/daemon.json"
+    local daemonConfigContent=""
 
     if [ -e "${dockerConfigFile}" ]; then
         if [ ! -f "${dockerConfigFile}" ]; then
             _errorln "${dockerConfigFile} exists but is not a regular file"
             return 1
         fi
-        if command -v python3 >/dev/null 2>&1; then
-            python3 -m json.tool "${dockerConfigFile}" >/dev/null || {
-                _errorln "${dockerConfigFile} is not valid JSON"
-                return 1
-            }
+        if ! command -v python3 >/dev/null 2>&1; then
+            _errorln "python3 is required to merge existing ${dockerConfigFile}"
+            return 1
         fi
-        return 0
+        daemonConfigContent="$(_docker_merge_daemon_config_content "${dockerConfigFile}")" || return 1
+    else
+        daemonConfigContent="$(_docker_default_daemon_config_content)"
+        _docker_run_root "${dryRun}" install -d -m 0755 /etc/docker || return 1
     fi
 
-    _docker_run_root "${dryRun}" install -d -m 0755 /etc/docker || return 1
-    _docker_write_root_file "${dryRun}" "${dockerConfigFile}" "{}" || return 1
+    _docker_write_root_file "${dryRun}" "${dockerConfigFile}" "${daemonConfigContent}" || return 1
 }
 
 _enable_docker_services() {
