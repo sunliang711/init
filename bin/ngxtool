@@ -98,6 +98,11 @@ log_info(){
     echo "[INFO] $*" >&2
 }
 
+# 输出非阻断告警日志。
+log_warn(){
+    echo "[WARN] $*" >&2
+}
+
 # 输出下一步建议。
 log_next(){
     echo "[NEXT] $*" >&2
@@ -273,6 +278,51 @@ nginx_config_path(){
     fi
 }
 
+# 检查 sites-enabled 目录下的启用项是否可用。
+check_enabled_sites(){
+    local enabledPath
+    local linkTarget
+
+    ensure_site_dirs "$dest/sites-enabled"
+    log_info "Checking enabled site entries: $dest/sites-enabled"
+
+    while IFS= read -r enabledPath;do
+        if [ -L "$enabledPath" ];then
+            linkTarget="$(readlink "$enabledPath")"
+            if [ ! -e "$enabledPath" ];then
+                echo "Broken enabled site link: $enabledPath -> $linkTarget" >&2
+                exit 1
+            fi
+            continue
+        fi
+
+        if [ -d "$enabledPath" ];then
+            echo "Invalid enabled site directory: $enabledPath" >&2
+            exit 1
+        fi
+        if [ ! -f "$enabledPath" ];then
+            echo "Invalid enabled site entry: $enabledPath" >&2
+            exit 1
+        fi
+    done < <(find "$dest/sites-enabled" -mindepth 1 -maxdepth 1 -print)
+}
+
+# 提醒 nginx.conf 是否直接包含 sites-enabled。
+warn_if_sites_enabled_not_included(){
+    local configPath="${1:-}"
+
+    if [ -z "$configPath" ];then
+        return
+    fi
+    if [ ! -r "$configPath" ];then
+        log_warn "Cannot inspect nginx config include rules: $configPath"
+        return
+    fi
+    if ! grep -Eq '(^|[[:space:]])include[[:space:]]+[^;]*sites-enabled[^;]*;' "$configPath";then
+        log_warn "sites-enabled is not directly included by $configPath; nginx -t only tests files included by nginx.conf."
+    fi
+}
+
 # 列出 nginx 可用和已启用的站点配置。
 list(){
     case "$typ" in
@@ -360,20 +410,20 @@ test_nginx(){
 
     require_command nginx
     configPath="$(nginx_config_path)"
+    check_enabled_sites
+    warn_if_sites_enabled_not_included "$configPath"
 
     if [ -n "$configPath" ];then
-        log_info "Testing nginx config: $configPath"
+        log_info "Running nginx config test: $configPath"
         nginx -t -c "$configPath"
-        log_info "Nginx configuration test passed."
         if [ "$suggestNext" = true ];then
             log_next "Run: $(format_ngxtool_cmd reload)"
         fi
         return
     fi
 
-    log_info "Testing nginx config with default nginx path."
+    log_info "Running nginx config test with default nginx path."
     nginx -t
-    log_info "Nginx configuration test passed."
     if [ "$suggestNext" = true ];then
         log_next "Run: $(format_ngxtool_cmd reload)"
     fi
@@ -388,14 +438,14 @@ reload_nginx(){
 
     test_nginx false
     if [ -n "$configPath" ];then
-        log_info "Reloading nginx with config: $configPath"
+        log_info "Reloading nginx."
         _runAsRoot nginx -s reload -c "$configPath"
         log_info "Nginx reload requested."
         log_next "Check nginx status or error logs if traffic does not behave as expected."
         return
     fi
 
-    log_info "Reloading nginx with default nginx path."
+    log_info "Reloading nginx."
     _runAsRoot nginx -s reload
     log_info "Nginx reload requested."
     log_next "Check nginx status or error logs if traffic does not behave as expected."
