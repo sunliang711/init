@@ -1,142 +1,575 @@
 #!/bin/bash
-rpath="$(readlink ${BASH_SOURCE})"
-if [ -z "$rpath" ];then
-    rpath=${BASH_SOURCE}
+set -euo pipefail
+
+invoke_dir="$(pwd)"
+
+# 解析脚本真实路径，支持通过软链调用。
+resolve_script_path(){
+    local source_path="${BASH_SOURCE[0]}"
+    local source_dir
+    local link_target
+
+    while [ -L "$source_path" ];do
+        source_dir="$(cd "$(dirname "$source_path")" && pwd)"
+        link_target="$(readlink "$source_path")"
+        case "$link_target" in
+            /*)
+                source_path="$link_target"
+                ;;
+            *)
+                source_path="$source_dir/$link_target"
+                ;;
+        esac
+    done
+
+    echo "$source_path"
+}
+
+script_path="$(resolve_script_path)"
+root="$(cd "$(dirname "$script_path")" && pwd)"
+cd "$root" || exit 1
+
+green=
+reset=
+if [ -t 1 ] && command -v tput >/dev/null 2>&1;then
+    green="$(tput setaf 2 2>/dev/null || true)"
+    reset="$(tput sgr0 2>/dev/null || true)"
 fi
-root="$(cd $(dirname $rpath) && pwd)"
-cd "$root"
+
+# 以 root 权限执行外部命令，避免字符串拼接和 eval。
 _runAsRoot(){
-    cmd="${*}"
     local rootID=0
+    if [ "${EUID}" -eq "${rootID}" ] || [ -w "$dest/sites-enabled" ] || [ -w "$dest/sites-available" ];then
+        if "$@";then
+            return 0
+        else
+            return 1
+        fi
+    fi
+
     if [ "${EUID}" -ne "${rootID}" ];then
         echo -n "Not root, try to run as root.."
-        # or sudo sh -c ${cmd} ?
-        if eval "sudo ${cmd}";then
+        if sudo "$@";then
             echo "ok"
             return 0
         else
             echo "failed"
             return 1
         fi
-    else
-        # or sh -c ${cmd} ?
-        eval "${cmd}"
     fi
 }
 # write your code below
-usage(){
-    cat<<-EOF
-	Usage: $(basename $0) cmd
 
-	cmd:
-		list      [-r ROOT] [-t e|a]     e for enabled,a for available
-		enable    [-r ROOT] [siteName]
-		disable   [-r ROOT] [siteName]
-		em
-		edit     <siteName>
+# 输出命令用法。
+usage(){
+    cat <<EOF
+Usage: $(basename "$0") cmd
+
+cmd:
+    list      [-r ROOT] [-t e|a]     e for enabled,a for available
+    enable    [-r ROOT] [siteName]
+    disable   [-r ROOT] [siteName]
+    test      [-r ROOT]
+    reload    [-r ROOT]
+    dump      [-r ROOT] <sourceSiteName> <newSiteName>
+    export    [-r ROOT] [-o OUT_FILE]
+    import    [-r ROOT] [-f] <ARCHIVE_FILE>
+    em
+    edit     <siteName>
 EOF
-exit 1
+    exit 1
 }
 
 dest=/etc/nginx
 typ=
+outFile=
+forceImport=false
+tmpDir=
 
+# 清理导入时使用的临时目录。
+cleanup_tmp_dir(){
+    if [ -n "${tmpDir:-}" ] && [ -d "$tmpDir" ];then
+        rm -rf "$tmpDir"
+    fi
+}
+
+# 校验命令所需目录是否存在，避免写入时才失败。
+ensure_site_dirs(){
+    local dir
+
+    for dir in "$@";do
+        if [ ! -d "$dir" ];then
+            echo "Missing directory: $dir" >&2
+            exit 1
+        fi
+    done
+}
+
+# 校验站点名，防止路径穿越和误操作其它路径。
+validate_site_name(){
+    local siteName="${1:-}"
+
+    if [ -z "$siteName" ];then
+        echo "Missing siteName" >&2
+        exit 1
+    fi
+
+    case "$siteName" in
+        "."|".."|*/*)
+            echo "Invalid siteName: $siteName" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# 选择当前环境中可用的编辑器。
+pick_editor(){
+    local editor="vi"
+
+    if [ -n "${VISUAL:-}" ];then
+        echo "$VISUAL"
+        return
+    fi
+    if [ -n "${EDITOR:-}" ];then
+        echo "$EDITOR"
+        return
+    fi
+
+    if command -v vim >/dev/null 2>&1;then
+        editor="vim"
+    fi
+    if command -v nvim >/dev/null 2>&1;then
+        editor="nvim"
+    fi
+
+    echo "$editor"
+}
+
+# 校验依赖命令是否存在。
+require_command(){
+    local commandName="${1:-}"
+
+    if ! command -v "$commandName" >/dev/null 2>&1;then
+        echo "Missing command: $commandName" >&2
+        exit 1
+    fi
+}
+
+# 将用户传入的相对路径解析为调用目录下的路径。
+resolve_user_path(){
+    local path="${1:-}"
+
+    case "$path" in
+        /*)
+            echo "$path"
+            ;;
+        *)
+            echo "$invoke_dir/$path"
+            ;;
+    esac
+}
+
+# 校验导入包内路径，防止绝对路径、路径穿越和嵌套目录。
+validate_archive_entry(){
+    local entry="${1:-}"
+    local relativePath
+
+    case "$entry" in
+        ""|/*|../*|*/../*|*/..|".."|*//*)
+            echo "Invalid archive entry: $entry" >&2
+            exit 1
+            ;;
+    esac
+
+    case "$entry" in
+        sites-available|sites-available/)
+            return
+            ;;
+        sites-available/*)
+            relativePath="${entry#sites-available/}"
+            ;;
+        *)
+            echo "Invalid archive entry: $entry" >&2
+            exit 1
+            ;;
+    esac
+
+    case "$relativePath" in
+        ""|*/*)
+            echo "Invalid archive entry: $entry" >&2
+            exit 1
+            ;;
+    esac
+
+    validate_site_name "$relativePath"
+}
+
+# 使用可用编辑器打开文件，必要时提升权限。
+edit_file(){
+    local filePath="${1:-}"
+    local editor
+
+    editor="$(pick_editor)"
+    if [ -w "$filePath" ];then
+        "$editor" "$filePath"
+        return
+    fi
+
+    _runAsRoot "$editor" "$filePath"
+}
+
+# 输出当前 nginx 配置文件路径。
+nginx_config_path(){
+    if [ -e "$dest/nginx.conf" ];then
+        echo "$dest/nginx.conf"
+        return
+    fi
+
+    if [ "$dest" != "/etc/nginx" ];then
+        echo "Missing nginx config: $dest/nginx.conf" >&2
+        exit 1
+    fi
+}
+
+# 列出 nginx 可用和已启用的站点配置。
 list(){
-    case $typ in
+    case "$typ" in
         e)
+            ensure_site_dirs "$dest/sites-enabled"
             ls "$dest/sites-enabled" 2>/dev/null
             ;;
         a)
+            ensure_site_dirs "$dest/sites-available"
             ls "$dest/sites-available" 2>/dev/null
             ;;
-        *)
+        "")
+            ensure_site_dirs "$dest/sites-available" "$dest/sites-enabled"
             echo "${green}available sites:${reset}"
             ls "$dest/sites-available" 2>/dev/null
             echo
             echo "${green}enabled sites:${reset}"
             ls "$dest/sites-enabled" 2>/dev/null
-	    echo
+            echo
+            ;;
+        *)
+            echo "Invalid type: $typ" >&2
+            exit 1
             ;;
     esac
 }
 
+# 启用站点配置，创建 sites-enabled 软链。
 enable(){
-    siteName=${1:?"missing siteName"}
-    _runAsRoot "ln -sf $dest/sites-available/$siteName $dest/sites-enabled"
+    local siteName="${1:-}"
+    local available_path
+    local enabled_path
+
+    validate_site_name "$siteName"
+    ensure_site_dirs "$dest/sites-available" "$dest/sites-enabled"
+
+    available_path="$dest/sites-available/$siteName"
+    enabled_path="$dest/sites-enabled/$siteName"
+
+    if [ ! -e "$available_path" ];then
+        echo "No $siteName configure file." >&2
+        exit 1
+    fi
+    if [ -d "$enabled_path" ] && [ ! -L "$enabled_path" ];then
+        echo "Refuse to overwrite directory: $enabled_path" >&2
+        exit 1
+    fi
+
+    _runAsRoot ln -sfn "$available_path" "$enabled_path"
 }
 
+# 禁用站点配置，只删除 sites-enabled 下的目标文件或软链。
 disable(){
-    siteName=${1:?"missing siteName"}
-    if [ -e "$dest/sites-enabled/$siteName" ];then
-        _runAsRoot "rm -rf $dest/sites-enabled/$siteName"
+    local siteName="${1:-}"
+    local enabled_path
+
+    validate_site_name "$siteName"
+    ensure_site_dirs "$dest/sites-enabled"
+
+    enabled_path="$dest/sites-enabled/$siteName"
+
+    if [ -d "$enabled_path" ] && [ ! -L "$enabled_path" ];then
+        echo "Refuse to remove directory: $enabled_path" >&2
+        exit 1
+    fi
+    if [ -e "$enabled_path" ] || [ -L "$enabled_path" ];then
+        _runAsRoot rm -f "$enabled_path"
     fi
 }
 
+# 测试 nginx 配置是否有效。
+test_nginx(){
+    local configPath
+
+    require_command nginx
+    configPath="$(nginx_config_path)"
+
+    if [ -n "$configPath" ];then
+        nginx -t -c "$configPath"
+        return
+    fi
+
+    nginx -t
+}
+
+# 测试通过后重新加载 nginx。
+reload_nginx(){
+    local configPath
+
+    require_command nginx
+    configPath="$(nginx_config_path)"
+
+    test_nginx
+    if [ -n "$configPath" ];then
+        _runAsRoot nginx -s reload -c "$configPath"
+        return
+    fi
+
+    _runAsRoot nginx -s reload
+}
+
+# 从已有站点配置复制一份新配置并进入编辑模式。
+dump(){
+    local sourceSiteName="${1:-}"
+    local newSiteName="${2:-}"
+    local sourcePath
+    local newPath
+
+    validate_site_name "$sourceSiteName"
+    validate_site_name "$newSiteName"
+    ensure_site_dirs "$dest/sites-available"
+
+    sourcePath="$dest/sites-available/$sourceSiteName"
+    newPath="$dest/sites-available/$newSiteName"
+
+    if [ ! -e "$sourcePath" ];then
+        echo "No $sourceSiteName configure file." >&2
+        exit 1
+    fi
+    if [ -e "$newPath" ] || [ -L "$newPath" ];then
+        echo "Refuse to overwrite configure file: $newPath" >&2
+        exit 1
+    fi
+
+    _runAsRoot cp -p "$sourcePath" "$newPath"
+    edit_file "$newPath"
+}
+
+# 导出所有 sites-available 配置到 tar.gz 文件。
+export_sites(){
+    local archivePath="$outFile"
+    local archiveDir
+
+    require_command tar
+    ensure_site_dirs "$dest/sites-available"
+
+    if [ -z "$archivePath" ];then
+        archivePath="$invoke_dir/nginx-sites-available-$(date +%Y%m%d-%H%M%S).tar.gz"
+    else
+        archivePath="$(resolve_user_path "$archivePath")"
+    fi
+
+    archiveDir="$(dirname "$archivePath")"
+    if [ ! -d "$archiveDir" ];then
+        echo "Missing directory: $archiveDir" >&2
+        exit 1
+    fi
+    if [ -e "$archivePath" ] || [ -L "$archivePath" ];then
+        echo "Refuse to overwrite archive: $archivePath" >&2
+        exit 1
+    fi
+    if [ -z "$(find "$dest/sites-available" -mindepth 1 -maxdepth 1 -print -quit)" ];then
+        echo "No available sites to export." >&2
+    fi
+
+    tar -czf "$archivePath" -C "$dest" sites-available
+    echo "Exported to: $archivePath"
+}
+
+# 导入由 export 生成的配置包，默认拒绝覆盖已有文件。
+import_sites(){
+    local archivePath="${1:-}"
+    local entriesFile
+    local sourceRoot
+    local sourcePath
+    local entryName
+    local targetPath
+    local backupPath
+    local linkTarget
+
+    require_command tar
+    ensure_site_dirs "$dest/sites-available"
+
+    if [ -z "$archivePath" ];then
+        echo "Missing archive file" >&2
+        exit 1
+    fi
+    archivePath="$(resolve_user_path "$archivePath")"
+
+    if [ ! -f "$archivePath" ];then
+        echo "No archive file: $archivePath" >&2
+        exit 1
+    fi
+
+    tmpDir="$(mktemp -d)"
+    trap cleanup_tmp_dir EXIT
+    entriesFile="$tmpDir/entries.txt"
+
+    tar -tzf "$archivePath" > "$entriesFile"
+    while IFS= read -r sourcePath;do
+        validate_archive_entry "$sourcePath"
+    done < "$entriesFile"
+
+    tar -xzf "$archivePath" -C "$tmpDir"
+    sourceRoot="$tmpDir/sites-available"
+    if [ ! -d "$sourceRoot" ];then
+        echo "Missing sites-available in archive" >&2
+        exit 1
+    fi
+
+    find "$sourceRoot" -mindepth 1 -maxdepth 1 -print > "$entriesFile"
+    if [ ! -s "$entriesFile" ];then
+        echo "No available sites to import."
+        cleanup_tmp_dir
+        trap - EXIT
+        tmpDir=
+        return
+    fi
+
+    while IFS= read -r sourcePath;do
+        entryName="$(basename "$sourcePath")"
+        validate_site_name "$entryName"
+        targetPath="$dest/sites-available/$entryName"
+
+        if [ -d "$sourcePath" ] && [ ! -L "$sourcePath" ];then
+            echo "Invalid archive entry: sites-available/$entryName" >&2
+            exit 1
+        fi
+        if [ -L "$sourcePath" ];then
+            linkTarget="$(readlink "$sourcePath")"
+            case "$linkTarget" in
+                ""|/*|../*|*/../*|*/..|".."|*//*)
+                    echo "Invalid symlink target: $entryName -> $linkTarget" >&2
+                    exit 1
+                    ;;
+            esac
+        fi
+
+        if [ -e "$targetPath" ] || [ -L "$targetPath" ];then
+            if [ "$forceImport" != true ];then
+                echo "Refuse to overwrite configure file: $targetPath" >&2
+                exit 1
+            fi
+
+            backupPath="$targetPath.bak.$(date +%Y%m%d-%H%M%S).$$"
+            _runAsRoot mv "$targetPath" "$backupPath"
+            echo "Backup created: $backupPath"
+        fi
+
+        _runAsRoot cp -pP "$sourcePath" "$targetPath"
+        echo "Imported: $entryName"
+    done < "$entriesFile"
+
+    cleanup_tmp_dir
+    trap - EXIT
+    tmpDir=
+}
+
+# 编辑当前工具脚本。
 em(){
-    editor=vi
-    if command -v vim >/dev/null 2>&1;then
-        editor=vim
-    fi
-    $editor ${BASH_SOURCE}
+    edit_file "$script_path"
 }
 
+# 编辑 sites-available 下指定站点配置。
 edit(){
-    siteName=${1:?"missing siteName in available directory."}
-    editor=vi
-    if command -v vim >/dev/null 2>&1;then
-        editor=vim
-    fi
-    if command -v nvim >/dev/null 2>&1;then
-        editor=nvim
-    fi
+    local siteName="${1:-}"
     local fullPath="$dest/sites-available/$siteName"
+
+    validate_site_name "$siteName"
+    ensure_site_dirs "$dest/sites-available"
+
     if [ ! -e "$fullPath" ];then
         echo "No $siteName configure file."
         exit 1
     fi
-    $editor "$fullPath"
+    edit_file "$fullPath"
 }
 
-cmd=$1
-shift
+# 解析命令并分发到对应功能。
+main(){
+    local cmd="${1:-}"
 
-while getopts ":r:t:" opt;do
-    case "$opt" in
-        r)
-            dest=$OPTARG
-            ;;
-        t)
-            typ=$OPTARG
-            ;;
-        :)
-            echo "$OPTARG need param"
-            exit 1
-            ;;
-        \?)
-            echo "Unknown option: $OPTARG"
-            exit 1
-            ;;
-    esac
-done
-
-shift $((OPTIND-1))
-
-case $cmd in
-    l|li|lis|list)
-        list "$@"
-        ;;
-    e|en|ena|enab|enabl|enable)
-        enable "$@"
-        ;;
-    d|di|dis|disa|disab|disabl|disable)
-        disable "$@"
-        ;;
-    em)
-        em
-        ;;
-    edit)
-        edit "$@"
-        ;;
-    *)
+    if [ -z "$cmd" ];then
         usage
-esac
+    fi
+
+    shift
+
+    while getopts ":r:t:o:f" opt;do
+        case "$opt" in
+            r)
+                dest=$OPTARG
+                ;;
+            t)
+                typ=$OPTARG
+                ;;
+            o)
+                outFile=$OPTARG
+                ;;
+            f)
+                forceImport=true
+                ;;
+            :)
+                echo "$OPTARG need param" >&2
+                exit 1
+                ;;
+            \?)
+                echo "Unknown option: $OPTARG" >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    shift $((OPTIND-1))
+
+    case "$cmd" in
+        l|li|lis|list)
+            list "$@"
+            ;;
+        e|en|ena|enab|enabl|enable)
+            enable "$@"
+            ;;
+        d|di|dis|disa|disab|disabl|disable)
+            disable "$@"
+            ;;
+        t|te|tes|test)
+            test_nginx
+            ;;
+        r|re|rel|relo|reloa|reload)
+            reload_nginx
+            ;;
+        du|dum|dump)
+            dump "$@"
+            ;;
+        ex|exp|expo|expor|export)
+            export_sites
+            ;;
+        i|im|imp|impo|impor|import)
+            import_sites "$@"
+            ;;
+        em)
+            em
+            ;;
+        edit)
+            edit "$@"
+            ;;
+        *)
+            usage
+    esac
+}
+
+main "$@"
