@@ -93,6 +93,47 @@ cleanup_tmp_dir(){
     fi
 }
 
+# 输出普通操作日志。
+log_info(){
+    echo "[INFO] $*" >&2
+}
+
+# 输出下一步建议。
+log_next(){
+    echo "[NEXT] $*" >&2
+}
+
+# 格式化当前 ROOT 下的 ngxtool 命令建议。
+format_ngxtool_cmd(){
+    local commandName="${1:-}"
+    local commandLine
+    local arg
+
+    commandLine="$(basename "$0") $commandName"
+    if [ "$dest" != "/etc/nginx" ];then
+        commandLine="$commandLine -r \"$dest\""
+    fi
+
+    shift || true
+    for arg in "$@";do
+        case "$arg" in
+            -*)
+                commandLine="$commandLine $arg"
+                ;;
+            *)
+                commandLine="$commandLine \"$arg\""
+                ;;
+        esac
+    done
+
+    echo "$commandLine"
+}
+
+# 输出配置变更后的通用下一步建议。
+suggest_reload(){
+    log_next "Review the change, then run: $(format_ngxtool_cmd reload)"
+}
+
 # 校验命令所需目录是否存在，避免写入时才失败。
 ensure_site_dirs(){
     local dir
@@ -210,6 +251,7 @@ edit_file(){
     local editor
 
     editor="$(pick_editor)"
+    log_info "Opening editor for: $filePath"
     if [ -w "$filePath" ];then
         "$editor" "$filePath"
         return
@@ -280,6 +322,9 @@ enable(){
     fi
 
     _runAsRoot ln -sfn "$available_path" "$enabled_path"
+    log_info "Enabled site: $siteName"
+    log_info "Linked: $enabled_path -> $available_path"
+    suggest_reload
 }
 
 # 禁用站点配置，只删除 sites-enabled 下的目标文件或软链。
@@ -298,22 +343,40 @@ disable(){
     fi
     if [ -e "$enabled_path" ] || [ -L "$enabled_path" ];then
         _runAsRoot rm -f "$enabled_path"
+        log_info "Disabled site: $siteName"
+        log_info "Removed: $enabled_path"
+        suggest_reload
+        return
     fi
+
+    log_info "Site is already disabled: $siteName"
+    log_next "Run: $(format_ngxtool_cmd list -t e)"
 }
 
 # 测试 nginx 配置是否有效。
 test_nginx(){
     local configPath
+    local suggestNext="${1:-true}"
 
     require_command nginx
     configPath="$(nginx_config_path)"
 
     if [ -n "$configPath" ];then
+        log_info "Testing nginx config: $configPath"
         nginx -t -c "$configPath"
+        log_info "Nginx configuration test passed."
+        if [ "$suggestNext" = true ];then
+            log_next "Run: $(format_ngxtool_cmd reload)"
+        fi
         return
     fi
 
+    log_info "Testing nginx config with default nginx path."
     nginx -t
+    log_info "Nginx configuration test passed."
+    if [ "$suggestNext" = true ];then
+        log_next "Run: $(format_ngxtool_cmd reload)"
+    fi
 }
 
 # 测试通过后重新加载 nginx。
@@ -323,13 +386,19 @@ reload_nginx(){
     require_command nginx
     configPath="$(nginx_config_path)"
 
-    test_nginx
+    test_nginx false
     if [ -n "$configPath" ];then
+        log_info "Reloading nginx with config: $configPath"
         _runAsRoot nginx -s reload -c "$configPath"
+        log_info "Nginx reload requested."
+        log_next "Check nginx status or error logs if traffic does not behave as expected."
         return
     fi
 
+    log_info "Reloading nginx with default nginx path."
     _runAsRoot nginx -s reload
+    log_info "Nginx reload requested."
+    log_next "Check nginx status or error logs if traffic does not behave as expected."
 }
 
 # 从已有站点配置复制一份新配置并进入编辑模式。
@@ -356,7 +425,10 @@ dump(){
     fi
 
     _runAsRoot cp -p "$sourcePath" "$newPath"
+    log_info "Copied site config: $sourceSiteName -> $newSiteName"
     edit_file "$newPath"
+    log_next "When ready, run: $(format_ngxtool_cmd enable "$newSiteName")"
+    log_next "Then run: $(format_ngxtool_cmd reload)"
 }
 
 # 导出所有 sites-available 配置到 tar.gz 文件。
@@ -387,7 +459,8 @@ export_sites(){
     fi
 
     tar -czf "$archivePath" -C "$dest" sites-available
-    echo "Exported to: $archivePath"
+    log_info "Exported sites-available to: $archivePath"
+    log_next "Move the archive to the target host, then run: $(basename "$0") import \"$archivePath\""
 }
 
 # 导入由 export 生成的配置包，默认拒绝覆盖已有文件。
@@ -467,16 +540,17 @@ import_sites(){
 
             backupPath="$targetPath.bak.$(date +%Y%m%d-%H%M%S).$$"
             _runAsRoot mv "$targetPath" "$backupPath"
-            echo "Backup created: $backupPath"
+            log_info "Backup created: $backupPath"
         fi
 
         _runAsRoot cp -pP "$sourcePath" "$targetPath"
-        echo "Imported: $entryName"
+        log_info "Imported site config: $entryName"
     done < "$entriesFile"
 
     cleanup_tmp_dir
     trap - EXIT
     tmpDir=
+    log_next "Review imported configs, then run: $(format_ngxtool_cmd reload)"
 }
 
 # 编辑当前工具脚本。
