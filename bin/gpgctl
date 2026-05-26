@@ -1,0 +1,926 @@
+#!/bin/bash
+set -euo pipefail
+
+script_name="${0##*/}"
+homedir="${GPGCTL_HOMEDIR:-}"
+keyserver=""
+local_user=""
+force=0
+assume_yes=0
+gpg_common_args=()
+
+# 输出错误信息并退出。
+die(){
+    echo "[ERROR] $*" >&2
+    exit 1
+}
+
+# 输出普通操作日志。
+log_info(){
+    echo "[INFO] $*" >&2
+}
+
+# 判断外部命令是否存在。
+command_exists(){
+    command -v "$1" >/dev/null 2>&1
+}
+
+# 校验必要外部命令是否存在。
+require_command(){
+    if ! command_exists "$1";then
+        die "Missing required command: $1"
+    fi
+}
+
+# 将参数格式化成可复制的 shell 命令行。
+quote_command(){
+    local first=1
+    local word
+
+    for word in "$@";do
+        if [ "$first" -eq 0 ];then
+            printf ' '
+        fi
+        printf '%q' "$word"
+        first=0
+    done
+}
+
+# 执行外部命令前回显底层命令。
+run_cmd(){
+    echo -n "[CMD] " >&2
+    quote_command "$@" >&2
+    echo >&2
+    "$@"
+}
+
+# 执行 gpg 命令前回显完整底层命令。
+run_gpg(){
+    local cmd=(gpg)
+
+    if [ "${#gpg_common_args[@]}" -gt 0 ];then
+        cmd+=("${gpg_common_args[@]}")
+    fi
+    cmd+=("$@")
+
+    echo -n "[GPG] " >&2
+    quote_command "${cmd[@]}" >&2
+    echo >&2
+    "${cmd[@]}"
+}
+
+# 执行需要重定向到文件的 gpg 命令，并回显重定向形式。
+run_gpg_to_file(){
+    local output_file="$1"
+    shift
+
+    local cmd=(gpg)
+
+    if [ "${#gpg_common_args[@]}" -gt 0 ];then
+        cmd+=("${gpg_common_args[@]}")
+    fi
+    cmd+=("$@")
+
+    echo -n "[GPG] " >&2
+    quote_command "${cmd[@]}" >&2
+    printf ' > ' >&2
+    printf '%q' "$output_file" >&2
+    echo >&2
+    "${cmd[@]}" > "$output_file"
+}
+
+# 使用私密 umask 执行会输出敏感文件的 gpg 命令。
+run_gpg_private_output(){
+    local old_umask
+    local status
+
+    old_umask="$(umask)"
+    umask 077
+    if run_gpg "$@";then
+        umask "$old_umask"
+        return 0
+    else
+        status=$?
+        umask "$old_umask"
+        return "$status"
+    fi
+}
+
+# 生成帮助信息内容。
+usage_text(){
+    cat <<EOF
+Usage:
+    $script_name [global options] <command> [args]
+
+Global options:
+    --homedir <path>       使用指定 GPG 工作目录；也可设置 GPGCTL_HOMEDIR
+    --keyserver <url>      为 recv-key/send-key/search-key/refresh-keys 指定 keyserver
+    --local-user <uid>     为 sign/detach-sign/clearsign 指定签名密钥
+    -f, --force            允许覆盖输出文件
+    -y, --yes              跳过脚本级危险操作确认
+    -h, --help             显示帮助
+
+Common commands:
+    check
+    version
+    init-home <dir>
+    backup-home <dest_dir>
+
+Key commands:
+    gen
+    edit-key <email|fpr|keyid>
+    passwd <email|fpr|keyid>
+    list-public [email|fpr|keyid...]
+    list-secret [email|fpr|keyid...]
+    fingerprint [email|fpr|keyid...]
+    show-key <key_file>
+    inspect <file>
+
+Import / export:
+    export-public <email|fpr|keyid> <output_file>
+    export-secret <email|fpr|keyid> <output_file>
+    export-secret-subkeys <email|fpr|keyid> <output_file>
+    import <key_file...>
+    import-public <pubkey_file...>
+    import-secret <secret_file...>
+    gen-revoke <email|fpr|keyid> <output_file>
+    export-ownertrust <output_file>
+    import-ownertrust <ownertrust_file>
+
+Crypto:
+    encrypt <recipient_email|fpr|keyid> <input_file> [output_file]
+    encrypt-symmetric <input_file> [output_file]
+    decrypt <encrypted_file> <output_file>
+    sign <input_file> [output_file]
+    detach-sign <input_file> [signature_file]
+    clearsign <input_file> [output_file]
+    verify <signature_or_signed_file> [signed_file]
+
+Keyserver:
+    recv-key <keyid...>
+    send-key <keyid...>
+    search-key <query>
+    refresh-keys [keyid...]
+
+Trust / delete:
+    sign-key <email|fpr|keyid>
+    local-sign-key <email|fpr|keyid>
+    delete-public <email|fpr|keyid>
+    delete-secret <email|fpr|keyid>
+
+Smart card / YubiKey:
+    card-status
+    card-edit
+
+说明:
+    所有 GPG 操作执行前都会回显 [GPG] 底层命令。
+    该脚本覆盖常用 GPG 管理动作；复杂交互仍建议使用 edit-key 或原生 gpg 命令。
+EOF
+}
+
+# 输出帮助信息，内容超过当前终端高度时使用 less 分页。
+usage(){
+    local help_text
+    local line_count
+    local terminal_lines
+
+    help_text="$(usage_text)"
+    if [ -t 1 ] && command_exists less;then
+        terminal_lines="$(tput lines 2>/dev/null || printf '24')"
+        case "$terminal_lines" in
+            ''|*[!0-9]*)
+                terminal_lines=24
+                ;;
+        esac
+        line_count="$(printf '%s\n' "$help_text" | wc -l | tr -d ' ')"
+        if [ "$line_count" -gt "$terminal_lines" ];then
+            printf '%s\n' "$help_text" | LESS="${LESS:-FRX}" less
+            return
+        fi
+    fi
+
+    printf '%s\n' "$help_text"
+}
+
+# 校验参数数量下限。
+require_min_args(){
+    local command_name="$1"
+    local min_count="$2"
+    shift 2
+
+    if [ "$#" -lt "$min_count" ];then
+        die "Missing arguments for $command_name"
+    fi
+}
+
+# 校验参数数量范围。
+require_arg_range(){
+    local command_name="$1"
+    local min_count="$2"
+    local max_count="$3"
+    shift 3
+
+    if [ "$#" -lt "$min_count" ] || [ "$#" -gt "$max_count" ];then
+        die "Invalid arguments for $command_name"
+    fi
+}
+
+# 校验目录存在且不是符号链接。
+ensure_existing_directory(){
+    local dir="$1"
+    local label="$2"
+
+    if [ -z "$dir" ];then
+        die "$label is empty"
+    fi
+    if [ -L "$dir" ];then
+        die "$label must not be a symlink: $dir"
+    fi
+    if [ ! -d "$dir" ];then
+        die "$label does not exist: $dir"
+    fi
+}
+
+# 校验输入文件可读。
+ensure_readable_file(){
+    local file="$1"
+
+    if [ -z "$file" ];then
+        die "Input file is empty"
+    fi
+    if [ ! -f "$file" ];then
+        die "Input file does not exist: $file"
+    fi
+    if [ ! -r "$file" ];then
+        die "Input file is not readable: $file"
+    fi
+}
+
+# 判断目录是否非空。
+directory_not_empty(){
+    local dir="$1"
+    local first_entry
+
+    first_entry="$(find "$dir" -mindepth 1 -maxdepth 1 -print -quit)"
+    [ -n "$first_entry" ]
+}
+
+# 校验输出文件路径，避免意外覆盖或写入无效目录。
+ensure_output_file(){
+    local output_file="$1"
+    local parent_dir
+
+    if [ -z "$output_file" ];then
+        die "Output file is empty"
+    fi
+    case "$output_file" in
+        */)
+            die "Output file must not end with slash: $output_file"
+            ;;
+    esac
+    if [ -d "$output_file" ];then
+        die "Output path is a directory: $output_file"
+    fi
+    if [ -L "$output_file" ];then
+        die "Refuse to write through symlink: $output_file"
+    fi
+    if [ -e "$output_file" ];then
+        if [ "$force" -ne 1 ];then
+            die "Output file already exists, use --force to overwrite: $output_file"
+        fi
+        if [ ! -w "$output_file" ];then
+            die "Output file is not writable: $output_file"
+        fi
+        return
+    fi
+
+    case "$output_file" in
+        */*)
+            parent_dir="${output_file%/*}"
+            if [ -z "$parent_dir" ];then
+                parent_dir="/"
+            fi
+            ;;
+        *)
+            parent_dir="."
+            ;;
+    esac
+
+    ensure_existing_directory "$parent_dir" "Output parent directory"
+    if [ ! -w "$parent_dir" ];then
+        die "Output parent directory is not writable: $parent_dir"
+    fi
+}
+
+# 为高风险操作提供脚本级确认。
+confirm_danger(){
+    local prompt="$1"
+    local answer
+
+    if [ "$assume_yes" -eq 1 ];then
+        return 0
+    fi
+
+    printf '%s [y/N] ' "$prompt" >&2
+    read -r answer
+    case "$answer" in
+        y|Y|yes|YES)
+            return 0
+            ;;
+        *)
+            die "Cancelled"
+            ;;
+    esac
+}
+
+# 获取当前要操作的 GPG 工作目录。
+active_gnupg_home(){
+    if [ -n "$homedir" ];then
+        echo "$homedir"
+        return
+    fi
+    if [ -n "${GNUPGHOME:-}" ];then
+        echo "$GNUPGHOME"
+        return
+    fi
+    if [ -z "${HOME:-}" ];then
+        die "HOME is not set"
+    fi
+    echo "$HOME/.gnupg"
+}
+
+# 根据全局参数组装 gpg 公共参数。
+build_gpg_common_args(){
+    gpg_common_args=()
+
+    if [ -n "$homedir" ];then
+        ensure_existing_directory "$homedir" "--homedir"
+        gpg_common_args+=(--homedir "$homedir")
+    fi
+    if [ -n "$keyserver" ];then
+        gpg_common_args+=(--keyserver "$keyserver")
+    fi
+}
+
+# 检查当前环境中的 gpg 可用性。
+cmd_check(){
+    if ! command_exists gpg;then
+        echo "[ERROR] Missing required command: gpg" >&2
+        if command_exists brew;then
+            echo "[INFO] macOS install hint: brew install gpg-suite" >&2
+        else
+            echo "[INFO] Install GnuPG with your system package manager" >&2
+        fi
+        return 1
+    fi
+
+    log_info "gpg found: $(command -v gpg)"
+    build_gpg_common_args
+    run_gpg --version
+}
+
+# 初始化一个新的 GPG 工作目录。
+cmd_init_home(){
+    require_arg_range "init-home" 1 1 "$@"
+
+    local dir="$1"
+
+    if [ -L "$dir" ];then
+        die "Refuse to initialize symlink directory: $dir"
+    fi
+    if [ -e "$dir" ] && [ ! -d "$dir" ];then
+        die "Path exists and is not a directory: $dir"
+    fi
+
+    run_cmd mkdir -p "$dir"
+    run_cmd chmod 700 "$dir"
+    log_info "Initialized GNUPG home: $dir"
+}
+
+# 备份当前 GPG 工作目录。
+cmd_backup_home(){
+    require_arg_range "backup-home" 1 1 "$@"
+
+    local source_dir
+    local dest_dir="$1"
+
+    source_dir="$(active_gnupg_home)"
+    ensure_existing_directory "$source_dir" "GNUPG home"
+
+    if [ -z "$dest_dir" ];then
+        die "Destination directory is empty"
+    fi
+    case "$dest_dir" in
+        "/"|"."|".."|"~")
+            die "Refuse to use unsafe destination: $dest_dir"
+            ;;
+    esac
+    if [ -L "$dest_dir" ];then
+        die "Refuse to backup into symlink directory: $dest_dir"
+    fi
+    if [ -e "$dest_dir" ] && [ ! -d "$dest_dir" ];then
+        die "Destination exists and is not a directory: $dest_dir"
+    fi
+    if [ -d "$dest_dir" ] && directory_not_empty "$dest_dir" && [ "$force" -ne 1 ];then
+        die "Destination directory is not empty, use --force to merge-copy: $dest_dir"
+    fi
+
+    if [ ! -d "$dest_dir" ];then
+        run_cmd mkdir -p "$dest_dir"
+        run_cmd chmod 700 "$dest_dir"
+    fi
+    if [ ! -w "$dest_dir" ];then
+        die "Destination directory is not writable: $dest_dir"
+    fi
+
+    run_cmd cp -a "$source_dir/." "$dest_dir/"
+    log_info "Backup completed: $dest_dir"
+}
+
+# 进入交互式密钥生成流程。
+cmd_gen(){
+    require_arg_range "gen" 0 0 "$@"
+    run_gpg --expert --full-gen-key
+}
+
+# 输出 gpg 版本信息。
+cmd_version(){
+    require_arg_range "version" 0 0 "$@"
+    run_gpg --version
+}
+
+# 列出公钥并显示长 keyid 与指纹。
+cmd_list_public(){
+    if [ "$#" -gt 0 ];then
+        run_gpg --list-keys --keyid-format LONG --fingerprint "$@"
+    else
+        run_gpg --list-keys --keyid-format LONG --fingerprint
+    fi
+}
+
+# 列出私钥并显示长 keyid 与指纹。
+cmd_list_secret(){
+    if [ "$#" -gt 0 ];then
+        run_gpg --list-secret-keys --keyid-format LONG --fingerprint "$@"
+    else
+        run_gpg --list-secret-keys --keyid-format LONG --fingerprint
+    fi
+}
+
+# 显示指定密钥的指纹。
+cmd_fingerprint(){
+    if [ "$#" -gt 0 ];then
+        run_gpg --fingerprint --keyid-format LONG "$@"
+    else
+        run_gpg --fingerprint --keyid-format LONG
+    fi
+}
+
+# 查看 key 文件内容。
+cmd_show_key(){
+    require_arg_range "show-key" 1 1 "$@"
+    ensure_readable_file "$1"
+    run_gpg --show-keys --keyid-format LONG "$1"
+}
+
+# 检查 OpenPGP 文件包结构。
+cmd_inspect(){
+    require_arg_range "inspect" 1 1 "$@"
+    ensure_readable_file "$1"
+    run_gpg --list-packets "$1"
+}
+
+# 导出公钥到文件。
+cmd_export_public(){
+    require_arg_range "export-public" 2 2 "$@"
+
+    local selector="$1"
+    local output_file="$2"
+    local args=()
+
+    ensure_output_file "$output_file"
+    if [ "$force" -eq 1 ];then
+        args+=(--yes)
+    fi
+    args+=(--armor --output "$output_file" --export "$selector")
+    run_gpg "${args[@]}"
+}
+
+# 导出完整私钥到文件。
+cmd_export_secret(){
+    require_arg_range "export-secret" 2 2 "$@"
+
+    local selector="$1"
+    local output_file="$2"
+    local args=()
+
+    ensure_output_file "$output_file"
+    if [ "$force" -eq 1 ];then
+        args+=(--yes)
+    fi
+    args+=(--armor --output "$output_file" --export-secret-keys "$selector")
+    run_gpg_private_output "${args[@]}"
+}
+
+# 导出私钥 stub/subkey，适合迁移子密钥场景。
+cmd_export_secret_subkeys(){
+    require_arg_range "export-secret-subkeys" 2 2 "$@"
+
+    local selector="$1"
+    local output_file="$2"
+    local args=()
+
+    ensure_output_file "$output_file"
+    if [ "$force" -eq 1 ];then
+        args+=(--yes)
+    fi
+    args+=(--armor --output "$output_file" --export-secret-subkeys "$selector")
+    run_gpg_private_output "${args[@]}"
+}
+
+# 导入一个或多个 key 文件。
+cmd_import(){
+    require_min_args "import" 1 "$@"
+
+    local file
+
+    for file in "$@";do
+        ensure_readable_file "$file"
+    done
+    run_gpg --import "$@"
+}
+
+# 生成吊销证书。
+cmd_gen_revoke(){
+    require_arg_range "gen-revoke" 2 2 "$@"
+
+    local selector="$1"
+    local output_file="$2"
+    local args=()
+
+    ensure_output_file "$output_file"
+    if [ "$force" -eq 1 ];then
+        args+=(--yes)
+    fi
+    args+=(--output "$output_file" --gen-revoke "$selector")
+    run_gpg_private_output "${args[@]}"
+}
+
+# 导出 ownertrust 数据。
+cmd_export_ownertrust(){
+    require_arg_range "export-ownertrust" 1 1 "$@"
+
+    local output_file="$1"
+
+    ensure_output_file "$output_file"
+    run_gpg_to_file "$output_file" --export-ownertrust
+}
+
+# 导入 ownertrust 数据。
+cmd_import_ownertrust(){
+    require_arg_range "import-ownertrust" 1 1 "$@"
+    ensure_readable_file "$1"
+    run_gpg --import-ownertrust "$1"
+}
+
+# 使用公钥加密文件。
+cmd_encrypt(){
+    require_arg_range "encrypt" 2 3 "$@"
+
+    local recipient="$1"
+    local input_file="$2"
+    local output_file="${3:-}"
+    local args=()
+
+    ensure_readable_file "$input_file"
+    if [ -n "$output_file" ];then
+        ensure_output_file "$output_file"
+        if [ "$force" -eq 1 ];then
+            args+=(--yes)
+        fi
+        args+=(--output "$output_file")
+    fi
+    args+=(--encrypt --recipient "$recipient" "$input_file")
+    run_gpg "${args[@]}"
+}
+
+# 使用对称密码加密文件。
+cmd_encrypt_symmetric(){
+    require_arg_range "encrypt-symmetric" 1 2 "$@"
+
+    local input_file="$1"
+    local output_file="${2:-}"
+    local args=()
+
+    ensure_readable_file "$input_file"
+    if [ -n "$output_file" ];then
+        ensure_output_file "$output_file"
+        if [ "$force" -eq 1 ];then
+            args+=(--yes)
+        fi
+        args+=(--output "$output_file")
+    fi
+    args+=(--symmetric --cipher-algo AES256 "$input_file")
+    run_gpg "${args[@]}"
+}
+
+# 解密文件到指定输出路径。
+cmd_decrypt(){
+    require_arg_range "decrypt" 2 2 "$@"
+
+    local input_file="$1"
+    local output_file="$2"
+    local args=()
+
+    ensure_readable_file "$input_file"
+    ensure_output_file "$output_file"
+    if [ "$force" -eq 1 ];then
+        args+=(--yes)
+    fi
+    args+=(--output "$output_file" --decrypt "$input_file")
+    run_gpg "${args[@]}"
+}
+
+# 对文件生成二进制签名包。
+cmd_sign(){
+    require_arg_range "sign" 1 2 "$@"
+
+    local input_file="$1"
+    local output_file="${2:-}"
+    local args=()
+
+    ensure_readable_file "$input_file"
+    if [ -n "$local_user" ];then
+        args+=(--local-user "$local_user")
+    fi
+    if [ -n "$output_file" ];then
+        ensure_output_file "$output_file"
+        if [ "$force" -eq 1 ];then
+            args+=(--yes)
+        fi
+        args+=(--output "$output_file")
+    fi
+    args+=(--sign "$input_file")
+    run_gpg "${args[@]}"
+}
+
+# 对文件生成分离签名。
+cmd_detach_sign(){
+    require_arg_range "detach-sign" 1 2 "$@"
+
+    local input_file="$1"
+    local output_file="${2:-}"
+    local args=()
+
+    ensure_readable_file "$input_file"
+    if [ -n "$local_user" ];then
+        args+=(--local-user "$local_user")
+    fi
+    if [ -n "$output_file" ];then
+        ensure_output_file "$output_file"
+        if [ "$force" -eq 1 ];then
+            args+=(--yes)
+        fi
+        args+=(--output "$output_file")
+    fi
+    args+=(--detach-sign "$input_file")
+    run_gpg "${args[@]}"
+}
+
+# 对文本文件生成 clear-sign 签名。
+cmd_clearsign(){
+    require_arg_range "clearsign" 1 2 "$@"
+
+    local input_file="$1"
+    local output_file="${2:-}"
+    local args=()
+
+    ensure_readable_file "$input_file"
+    if [ -n "$local_user" ];then
+        args+=(--local-user "$local_user")
+    fi
+    if [ -n "$output_file" ];then
+        ensure_output_file "$output_file"
+        if [ "$force" -eq 1 ];then
+            args+=(--yes)
+        fi
+        args+=(--output "$output_file")
+    fi
+    args+=(--clearsign "$input_file")
+    run_gpg "${args[@]}"
+}
+
+# 校验签名文件。
+cmd_verify(){
+    require_arg_range "verify" 1 2 "$@"
+    if [ "$#" -eq 2 ];then
+        ensure_readable_file "$1"
+        ensure_readable_file "$2"
+        run_gpg --verify "$1" "$2"
+    else
+        ensure_readable_file "$1"
+        run_gpg --verify "$1"
+    fi
+}
+
+# 进入交互式密钥编辑流程。
+cmd_edit_key(){
+    require_arg_range "edit-key" 1 1 "$@"
+    run_gpg --expert --edit-key "$1"
+}
+
+# 修改密钥 passphrase。
+cmd_passwd(){
+    require_arg_range "passwd" 1 1 "$@"
+    run_gpg --passwd "$1"
+}
+
+# 从 keyserver 接收公钥。
+cmd_recv_key(){
+    require_min_args "recv-key" 1 "$@"
+    run_gpg --recv-keys "$@"
+}
+
+# 向 keyserver 发送公钥。
+cmd_send_key(){
+    require_min_args "send-key" 1 "$@"
+    run_gpg --send-keys "$@"
+}
+
+# 在 keyserver 搜索公钥。
+cmd_search_key(){
+    require_arg_range "search-key" 1 1 "$@"
+    run_gpg --search-keys "$1"
+}
+
+# 从 keyserver 刷新公钥。
+cmd_refresh_keys(){
+    if [ "$#" -gt 0 ];then
+        run_gpg --refresh-keys "$@"
+    else
+        run_gpg --refresh-keys
+    fi
+}
+
+# 对公钥进行公开签名。
+cmd_sign_key(){
+    require_arg_range "sign-key" 1 1 "$@"
+    confirm_danger "This will sign a public key in your keyring: $1"
+    run_gpg --sign-key "$1"
+}
+
+# 对公钥进行本地签名。
+cmd_local_sign_key(){
+    require_arg_range "local-sign-key" 1 1 "$@"
+    confirm_danger "This will locally sign a public key in your keyring: $1"
+    run_gpg --lsign-key "$1"
+}
+
+# 删除本地公钥。
+cmd_delete_public(){
+    require_arg_range "delete-public" 1 1 "$@"
+    confirm_danger "This will delete the public key from your keyring: $1"
+    run_gpg --delete-key "$1"
+}
+
+# 删除本地私钥材料。
+cmd_delete_secret(){
+    require_arg_range "delete-secret" 1 1 "$@"
+    confirm_danger "This will delete secret key material from your keyring: $1"
+    run_gpg --delete-secret-key "$1"
+}
+
+# 查看智能卡或 YubiKey 状态。
+cmd_card_status(){
+    require_arg_range "card-status" 0 0 "$@"
+    run_gpg --card-status
+}
+
+# 进入智能卡或 YubiKey 编辑流程。
+cmd_card_edit(){
+    require_arg_range "card-edit" 0 0 "$@"
+    run_gpg --card-edit
+}
+
+# 解析全局参数。
+parse_global_options(){
+    while [ "$#" -gt 0 ];do
+        case "$1" in
+            --homedir)
+                [ "$#" -ge 2 ] || die "Missing value for --homedir"
+                homedir="$2"
+                shift 2
+                ;;
+            --keyserver)
+                [ "$#" -ge 2 ] || die "Missing value for --keyserver"
+                keyserver="$2"
+                shift 2
+                ;;
+            --local-user)
+                [ "$#" -ge 2 ] || die "Missing value for --local-user"
+                local_user="$2"
+                shift 2
+                ;;
+            -f|--force)
+                force=1
+                shift
+                ;;
+            -y|--yes)
+                assume_yes=1
+                shift
+                ;;
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            --)
+                shift
+                break
+                ;;
+            -*)
+                die "Unknown global option: $1"
+                ;;
+            *)
+                break
+                ;;
+        esac
+    done
+
+    parsed_args=("$@")
+}
+
+# 分发子命令。
+dispatch(){
+    local command_name="${1:-help}"
+    shift || true
+
+    case "$command_name" in
+        help)
+            usage
+            ;;
+        check)
+            cmd_check "$@"
+            ;;
+        init-home)
+            cmd_init_home "$@"
+            ;;
+        backup-home)
+            cmd_backup_home "$@"
+            ;;
+        gen|version|list-public|list-secret|fingerprint|show-key|inspect|export-public|export-secret|export-secret-subkeys|import|import-public|import-secret|gen-revoke|export-ownertrust|import-ownertrust|encrypt|encrypt-symmetric|decrypt|sign|detach-sign|clearsign|verify|edit-key|passwd|recv-key|send-key|search-key|refresh-keys|sign-key|local-sign-key|delete-public|delete-secret|card-status|card-edit)
+            require_command gpg
+            build_gpg_common_args
+            case "$command_name" in
+                gen) cmd_gen "$@" ;;
+                version) cmd_version "$@" ;;
+                list-public) cmd_list_public "$@" ;;
+                list-secret) cmd_list_secret "$@" ;;
+                fingerprint) cmd_fingerprint "$@" ;;
+                show-key) cmd_show_key "$@" ;;
+                inspect) cmd_inspect "$@" ;;
+                export-public) cmd_export_public "$@" ;;
+                export-secret) cmd_export_secret "$@" ;;
+                export-secret-subkeys) cmd_export_secret_subkeys "$@" ;;
+                import|import-public|import-secret) cmd_import "$@" ;;
+                gen-revoke) cmd_gen_revoke "$@" ;;
+                export-ownertrust) cmd_export_ownertrust "$@" ;;
+                import-ownertrust) cmd_import_ownertrust "$@" ;;
+                encrypt) cmd_encrypt "$@" ;;
+                encrypt-symmetric) cmd_encrypt_symmetric "$@" ;;
+                decrypt) cmd_decrypt "$@" ;;
+                sign) cmd_sign "$@" ;;
+                detach-sign) cmd_detach_sign "$@" ;;
+                clearsign) cmd_clearsign "$@" ;;
+                verify) cmd_verify "$@" ;;
+                edit-key) cmd_edit_key "$@" ;;
+                passwd) cmd_passwd "$@" ;;
+                recv-key) cmd_recv_key "$@" ;;
+                send-key) cmd_send_key "$@" ;;
+                search-key) cmd_search_key "$@" ;;
+                refresh-keys) cmd_refresh_keys "$@" ;;
+                sign-key) cmd_sign_key "$@" ;;
+                local-sign-key) cmd_local_sign_key "$@" ;;
+                delete-public) cmd_delete_public "$@" ;;
+                delete-secret) cmd_delete_secret "$@" ;;
+                card-status) cmd_card_status "$@" ;;
+                card-edit) cmd_card_edit "$@" ;;
+            esac
+            ;;
+        *)
+            die "Unknown command: $command_name"
+            ;;
+    esac
+}
+
+# 脚本主入口。
+main(){
+    parsed_args=()
+    parse_global_options "$@"
+    if [ "${#parsed_args[@]}" -eq 0 ];then
+        dispatch help
+    else
+        dispatch "${parsed_args[@]}"
+    fi
+}
+
+main "$@"
