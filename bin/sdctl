@@ -218,14 +218,274 @@ systemctl_no_pager() {
     SYSTEMD_PAGER='' systemctl --no-pager "$@"
 }
 
+page_output() {
+    if [ -t 1 ] && command -v less >/dev/null 2>&1; then
+        less -FRX
+    else
+        cat
+    fi
+}
+
+unit_type() {
+    local unit="${1:?missing unit name}"
+
+    printf '%s\n' "${unit##*.}"
+}
+
+unit_matches_patterns() {
+    local unit="${1:?missing unit name}"
+    shift
+    local pattern
+
+    [ "$#" -gt 0 ] || return 0
+    for pattern in "$@"; do
+        # shellcheck disable=SC2053
+        if [[ "${unit}" == ${pattern} ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+unit_path_in_scope() {
+    local path="${1:-}"
+    local scope="${2:?missing scope}"
+
+    case "${scope}" in
+    etc)
+        [[ "${path}" == /etc/systemd/system/* ]]
+        ;;
+    run)
+        [[ "${path}" == /run/systemd/system/* ]]
+        ;;
+    lib)
+        [[ "${path}" == /lib/systemd/system/* || "${path}" == /usr/lib/systemd/system/* ]]
+        ;;
+    dirs)
+        [[ "${path}" == /etc/systemd/system/* || "${path}" == /run/systemd/system/* || "${path}" == /lib/systemd/system/* || "${path}" == /usr/lib/systemd/system/* ]]
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+}
+
+print_unit_header() {
+    local with_preset="${1:-0}"
+
+    if [ "${with_preset}" -eq 1 ]; then
+        printf '%-45s %-8s %-12s %-12s %s\n' "UNIT" "TYPE" "STATE" "PRESET" "PATH"
+    else
+        printf '%-45s %-8s %-12s %s\n' "UNIT" "TYPE" "STATE" "PATH"
+    fi
+}
+
+print_scan_units_for_dir() {
+    local dir="${1:?missing dir}"
+    shift
+    local path
+    local unit
+    local state
+
+    [ -d "${dir}" ] || return 0
+    for path in "${dir}"/*.service "${dir}"/*.timer; do
+        [ -e "${path}" ] || continue
+        [ -f "${path}" ] || [ -L "${path}" ] || continue
+        unit="$(basename -- "${path}")"
+        unit_matches_patterns "${unit}" "$@" || continue
+        state="$(systemctl is-enabled "${unit}" 2>/dev/null || true)"
+        [ -n "${state}" ] || state="unknown"
+        printf '%-45s %-8s %-12s %s\n' "${unit}" "$(unit_type "${unit}")" "${state}" "${path}"
+    done
+}
+
+print_scan_group() {
+    local title="${1:?missing title}"
+    local dir="${2:?missing dir}"
+    shift 2
+
+    printf '== %s ==\n' "${title}"
+    print_unit_header 0
+    print_scan_units_for_dir "${dir}" "$@"
+}
+
+print_scan_package_group() {
+    local title="${1:?missing title}"
+    shift
+
+    printf '== %s ==\n' "${title}"
+    print_unit_header 0
+    print_scan_units_for_dir "/lib/systemd/system" "$@"
+    print_scan_units_for_dir "/usr/lib/systemd/system" "$@"
+}
+
+print_scan_list() {
+    local scope="${1:?missing scope}"
+    shift
+
+    case "${scope}" in
+    etc)
+        print_scan_group "/etc/systemd/system" "/etc/systemd/system" "$@"
+        ;;
+    run)
+        print_scan_group "/run/systemd/system" "/run/systemd/system" "$@"
+        ;;
+    lib)
+        print_scan_package_group "package units" "$@"
+        ;;
+    dirs)
+        print_scan_group "/etc/systemd/system" "/etc/systemd/system" "$@"
+        printf '\n'
+        print_scan_group "/run/systemd/system" "/run/systemd/system" "$@"
+        printf '\n'
+        print_scan_package_group "package units" "$@"
+        ;;
+    *)
+        die "Unsupported list scope: ${scope}"
+        ;;
+    esac
+}
+
+print_systemctl_units_for_scope() {
+    local scope="${1:?missing scope}"
+    shift
+    local unit
+    local state
+    local preset
+    local path
+
+    systemctl_no_pager list-unit-files --type=service --type=timer --no-legend |
+        while read -r unit state preset _; do
+            [ -n "${unit}" ] || continue
+            unit_matches_patterns "${unit}" "$@" || continue
+            path="$(systemctl_no_pager show -p FragmentPath --value "${unit}" 2>/dev/null || true)"
+            unit_path_in_scope "${path}" "${scope}" || continue
+            [ -n "${preset:-}" ] || preset="-"
+            printf '%-45s %-8s %-12s %-12s %s\n' "${unit}" "$(unit_type "${unit}")" "${state:-unknown}" "${preset}" "${path:-"-"}"
+        done
+}
+
+print_systemctl_group() {
+    local title="${1:?missing title}"
+    local scope="${2:?missing scope}"
+    shift 2
+
+    printf '== %s ==\n' "${title}"
+    print_unit_header 1
+    print_systemctl_units_for_scope "${scope}" "$@"
+}
+
+print_systemctl_filtered_list() {
+    local scope="${1:?missing scope}"
+    shift
+
+    case "${scope}" in
+    etc)
+        print_systemctl_group "/etc/systemd/system" "etc" "$@"
+        ;;
+    run)
+        print_systemctl_group "/run/systemd/system" "run" "$@"
+        ;;
+    lib)
+        print_systemctl_group "package units" "lib" "$@"
+        ;;
+    dirs)
+        print_systemctl_group "/etc/systemd/system" "etc" "$@"
+        printf '\n'
+        print_systemctl_group "/run/systemd/system" "run" "$@"
+        printf '\n'
+        print_systemctl_group "package units" "lib" "$@"
+        ;;
+    *)
+        die "Unsupported list scope: ${scope}"
+        ;;
+    esac
+}
+
 list() {
+    local mode="default"
+    local scope=""
+    local patterns=()
+    local native_args=()
+
     require_systemd_linux
-    systemctl_no_pager list-unit-files --type=service --type=timer "$@"
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --scan)
+            mode="scan"
+            shift
+            ;;
+        --systemctl)
+            mode="systemctl"
+            shift
+            ;;
+        --etc)
+            scope="etc"
+            shift
+            ;;
+        --lib)
+            scope="lib"
+            shift
+            ;;
+        --run)
+            scope="run"
+            shift
+            ;;
+        --dirs | --all-dirs | --all)
+            scope="dirs"
+            shift
+            ;;
+        --)
+            shift
+            patterns+=("$@")
+            break
+            ;;
+        -*)
+            native_args+=("$1")
+            shift
+            ;;
+        *)
+            patterns+=("$1")
+            shift
+            ;;
+        esac
+    done
+
+    if [ "${mode}" = "default" ] && [ -z "${scope}" ]; then
+        systemctl_no_pager list-unit-files --type=service --type=timer "${native_args[@]}" "${patterns[@]}" | page_output
+        return 0
+    fi
+    [ "${#native_args[@]}" -eq 0 ] || die "systemctl list options cannot be combined with sdctl directory filters."
+
+    if [ "${mode}" = "default" ]; then
+        mode="scan"
+    fi
+    if [ -z "${scope}" ]; then
+        if [ "${mode}" = "scan" ]; then
+            scope="dirs"
+        else
+            systemctl_no_pager list-unit-files --type=service --type=timer "${patterns[@]}" | page_output
+            return 0
+        fi
+    fi
+
+    case "${mode}" in
+    scan)
+        print_scan_list "${scope}" "${patterns[@]}" | page_output
+        ;;
+    systemctl)
+        print_systemctl_filtered_list "${scope}" "${patterns[@]}" | page_output
+        ;;
+    *)
+        die "Unsupported list mode: ${mode}"
+        ;;
+    esac
 }
 
 timers() {
     require_systemd_linux
-    systemctl_no_pager list-timers --all "$@"
+    systemctl_no_pager list-timers --all "$@" | page_output
 }
 
 status() {
@@ -233,7 +493,7 @@ status() {
 
     require_systemd_linux
     unit="$(normalize_unit_name "${1:?missing unit name}")"
-    systemctl_no_pager status "${unit}"
+    systemctl_no_pager status "${unit}" | page_output
 }
 
 cat_unit() {
@@ -241,7 +501,7 @@ cat_unit() {
 
     require_systemd_linux
     unit="$(normalize_unit_name "${1:?missing unit name}")"
-    systemctl_no_pager cat "${unit}"
+    systemctl_no_pager cat "${unit}" | page_output
 }
 
 logs() {
@@ -281,8 +541,10 @@ logs() {
     journal_args=(-u "${unit}" -n "${lines}")
     if [ "${follow}" -eq 1 ]; then
         journal_args+=(-f)
+        journalctl "${journal_args[@]}"
+    else
+        journalctl "${journal_args[@]}" | page_output
     fi
-    journalctl "${journal_args[@]}"
 }
 
 reload() {
@@ -627,7 +889,7 @@ override_cat() {
     unit="$(normalize_unit_name "${1:?missing unit name}")"
     path="$(override_path "${unit}")"
     [ -f "${path}" ] || die "Override file not found: ${path}"
-    cat "${path}"
+    cat "${path}" | page_output
 }
 
 override_rm() {
@@ -691,14 +953,14 @@ override_rm() {
     echo "Removed: ${path}"
 }
 
-help() {
+print_help() {
     cat <<EOF
 Usage:
   $(basename "$0") ${bold}CMD${reset} [ARGS...]
 
 ${bold}Commands${reset}:
   help                                      Show this help message
-  list [PATTERN...]                        List system service/timer unit files
+  list [OPTIONS] [PATTERN...]              List system service/timer unit files
   timers [PATTERN...]                      List system timers
   status NAME                              Show systemctl status for a unit
   cat NAME                                 Show unit file content
@@ -735,12 +997,22 @@ ${bold}new-timer options${reset}:
   --description TEXT                       Unit Description
   --no-persistent                          Do not run missed timer events after boot
 
+${bold}list options${reset}:
+  --etc                                    List units under /etc/systemd/system
+  --lib                                    List package units under /lib and /usr/lib
+  --run                                    List runtime units under /run/systemd/system
+  --dirs, --all-dirs, --all                List directory groups: /etc, /run, package units
+  --scan                                   Scan unit files from directories
+  --systemctl                              Use systemctl view and filter by FragmentPath
+
 ${bold}Examples${reset}:
   $(basename "$0") new-service init-repo-update --exec "/bin/bash /opt/init/bootstrap/jobs/repo-update.sh update" --user eagle --workdir /opt/init
   $(basename "$0") new-timer init-repo-update --calendar "*-*-* 00:00:00"
   $(basename "$0") enable-now init-repo-update.timer
   $(basename "$0") logs -n 200 init-repo-update
   $(basename "$0") override nginx
+  $(basename "$0") list --etc
+  $(basename "$0") list --systemctl --lib
 
 ${bold}Notes${reset}:
   This tool manages system units only. Files are written under ${UNIT_DIR}.
@@ -748,7 +1020,12 @@ ${bold}Notes${reset}:
   NAME can omit the .service suffix. Pass .timer explicitly for timer commands.
   Write/control commands automatically re-run through sudo when needed.
   Set SDCTL_NO_SUDO=1 to disable automatic sudo.
+  Long output is paged with less -FRX in interactive terminals.
 EOF
+}
+
+help() {
+    print_help | page_output
 }
 
 auto_sudo_if_needed "$@"
