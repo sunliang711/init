@@ -39,6 +39,7 @@ BASH_SYNTAX_FILES=(
     "${ROOT_DIR}/bin/newsh"
     "${ROOT_DIR}/bin/newrust"
     "${ROOT_DIR}/bin/newsolanaprogram"
+    "${ROOT_DIR}/bin/sdctl"
 )
 SHFMT_FILES=(
     "${BASH_SYNTAX_FILES[@]}"
@@ -53,6 +54,7 @@ SHELLCHECK_FILES=(
     "${ROOT_DIR}/bootstrap/components/vim-setup.sh"
     "${ROOT_DIR}/bootstrap/jobs/repo-update.sh"
     "${ROOT_DIR}/install.sh"
+    "${ROOT_DIR}/bin/sdctl"
 )
 
 cleanup() {
@@ -416,6 +418,7 @@ smoke_checks() {
     run bash "${ROOT_DIR}/bootstrap/components/tmux-setup.sh" help
     run bash "${ROOT_DIR}/bootstrap/components/vim-setup.sh" help
     run bash "${ROOT_DIR}/bootstrap/jobs/repo-update.sh" help
+    run bash "${ROOT_DIR}/bin/sdctl" help
 }
 
 test_set_git() {

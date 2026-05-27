@@ -1,0 +1,849 @@
+#!/bin/bash
+
+set -euo pipefail
+
+UNIT_DIR="/etc/systemd/system"
+
+if command -v tput >/dev/null 2>&1 && [ -t 1 ]; then
+    bold="$(tput bold 2>/dev/null || true)"
+    reset="$(tput sgr0 2>/dev/null || true)"
+else
+    bold=""
+    reset=""
+fi
+
+print_error() {
+    echo "sdctl: $*" >&2
+}
+
+die() {
+    print_error "$@"
+    exit 1
+}
+
+# help 允许在非 Linux 环境查看，其余命令必须运行在 systemd Linux 上。
+require_systemd_linux() {
+    [ "$(uname -s)" = "Linux" ] || die "Only Linux is supported."
+    command -v systemctl >/dev/null 2>&1 || die "Missing command: systemctl"
+    [ -d /run/systemd/system ] || die "systemd does not appear to be running."
+}
+
+# 写入和控制 system unit 都需要 root，避免 sudo 拼接命令带来的转义风险。
+require_root() {
+    [ "${EUID}" -eq 0 ] || die "Root is required. Please run with sudo."
+}
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "Missing command: $1"
+}
+
+# 判断命令是否会修改 systemd 状态或 /etc/systemd/system 文件。
+command_requires_root() {
+    case "${1:-}" in
+    reload | start | stop | restart | enable | disable | enable-now | disable-now | new-service | new-timer | edit | override | override-rm | remove | rm)
+        return 0
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+}
+
+# 解析当前脚本的绝对路径，供 sudo 重进时执行同一个 sdctl。
+resolve_self_path() {
+    local self="${BASH_SOURCE[0]}"
+    local dir
+
+    case "${self}" in
+    */*)
+        dir="$(CDPATH='' cd -- "$(dirname -- "${self}")" && pwd)" || return 1
+        printf '%s/%s\n' "${dir}" "$(basename -- "${self}")"
+        ;;
+    *)
+        command -v -- "${self}" || return 1
+        ;;
+    esac
+}
+
+# 对写入/控制类命令自动 sudo 重进，避免在各函数里拼接 sudo 命令。
+auto_sudo_if_needed() {
+    local self
+    local cmd="${1:-help}"
+
+    command_requires_root "${cmd}" || return 0
+    [ "${EUID}" -eq 0 ] && return 0
+    require_systemd_linux
+
+    if [ "${SDCTL_NO_SUDO:-}" = "1" ]; then
+        return 0
+    fi
+
+    require_command sudo
+    self="$(resolve_self_path)" || die "Failed to resolve sdctl path."
+    exec sudo -- "${self}" "$@"
+}
+
+has_unit_suffix() {
+    case "$1" in
+    *.service | *.timer)
+        return 0
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+}
+
+validate_unit_name() {
+    local name="${1:?missing unit name}"
+
+    [ -n "${name}" ] || die "Unit name is empty."
+    case "${name}" in
+    */* | .* | *..*)
+        die "Invalid unit name: ${name}"
+        ;;
+    esac
+    [[ "${name}" =~ ^[A-Za-z0-9@._-]+$ ]] || die "Invalid unit name: ${name}"
+}
+
+normalize_service_name() {
+    local name="${1:?missing service name}"
+
+    validate_unit_name "${name}"
+    if has_unit_suffix "${name}"; then
+        case "${name}" in
+        *.service)
+            printf '%s\n' "${name}"
+            ;;
+        *)
+            die "Expected a .service unit: ${name}"
+            ;;
+        esac
+    else
+        printf '%s.service\n' "${name}"
+    fi
+}
+
+normalize_timer_name() {
+    local name="${1:?missing timer name}"
+
+    validate_unit_name "${name}"
+    if has_unit_suffix "${name}"; then
+        case "${name}" in
+        *.timer)
+            printf '%s\n' "${name}"
+            ;;
+        *)
+            die "Expected a .timer unit: ${name}"
+            ;;
+        esac
+    else
+        printf '%s.timer\n' "${name}"
+    fi
+}
+
+normalize_unit_name() {
+    local name="${1:?missing unit name}"
+
+    validate_unit_name "${name}"
+    if has_unit_suffix "${name}"; then
+        printf '%s\n' "${name}"
+    else
+        printf '%s.service\n' "${name}"
+    fi
+}
+
+unit_path() {
+    local unit="${1:?missing unit name}"
+
+    printf '%s/%s\n' "${UNIT_DIR}" "${unit}"
+}
+
+override_dir() {
+    local unit="${1:?missing unit name}"
+
+    printf '%s/%s.d\n' "${UNIT_DIR}" "${unit}"
+}
+
+override_path() {
+    local unit="${1:?missing unit name}"
+
+    printf '%s/override.conf\n' "$(override_dir "${unit}")"
+}
+
+ensure_unit_file() {
+    local unit="${1:?missing unit name}"
+    local path
+
+    path="$(unit_path "${unit}")"
+    [ -f "${path}" ] || die "Unit file not found: ${path}"
+}
+
+ensure_new_unit_file() {
+    local unit="${1:?missing unit name}"
+    local path
+
+    path="$(unit_path "${unit}")"
+    [ ! -e "${path}" ] || die "Unit file already exists: ${path}"
+}
+
+ensure_system_unit_known() {
+    local unit="${1:?missing unit name}"
+
+    systemctl_no_pager cat "${unit}" >/dev/null || die "Unit is not known to systemd: ${unit}"
+}
+
+ensure_no_newline() {
+    local value="${1:-}"
+    local label="${2:-value}"
+
+    case "${value}" in
+    *$'\n'*)
+        die "${label} must be a single line."
+        ;;
+    esac
+}
+
+choose_editor() {
+    if [ -n "${EDITOR:-}" ]; then
+        printf '%s\n' "${EDITOR}"
+    elif command -v vim >/dev/null 2>&1; then
+        printf 'vim\n'
+    else
+        printf 'vi\n'
+    fi
+}
+
+systemctl_no_pager() {
+    SYSTEMD_PAGER='' systemctl --no-pager "$@"
+}
+
+list() {
+    require_systemd_linux
+    systemctl_no_pager list-unit-files --type=service --type=timer "$@"
+}
+
+timers() {
+    require_systemd_linux
+    systemctl_no_pager list-timers --all "$@"
+}
+
+status() {
+    local unit
+
+    require_systemd_linux
+    unit="$(normalize_unit_name "${1:?missing unit name}")"
+    systemctl_no_pager status "${unit}"
+}
+
+cat_unit() {
+    local unit
+
+    require_systemd_linux
+    unit="$(normalize_unit_name "${1:?missing unit name}")"
+    systemctl_no_pager cat "${unit}"
+}
+
+logs() {
+    local follow=0
+    local lines=100
+    local unit
+    local journal_args=()
+
+    require_systemd_linux
+    require_command journalctl
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        -f | --follow)
+            follow=1
+            shift
+            ;;
+        -n)
+            [ "$#" -ge 2 ] || die "-n requires a line count."
+            lines="$2"
+            shift 2
+            ;;
+        --)
+            shift
+            break
+            ;;
+        -*)
+            die "Unknown logs option: $1"
+            ;;
+        *)
+            break
+            ;;
+        esac
+    done
+
+    unit="$(normalize_unit_name "${1:?missing unit name}")"
+    journal_args=(-u "${unit}" -n "${lines}")
+    if [ "${follow}" -eq 1 ]; then
+        journal_args+=(-f)
+    fi
+    journalctl "${journal_args[@]}"
+}
+
+reload() {
+    require_systemd_linux
+    require_root
+    systemctl daemon-reload
+}
+
+start() {
+    local unit
+
+    require_systemd_linux
+    require_root
+    unit="$(normalize_unit_name "${1:?missing unit name}")"
+    systemctl start "${unit}"
+}
+
+stop() {
+    local unit
+
+    require_systemd_linux
+    require_root
+    unit="$(normalize_unit_name "${1:?missing unit name}")"
+    systemctl stop "${unit}"
+}
+
+restart() {
+    local unit
+
+    require_systemd_linux
+    require_root
+    unit="$(normalize_unit_name "${1:?missing unit name}")"
+    systemctl restart "${unit}"
+}
+
+enable() {
+    local unit
+
+    require_systemd_linux
+    require_root
+    unit="$(normalize_unit_name "${1:?missing unit name}")"
+    systemctl enable "${unit}"
+}
+
+disable() {
+    local unit
+
+    require_systemd_linux
+    require_root
+    unit="$(normalize_unit_name "${1:?missing unit name}")"
+    systemctl disable "${unit}"
+}
+
+enable_now() {
+    local unit
+
+    require_systemd_linux
+    require_root
+    unit="$(normalize_unit_name "${1:?missing unit name}")"
+    systemctl enable --now "${unit}"
+}
+
+disable_now() {
+    local unit
+
+    require_systemd_linux
+    require_root
+    unit="$(normalize_unit_name "${1:?missing unit name}")"
+    systemctl disable --now "${unit}"
+}
+
+new_service() {
+    local name=""
+    local unit=""
+    local path=""
+    local description=""
+    local exec_start=""
+    local service_type="oneshot"
+    local service_user=""
+    local workdir=""
+
+    require_systemd_linux
+    require_root
+    name="${1:?missing service name}"
+    shift
+    unit="$(normalize_service_name "${name}")"
+    description="${unit}"
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --exec)
+            [ "$#" -ge 2 ] || die "--exec requires a command."
+            exec_start="$2"
+            shift 2
+            ;;
+        --type)
+            [ "$#" -ge 2 ] || die "--type requires a value."
+            service_type="$2"
+            shift 2
+            ;;
+        --user)
+            [ "$#" -ge 2 ] || die "--user requires a user."
+            service_user="$2"
+            shift 2
+            ;;
+        --workdir)
+            [ "$#" -ge 2 ] || die "--workdir requires a directory."
+            workdir="$2"
+            shift 2
+            ;;
+        --description)
+            [ "$#" -ge 2 ] || die "--description requires text."
+            description="$2"
+            shift 2
+            ;;
+        *)
+            die "Unknown new-service option: $1"
+            ;;
+        esac
+    done
+
+    [ -n "${exec_start}" ] || die "Missing --exec."
+    case "${service_type}" in
+    simple | exec | forking | oneshot | dbus | notify | idle)
+        ;;
+    *)
+        die "Unsupported service type: ${service_type}"
+        ;;
+    esac
+    ensure_no_newline "${description}" "description"
+    ensure_no_newline "${exec_start}" "exec command"
+    ensure_no_newline "${service_type}" "service type"
+    ensure_no_newline "${service_user}" "user"
+    ensure_no_newline "${workdir}" "workdir"
+    ensure_new_unit_file "${unit}"
+    path="$(unit_path "${unit}")"
+
+    {
+        printf '[Unit]\n'
+        printf 'Description=%s\n\n' "${description}"
+        printf '[Service]\n'
+        printf 'Type=%s\n' "${service_type}"
+        if [ -n "${service_user}" ]; then
+            printf 'User=%s\n' "${service_user}"
+        fi
+        if [ -n "${workdir}" ]; then
+            printf 'WorkingDirectory=%s\n' "${workdir}"
+        fi
+        printf 'ExecStart=%s\n\n' "${exec_start}"
+        printf '[Install]\n'
+        printf 'WantedBy=multi-user.target\n'
+    } >"${path}"
+    chmod 644 "${path}"
+    systemctl daemon-reload
+    echo "Created: ${path}"
+}
+
+new_timer() {
+    local name=""
+    local unit=""
+    local path=""
+    local description=""
+    local calendar=""
+    local service_unit=""
+    local persistent="true"
+
+    require_systemd_linux
+    require_root
+    name="${1:?missing timer name}"
+    shift
+    unit="$(normalize_timer_name "${name}")"
+    service_unit="${unit%.timer}.service"
+    description="${unit}"
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --calendar)
+            [ "$#" -ge 2 ] || die "--calendar requires a value."
+            calendar="$2"
+            shift 2
+            ;;
+        --unit)
+            [ "$#" -ge 2 ] || die "--unit requires a service unit."
+            service_unit="$(normalize_service_name "$2")"
+            shift 2
+            ;;
+        --description)
+            [ "$#" -ge 2 ] || die "--description requires text."
+            description="$2"
+            shift 2
+            ;;
+        --no-persistent)
+            persistent="false"
+            shift
+            ;;
+        *)
+            die "Unknown new-timer option: $1"
+            ;;
+        esac
+    done
+
+    [ -n "${calendar}" ] || die "Missing --calendar."
+    ensure_no_newline "${description}" "description"
+    ensure_no_newline "${calendar}" "calendar"
+    ensure_no_newline "${service_unit}" "service unit"
+    ensure_new_unit_file "${unit}"
+    path="$(unit_path "${unit}")"
+
+    {
+        printf '[Unit]\n'
+        printf 'Description=%s\n\n' "${description}"
+        printf '[Timer]\n'
+        printf 'OnCalendar=%s\n' "${calendar}"
+        printf 'Persistent=%s\n' "${persistent}"
+        printf 'Unit=%s\n\n' "${service_unit}"
+        printf '[Install]\n'
+        printf 'WantedBy=timers.target\n'
+    } >"${path}"
+    chmod 644 "${path}"
+    systemctl daemon-reload
+    echo "Created: ${path}"
+}
+
+verify() {
+    local unit
+    local path
+
+    require_systemd_linux
+    require_command systemd-analyze
+    unit="$(normalize_unit_name "${1:?missing unit name}")"
+    ensure_unit_file "${unit}"
+    path="$(unit_path "${unit}")"
+    systemd-analyze verify "${path}"
+}
+
+remove() {
+    local force=0
+    local unit=""
+    local path=""
+    local answer=""
+
+    require_systemd_linux
+    require_root
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --force | -f)
+            force=1
+            shift
+            ;;
+        -*)
+            die "Unknown remove option: $1"
+            ;;
+        *)
+            unit="$(normalize_unit_name "$1")"
+            shift
+            ;;
+        esac
+    done
+
+    [ -n "${unit}" ] || die "missing unit name"
+    ensure_unit_file "${unit}"
+    path="$(unit_path "${unit}")"
+
+    if [ "${force}" -ne 1 ]; then
+        printf 'Remove %s? [y/N] ' "${path}"
+        read -r answer
+        case "${answer}" in
+        y | Y | yes | YES)
+            ;;
+        *)
+            echo "Canceled."
+            return 1
+            ;;
+        esac
+    fi
+
+    systemctl disable --now "${unit}" >/dev/null 2>&1 || true
+    case "${path}" in
+    "${UNIT_DIR}/"*.service | "${UNIT_DIR}/"*.timer)
+        rm -f "${path}"
+        ;;
+    *)
+        die "Refuse to remove unexpected path: ${path}"
+        ;;
+    esac
+    systemctl daemon-reload
+    echo "Removed: ${path}"
+}
+
+edit() {
+    local unit
+    local path
+    local editor
+
+    require_systemd_linux
+    require_root
+    unit="$(normalize_unit_name "${1:?missing unit name}")"
+    ensure_unit_file "${unit}"
+    path="$(unit_path "${unit}")"
+    editor="$(choose_editor)"
+    "${editor}" "${path}"
+    systemctl daemon-reload
+}
+
+override() {
+    local unit
+    local dir
+    local path
+    local editor
+
+    require_systemd_linux
+    require_root
+    unit="$(normalize_unit_name "${1:?missing unit name}")"
+    ensure_system_unit_known "${unit}"
+    dir="$(override_dir "${unit}")"
+    path="$(override_path "${unit}")"
+
+    mkdir -p "${dir}"
+    if [ ! -f "${path}" ]; then
+        {
+            printf '# Override for %s\n' "${unit}"
+            printf '# Add only the sections and settings you want to override.\n'
+            printf '#\n'
+            printf '# Example:\n'
+            printf '# [Service]\n'
+            printf '# Environment="KEY=value"\n'
+        } >"${path}"
+        chmod 644 "${path}"
+    fi
+
+    editor="$(choose_editor)"
+    "${editor}" "${path}"
+    systemctl daemon-reload
+}
+
+override_cat() {
+    local unit
+    local path
+
+    require_systemd_linux
+    unit="$(normalize_unit_name "${1:?missing unit name}")"
+    path="$(override_path "${unit}")"
+    [ -f "${path}" ] || die "Override file not found: ${path}"
+    cat "${path}"
+}
+
+override_rm() {
+    local force=0
+    local unit=""
+    local dir=""
+    local path=""
+    local answer=""
+
+    require_systemd_linux
+    require_root
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+        --force | -f)
+            force=1
+            shift
+            ;;
+        -*)
+            die "Unknown override-rm option: $1"
+            ;;
+        *)
+            unit="$(normalize_unit_name "$1")"
+            shift
+            ;;
+        esac
+    done
+
+    [ -n "${unit}" ] || die "missing unit name"
+    dir="$(override_dir "${unit}")"
+    path="$(override_path "${unit}")"
+    [ -f "${path}" ] || die "Override file not found: ${path}"
+
+    if [ "${force}" -ne 1 ]; then
+        printf 'Remove %s? [y/N] ' "${path}"
+        read -r answer
+        case "${answer}" in
+        y | Y | yes | YES)
+            ;;
+        *)
+            echo "Canceled."
+            return 1
+            ;;
+        esac
+    fi
+
+    case "${path}" in
+    "${UNIT_DIR}/"*.service.d/override.conf | "${UNIT_DIR}/"*.timer.d/override.conf)
+        rm -f "${path}"
+        ;;
+    *)
+        die "Refuse to remove unexpected path: ${path}"
+        ;;
+    esac
+    case "${dir}" in
+    "${UNIT_DIR}/"*.service.d | "${UNIT_DIR}/"*.timer.d)
+        rmdir "${dir}" 2>/dev/null || true
+        ;;
+    esac
+    systemctl daemon-reload
+    echo "Removed: ${path}"
+}
+
+help() {
+    cat <<EOF
+Usage:
+  $(basename "$0") ${bold}CMD${reset} [ARGS...]
+
+${bold}Commands${reset}:
+  help                                      Show this help message
+  list [PATTERN...]                        List system service/timer unit files
+  timers [PATTERN...]                      List system timers
+  status NAME                              Show systemctl status for a unit
+  cat NAME                                 Show unit file content
+  logs [-f] [-n N] NAME                    Show journal logs for a unit
+  reload                                   Run systemctl daemon-reload
+
+  start NAME                               Start a system unit
+  stop NAME                                Stop a system unit
+  restart NAME                             Restart a system unit
+  enable NAME                              Enable a system unit
+  disable NAME                             Disable a system unit
+  enable-now NAME                          Enable and start a system unit
+  disable-now NAME                         Disable and stop a system unit
+
+  new-service NAME --exec CMD [OPTIONS]    Create /etc/systemd/system/NAME.service
+  new-timer NAME --calendar CAL [OPTIONS]  Create /etc/systemd/system/NAME.timer
+  verify NAME                              Run systemd-analyze verify
+  edit NAME                                Edit an existing system unit
+  override NAME                            Edit /etc systemd drop-in override.conf
+  override-cat NAME                        Show drop-in override.conf
+  override-rm [-f] NAME                    Remove drop-in override.conf
+  remove [-f] NAME                         Disable, stop and remove a unit file
+
+${bold}new-service options${reset}:
+  --exec CMD                               ExecStart value
+  --type TYPE                              Service Type, default: oneshot
+  --user USER                              Run service as this user
+  --workdir DIR                            WorkingDirectory value
+  --description TEXT                       Unit Description
+
+${bold}new-timer options${reset}:
+  --calendar CAL                           OnCalendar value, e.g. daily or *-*-* 00:00:00
+  --unit SERVICE                           Service to trigger, default: NAME.service
+  --description TEXT                       Unit Description
+  --no-persistent                          Do not run missed timer events after boot
+
+${bold}Examples${reset}:
+  $(basename "$0") new-service init-repo-update --exec "/bin/bash /opt/init/bootstrap/jobs/repo-update.sh update" --user eagle --workdir /opt/init
+  $(basename "$0") new-timer init-repo-update --calendar "*-*-* 00:00:00"
+  $(basename "$0") enable-now init-repo-update.timer
+  $(basename "$0") logs -n 200 init-repo-update
+  $(basename "$0") override nginx
+
+${bold}Notes${reset}:
+  This tool manages system units only. Files are written under ${UNIT_DIR}.
+  Package units under /lib/systemd/system are not edited directly; use override instead.
+  NAME can omit the .service suffix. Pass .timer explicitly for timer commands.
+  Write/control commands automatically re-run through sudo when needed.
+  Set SDCTL_NO_SUDO=1 to disable automatic sudo.
+EOF
+}
+
+auto_sudo_if_needed "$@"
+
+case "${1:-help}" in
+"" | -h | --help | help)
+    help
+    ;;
+list)
+    shift
+    list "$@"
+    ;;
+timers)
+    shift
+    timers "$@"
+    ;;
+status)
+    shift
+    status "$@"
+    ;;
+cat)
+    shift
+    cat_unit "$@"
+    ;;
+logs)
+    shift
+    logs "$@"
+    ;;
+reload)
+    shift
+    reload "$@"
+    ;;
+start)
+    shift
+    start "$@"
+    ;;
+stop)
+    shift
+    stop "$@"
+    ;;
+restart)
+    shift
+    restart "$@"
+    ;;
+enable)
+    shift
+    enable "$@"
+    ;;
+disable)
+    shift
+    disable "$@"
+    ;;
+enable-now)
+    shift
+    enable_now "$@"
+    ;;
+disable-now)
+    shift
+    disable_now "$@"
+    ;;
+new-service)
+    shift
+    new_service "$@"
+    ;;
+new-timer)
+    shift
+    new_timer "$@"
+    ;;
+verify)
+    shift
+    verify "$@"
+    ;;
+edit)
+    shift
+    edit "$@"
+    ;;
+override)
+    shift
+    override "$@"
+    ;;
+override-cat)
+    shift
+    override_cat "$@"
+    ;;
+override-rm)
+    shift
+    override_rm "$@"
+    ;;
+remove | rm)
+    shift
+    remove "$@"
+    ;;
+*)
+    print_error "Unknown command: $1"
+    help
+    exit 1
+    ;;
+esac
