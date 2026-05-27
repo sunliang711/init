@@ -334,6 +334,38 @@ EOF
     chmod +x "${TEST_BIN}/crontab"
 }
 
+install_fake_launchctl() {
+    cat >"${TEST_BIN}/launchctl" <<'EOF'
+#!/bin/sh
+set -eu
+
+printf '%s\n' "$*" >>"${TEST_STATE_DIR:?missing TEST_STATE_DIR}/launchctl.log"
+EOF
+    chmod +x "${TEST_BIN}/launchctl"
+}
+
+install_fake_uname() {
+    local os_name="${1:?missing os name}"
+
+    cat >"${TEST_BIN}/uname" <<EOF
+#!/bin/sh
+set -eu
+
+case "\${1:-}" in
+-s | "")
+    printf '%s\n' "${os_name}"
+    ;;
+-m)
+    printf 'arm64\n'
+    ;;
+*)
+    /usr/bin/uname "\$@"
+    ;;
+esac
+EOF
+    chmod +x "${TEST_BIN}/uname"
+}
+
 path_checks() {
     if rg -n '\.local/apps/init' "${RUNTIME_PATH_FILES[@]}" >/dev/null; then
         echo "Unexpected hardcoded init repo path found in runtime files:" >&2
@@ -694,6 +726,7 @@ test_update_init() {
     setup_test_env update
     install_fake_git
     install_fake_crontab
+    install_fake_uname Linux
 
     crontab_file="${TEST_STATE_DIR}/crontab.txt"
     printf '15 3 * * * echo existing\n' >"${crontab_file}"
@@ -719,6 +752,41 @@ test_update_init() {
     assert_file_not_contains "${crontab_file}" "${cron_fragment}"
 }
 
+test_update_init_macos_launch_agent() {
+    local agent_file
+    local crontab_file
+    local cron_fragment
+
+    setup_test_env update-macos
+    install_fake_git
+    install_fake_crontab
+    install_fake_launchctl
+    install_fake_uname Darwin
+
+    agent_file="${TEST_HOME}/Library/LaunchAgents/local.init.repo-update.plist"
+    crontab_file="${TEST_STATE_DIR}/crontab.txt"
+    cron_fragment="repo-update.sh update >/dev/null 2>&1"
+    printf '15 3 * * * echo existing\n0 0 * * * %s/bootstrap/jobs/repo-update.sh update >/dev/null 2>&1\n' "${ROOT_DIR}" >"${crontab_file}"
+
+    run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
+        bash "${ROOT_DIR}/bootstrap/jobs/repo-update.sh" install
+
+    assert_exists "${agent_file}"
+    assert_file_contains "${agent_file}" "<string>local.init.repo-update</string>"
+    assert_file_contains "${agent_file}" "<string>${ROOT_DIR}/bootstrap/jobs/repo-update.sh</string>"
+    assert_file_contains "${agent_file}" "<key>StartCalendarInterval</key>"
+    assert_file_contains "${TEST_STATE_DIR}/launchctl.log" "bootstrap gui/"
+    assert_file_contains "${TEST_STATE_DIR}/launchctl.log" "${agent_file}"
+    assert_file_contains "${crontab_file}" "15 3 * * * echo existing"
+    assert_file_not_contains "${crontab_file}" "${cron_fragment}"
+
+    run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
+        bash "${ROOT_DIR}/bootstrap/jobs/repo-update.sh" uninstall
+
+    assert_not_exists "${agent_file}"
+    assert_file_contains "${crontab_file}" "15 3 * * * echo existing"
+}
+
 integration_checks() {
     run test_runtime_targets_sudo_user_repo
     run test_runtime_targets_current_user_repo
@@ -733,6 +801,7 @@ integration_checks() {
     run test_vim_user_stops_on_clone_failure
     run test_vim_global_rejects_unsupported_os
     run test_update_init
+    run test_update_init_macos_launch_agent
 }
 
 bats_checks() {

@@ -118,7 +118,7 @@ describe_component() {
         echo "user vimrc and nerdtree plugin"
         ;;
     update)
-        echo "daily repo auto-update cron job"
+        echo "daily repo auto-update scheduler"
         ;;
     esac
 }
@@ -144,7 +144,7 @@ summarize_component_change() {
         echo "Copies ~/.vimrc and installs nerdtree under ~/.vim/pack."
         ;;
     install:update)
-        echo "Adds a crontab entry to update this repo every day."
+        echo "Adds a daily scheduler entry to update this repo."
         ;;
     uninstall:zsh)
         echo "Removes zsh artifacts managed by bootstrap/components/zsh-setup.sh."
@@ -156,7 +156,7 @@ summarize_component_change() {
         echo "Removes ~/.tmux.conf and ~/.tmux."
         ;;
     uninstall:update)
-        echo "Removes the repo auto-update crontab entry."
+        echo "Removes the repo auto-update scheduler entry."
         ;;
     check:git)
         echo "Checks Git prerequisites."
@@ -174,7 +174,7 @@ summarize_component_change() {
         echo "Checks vim prerequisites."
         ;;
     check:update)
-        echo "Checks cron availability for repo auto-update."
+        echo "Checks scheduler availability for repo auto-update."
         ;;
     *)
         echo "No summary available."
