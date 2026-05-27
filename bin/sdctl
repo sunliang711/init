@@ -40,7 +40,7 @@ require_command() {
 # 判断命令是否会修改 systemd 状态或 /etc/systemd/system 文件。
 command_requires_root() {
     case "${1:-}" in
-    reload | start | stop | restart | enable | disable | enable-now | disable-now | new-service | new-timer | edit | override | override-rm | remove | rm)
+    logs | reload | start | stop | restart | enable | disable | enable-now | disable-now | new-service | new-timer | edit | override | override-rm | remove | rm)
         return 0
         ;;
     *)
@@ -1018,7 +1018,7 @@ ${bold}Notes${reset}:
   This tool manages system units only. Files are written under ${UNIT_DIR}.
   Package units under /lib/systemd/system are not edited directly; use override instead.
   NAME can omit the .service suffix. Pass .timer explicitly for timer commands.
-  Write/control commands automatically re-run through sudo when needed.
+  Logs and write/control commands automatically re-run through sudo when needed.
   Set SDCTL_NO_SUDO=1 to disable automatic sudo.
   Long output is paged with less -FRX in interactive terminals.
 EOF
