@@ -538,7 +538,7 @@ logs() {
     done
 
     unit="$(normalize_unit_name "${1:?missing unit name}")"
-    journal_args=(-u "${unit}" -n "${lines}")
+    journal_args=(-q -u "${unit}" -n "${lines}")
     if [ "${follow}" -eq 1 ]; then
         journal_args+=(-f)
         journalctl "${journal_args[@]}"
