@@ -4,6 +4,7 @@ if (($EUID!=0));then
     echo "need root!"
     exit 1
 fi
+
 version=$(lsb_release -a 2>/dev/null | grep -oP 'Release'|grep -oP '\d.+')
 if [[ "$version" == "14.04" ]];then
 case "$version" in
