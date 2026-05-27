@@ -187,10 +187,17 @@ ensure_new_unit_file() {
     [ ! -e "${path}" ] || die "Unit file already exists: ${path}"
 }
 
+# 判断 systemd 是否能解析指定 system unit。
+system_unit_known() {
+    local unit="${1:?missing unit name}"
+
+    systemctl_no_pager cat "${unit}" >/dev/null 2>&1
+}
+
 ensure_system_unit_known() {
     local unit="${1:?missing unit name}"
 
-    systemctl_no_pager cat "${unit}" >/dev/null || die "Unit is not known to systemd: ${unit}"
+    system_unit_known "${unit}" || die "Unit is not known to systemd: ${unit}"
 }
 
 ensure_no_newline() {
@@ -766,6 +773,10 @@ new_timer() {
     chmod 644 "${path}"
     systemctl daemon-reload
     echo "Created: ${path}"
+    echo "Linked service: ${service_unit}"
+    if ! system_unit_known "${service_unit}"; then
+        echo "Warning: linked service not found: ${service_unit}" >&2
+    fi
 }
 
 verify() {
