@@ -632,6 +632,8 @@ new_service() {
     local service_type="oneshot"
     local service_user=""
     local workdir=""
+    local edit_after_create=0
+    local editor=""
 
     require_systemd_linux
     require_root
@@ -666,6 +668,10 @@ new_service() {
             [ "$#" -ge 2 ] || die "--description requires text."
             description="$2"
             shift 2
+            ;;
+        --edit)
+            edit_after_create=1
+            shift
             ;;
         *)
             die "Unknown new-service option: $1"
@@ -705,6 +711,11 @@ new_service() {
         printf 'WantedBy=multi-user.target\n'
     } >"${path}"
     chmod 644 "${path}"
+    if [ "${edit_after_create}" -eq 1 ]; then
+        # 编辑器成功退出后再 reload，避免半成品 unit 被加载。
+        editor="$(choose_editor)"
+        "${editor}" "${path}" || die "Editor failed. Unit file was created but systemd was not reloaded: ${path}"
+    fi
     systemctl daemon-reload
     echo "Created: ${path}"
 }
@@ -717,6 +728,9 @@ new_timer() {
     local calendar=""
     local service_unit=""
     local persistent="true"
+    local edit_after_create=0
+    local editor=""
+    local resolved_service_unit=""
 
     require_systemd_linux
     require_root
@@ -747,6 +761,10 @@ new_timer() {
             persistent="false"
             shift
             ;;
+        --edit)
+            edit_after_create=1
+            shift
+            ;;
         *)
             die "Unknown new-timer option: $1"
             ;;
@@ -771,7 +789,16 @@ new_timer() {
         printf 'WantedBy=timers.target\n'
     } >"${path}"
     chmod 644 "${path}"
+    if [ "${edit_after_create}" -eq 1 ]; then
+        # 编辑器成功退出后再 reload，避免半成品 unit 被加载。
+        editor="$(choose_editor)"
+        "${editor}" "${path}" || die "Editor failed. Unit file was created but systemd was not reloaded: ${path}"
+    fi
     systemctl daemon-reload
+    resolved_service_unit="$(systemctl_no_pager show "${unit}" --property=Unit --value 2>/dev/null || true)"
+    if [ -n "${resolved_service_unit}" ]; then
+        service_unit="${resolved_service_unit}"
+    fi
     echo "Created: ${path}"
     echo "Linked service: ${service_unit}"
     if ! system_unit_known "${service_unit}"; then
@@ -1001,12 +1028,14 @@ ${bold}new-service options${reset}:
   --user USER                              Run service as this user
   --workdir DIR                            WorkingDirectory value
   --description TEXT                       Unit Description
+  --edit                                   Edit the created unit before daemon-reload
 
 ${bold}new-timer options${reset}:
   --calendar CAL                           OnCalendar value, e.g. daily or *-*-* 00:00:00
   --unit SERVICE                           Service to trigger, default: NAME.service
   --description TEXT                       Unit Description
   --no-persistent                          Do not run missed timer events after boot
+  --edit                                   Edit the created unit before daemon-reload
 
 ${bold}list options${reset}:
   --etc                                    List units under /etc/systemd/system
