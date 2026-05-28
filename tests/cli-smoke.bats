@@ -17,3 +17,12 @@ setup() {
     [ "${status}" -eq 0 ]
     [[ "${output}" == *"update"* ]]
 }
+
+@test "sdctl help documents dump command" {
+    run bash "${REPO_ROOT}/bin/sdctl" help
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"dump SRC_NAME DST_NAME"* ]]
+    [[ "${output}" == *"/lib/systemd/system"* ]]
+    [[ "${output}" == *"/usr/lib/systemd/system"* ]]
+}

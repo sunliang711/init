@@ -3,6 +3,11 @@
 set -euo pipefail
 
 UNIT_DIR="/etc/systemd/system"
+UNIT_SOURCE_DIRS=(
+    "/etc/systemd/system"
+    "/lib/systemd/system"
+    "/usr/lib/systemd/system"
+)
 
 if command -v tput >/dev/null 2>&1 && [ -t 1 ]; then
     bold="$(tput bold 2>/dev/null || true)"
@@ -40,7 +45,7 @@ require_command() {
 # 判断命令是否会修改 systemd 状态或 /etc/systemd/system 文件。
 command_requires_root() {
     case "${1:-}" in
-    logs | reload | start | stop | restart | enable | disable | enable-now | disable-now | new-service | new-timer | edit | override | override-rm | remove | rm)
+    logs | reload | start | stop | restart | enable | disable | enable-now | disable-now | new-service | new-timer | dump | edit | override | override-rm | remove | rm)
         return 0
         ;;
     *)
@@ -153,6 +158,22 @@ normalize_unit_name() {
     fi
 }
 
+# 按源 unit 类型补全目标名称，避免 timer 被复制成 service。
+normalize_dump_destination_name() {
+    local name="${1:?missing destination unit name}"
+    local source_unit="${2:?missing source unit name}"
+    local source_type
+
+    validate_unit_name "${name}"
+    source_type="${source_unit##*.}"
+    if has_unit_suffix "${name}"; then
+        [ "${name##*.}" = "${source_type}" ] || die "Destination unit type must match source: ${source_unit}"
+        printf '%s\n' "${name}"
+    else
+        printf '%s.%s\n' "${name}" "${source_type}"
+    fi
+}
+
 unit_path() {
     local unit="${1:?missing unit name}"
 
@@ -185,6 +206,22 @@ ensure_new_unit_file() {
 
     path="$(unit_path "${unit}")"
     [ ! -e "${path}" ] || die "Unit file already exists: ${path}"
+}
+
+# 只从支持的 system unit 目录查找 dump 源文件。
+find_unit_source_path() {
+    local unit="${1:?missing unit name}"
+    local dir
+    local path
+
+    for dir in "${UNIT_SOURCE_DIRS[@]}"; do
+        path="${dir}/${unit}"
+        if [ -f "${path}" ] || [ -L "${path}" ]; then
+            printf '%s\n' "${path}"
+            return 0
+        fi
+    done
+    return 1
 }
 
 # 判断 systemd 是否能解析指定 system unit。
@@ -818,6 +855,34 @@ verify() {
     systemd-analyze verify "${path}"
 }
 
+# 复制已有 system unit 到 /etc/systemd/system，并在 daemon-reload 前交给编辑器调整。
+dump() {
+    local src_unit
+    local dst_unit
+    local src_path
+    local dst_path
+    local editor
+
+    require_systemd_linux
+    require_root
+    src_unit="$(normalize_unit_name "${1:?missing source unit name}")"
+    dst_unit="$(normalize_dump_destination_name "${2:?missing destination unit name}" "${src_unit}")"
+    src_path="$(find_unit_source_path "${src_unit}")" || die "Unit file not found in /etc, /lib or /usr/lib: ${src_unit}"
+    ensure_new_unit_file "${dst_unit}"
+    dst_path="$(unit_path "${dst_unit}")"
+    [ -d "${UNIT_DIR}" ] || die "Unit directory not found: ${UNIT_DIR}"
+    [ -w "${UNIT_DIR}" ] || die "Unit directory is not writable: ${UNIT_DIR}"
+    [ -r "${src_path}" ] || die "Unit file is not readable: ${src_path}"
+
+    # 写入前已经完成源、目标和权限检查，避免覆盖已有 unit。
+    cp "${src_path}" "${dst_path}" || die "Failed to copy: ${src_path} -> ${dst_path}"
+    chmod 644 "${dst_path}" || die "Failed to chmod: ${dst_path}"
+    editor="$(choose_editor)"
+    "${editor}" "${dst_path}" || die "Editor failed. Unit file was copied but systemd was not reloaded: ${dst_path}"
+    systemctl daemon-reload
+    echo "Copied: ${src_path} -> ${dst_path}"
+}
+
 remove() {
     local force=0
     local unit=""
@@ -1016,6 +1081,7 @@ ${bold}Commands${reset}:
   new-service NAME --exec CMD [OPTIONS]    Create /etc/systemd/system/NAME.service
   new-timer NAME --calendar CAL [OPTIONS]  Create /etc/systemd/system/NAME.timer
   verify NAME                              Run systemd-analyze verify
+  dump SRC_NAME DST_NAME                   Copy a service/timer unit file and edit it
   edit NAME                                Edit an existing system unit
   override NAME                            Edit /etc systemd drop-in override.conf
   override-cat NAME                        Show drop-in override.conf
@@ -1048,6 +1114,7 @@ ${bold}list options${reset}:
 ${bold}Examples${reset}:
   $(basename "$0") new-service init-repo-update --exec "/bin/bash /opt/init/bootstrap/jobs/repo-update.sh update" --user eagle --workdir /opt/init
   $(basename "$0") new-timer init-repo-update --calendar "*-*-* 00:00:00"
+  $(basename "$0") dump ssh custom-ssh
   $(basename "$0") enable-now init-repo-update.timer
   $(basename "$0") logs -n 200 init-repo-update
   $(basename "$0") override nginx
@@ -1056,6 +1123,7 @@ ${bold}Examples${reset}:
 
 ${bold}Notes${reset}:
   This tool manages system units only. Files are written under ${UNIT_DIR}.
+  dump searches source files under /etc/systemd/system, /lib/systemd/system and /usr/lib/systemd/system.
   Package units under /lib/systemd/system are not edited directly; use override instead.
   NAME can omit the .service suffix. Pass .timer explicitly for timer commands.
   Logs and write/control commands automatically re-run through sudo when needed.
@@ -1137,6 +1205,10 @@ new-timer)
 verify)
     shift
     verify "$@"
+    ;;
+dump)
+    shift
+    dump "$@"
     ;;
 edit)
     shift
