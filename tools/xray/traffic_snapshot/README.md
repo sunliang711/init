@@ -99,6 +99,18 @@ xray api statsquery --server=127.0.0.1:18080 -reset=true
 
 ## 查询示例
 
+查看上次 reset 后的当前累计流量：
+
+```bash
+/opt/xray-traffic/bin/xray_traffic.py current
+```
+
+查看某个用户的当前累计流量：
+
+```bash
+/opt/xray-traffic/bin/xray_traffic.py current --scope user --name alice
+```
+
 查看当前实时速率：
 
 ```bash

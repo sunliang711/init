@@ -626,6 +626,59 @@ def read_current_counters(config: AppConfig) -> Dict[CounterKey, int]:
     return stats_to_counters(parse_stats(raw_output))
 
 
+def calculate_current_totals(
+    counters: Dict[CounterKey, int],
+    scope_filter: Optional[str],
+    name_filter: Optional[str],
+) -> List[Tuple[str, str, int, int, int]]:
+    """将当前累计计数按 scope/name 汇总，适用于 current 子命令输出。"""
+
+    grouped: Dict[Tuple[str, str], Dict[str, int]] = {}
+    for scope, name, direction in sorted(counters):
+        if scope_filter and scope != scope_filter:
+            continue
+        if name_filter and name != name_filter:
+            continue
+
+        item = grouped.setdefault((scope, name), {"up": 0, "down": 0})
+        item[direction] = item.get(direction, 0) + counters[(scope, name, direction)]
+
+    rows = []
+    for (scope, name), values in grouped.items():
+        up_bytes = values.get("up", 0)
+        down_bytes = values.get("down", 0)
+        total_bytes = up_bytes + down_bytes
+        if total_bytes <= 0:
+            continue
+        rows.append((scope, name, up_bytes, down_bytes, total_bytes))
+    rows.sort(key=lambda row: (-row[4], row[0], row[1]))
+    return rows
+
+
+def write_current_table(rows: Sequence[Tuple[str, str, int, int, int]], output: TextIO) -> None:
+    """输出当前累计流量表格，适用于 current 子命令的人类可读结果。"""
+
+    output.write(f"{'Scope':<10} {'Name':<30} {'Up':>12} {'Down':>12} {'Total':>12}\n")
+    output.write(f"{'-' * 10} {'-' * 30} {'-' * 12} {'-' * 12} {'-' * 12}\n")
+    for scope, name, up_bytes, down_bytes, total_bytes in rows:
+        output.write(
+            f"{scope:<10} {name:<30} "
+            f"{format_bytes(up_bytes):>12} {format_bytes(down_bytes):>12} {format_bytes(total_bytes):>12}\n"
+        )
+
+
+def command_current(args: argparse.Namespace, config: AppConfig) -> int:
+    """查询上次 reset 后的当前累计流量，适用于不落库的即时累计查看。"""
+
+    counters = read_current_counters(config)
+    rows = calculate_current_totals(counters, args.scope, args.name)
+    if rows:
+        write_current_table(rows, sys.stdout)
+    else:
+        sys.stdout.write("No current traffic counters found\n")
+    return 0
+
+
 def calculate_realtime_rates(
     before: Dict[CounterKey, int],
     after: Dict[CounterKey, int],
@@ -943,6 +996,11 @@ def build_parser() -> argparse.ArgumentParser:
     daily_parser = subparsers.add_parser("daily", help="聚合每日快照")
     daily_parser.add_argument("--date", help="聚合指定日期，格式 YYYY-MM-DD；默认昨天")
     daily_parser.set_defaults(func=command_daily)
+
+    current_parser = subparsers.add_parser("current", help="查看上次 reset 后的当前累计流量")
+    current_parser.add_argument("--scope", choices=VALID_SCOPES, help="过滤统计范围")
+    current_parser.add_argument("--name", help="过滤用户名、inbound tag 或 outbound tag")
+    current_parser.set_defaults(func=command_current)
 
     realtime_parser = subparsers.add_parser("realtime", help="查看实时流量速率")
     realtime_parser.add_argument("--interval", type=float, default=1.0, help="采样间隔秒数，默认 1")
