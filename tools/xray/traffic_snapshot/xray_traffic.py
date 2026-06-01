@@ -796,6 +796,90 @@ def write_summary_table(rows: Sequence[sqlite3.Row], output: TextIO) -> None:
         )
 
 
+def format_period_label(period: str, start_ts: int, tzinfo: timezone) -> str:
+    """格式化快照时间标签，适用于 show 子命令按小时或天展示。"""
+
+    start_dt = datetime.fromtimestamp(start_ts, tzinfo)
+    if period == "hourly":
+        return start_dt.strftime("%Y-%m-%d %H:00")
+    return start_dt.strftime("%Y-%m-%d")
+
+
+def resolve_show_time_range(args: argparse.Namespace, tzinfo: timezone) -> Tuple[int, int]:
+    """解析 show 子命令的时间范围，默认 hourly 查 1 天、daily 查 7 天。"""
+
+    if args.date:
+        return date_range_for_day(parse_day(args.date), tzinfo)
+
+    days = args.days
+    if days is None:
+        days = 1 if args.period == "hourly" else 7
+    if days <= 0:
+        raise CliError("--days must be greater than 0")
+
+    end_ts = now_ts()
+    start_ts = end_ts - days * 86400
+    return start_ts, end_ts
+
+
+def write_show_table(period: str, rows: Sequence[sqlite3.Row], tzinfo: timezone, output: TextIO) -> None:
+    """输出按小时或天聚合后的流量表格，适用于日常查看已存储流量。"""
+
+    label = "Hour" if period == "hourly" else "Day"
+    output.write(f"{label:<16} {'Scope':<10} {'Name':<30} {'Up':>12} {'Down':>12} {'Total':>12}\n")
+    output.write(f"{'-' * 16} {'-' * 10} {'-' * 30} {'-' * 12} {'-' * 12} {'-' * 12}\n")
+    for row in rows:
+        up_bytes = int(row["up_bytes"] or 0)
+        down_bytes = int(row["down_bytes"] or 0)
+        total_bytes = int(row["total_bytes"] or 0)
+        output.write(
+            f"{format_period_label(period, int(row['start_ts']), tzinfo):<16} "
+            f"{row['scope']:<10} {row['name']:<30} "
+            f"{format_bytes(up_bytes):>12} {format_bytes(down_bytes):>12} {format_bytes(total_bytes):>12}\n"
+        )
+
+
+def command_show(args: argparse.Namespace, config: AppConfig) -> int:
+    """按小时或天查看已存储流量，适用于替代 query 的日常阅读场景。"""
+
+    tzinfo = get_timezone(config)
+    start_ts, end_ts = resolve_show_time_range(args, tzinfo)
+    filters = ["period = ?", "start_ts >= ?", "start_ts < ?"]
+    params: List[Any] = [args.period, start_ts, end_ts]
+
+    if args.scope:
+        filters.append("scope = ?")
+        params.append(args.scope)
+    if args.name:
+        filters.append("name = ?")
+        params.append(args.name)
+
+    params.append(args.limit)
+    query = f"""
+        SELECT
+            start_ts,
+            scope,
+            name,
+            SUM(CASE WHEN direction = 'up' THEN bytes ELSE 0 END) AS up_bytes,
+            SUM(CASE WHEN direction = 'down' THEN bytes ELSE 0 END) AS down_bytes,
+            SUM(bytes) AS total_bytes
+        FROM traffic_records
+        WHERE {' AND '.join(filters)}
+        GROUP BY start_ts, scope, name
+        ORDER BY start_ts DESC, total_bytes DESC, scope ASC, name ASC
+        LIMIT ?
+    """
+
+    with open_database(config.db_path) as connection:
+        rows = connection.execute(query, params).fetchall()
+
+    if not rows:
+        sys.stdout.write("No records found\n")
+        return 0
+    write_show_table(args.period, rows, tzinfo, sys.stdout)
+    return 0
+
+
 def command_summary(args: argparse.Namespace, config: AppConfig) -> int:
     """按条件输出流量汇总，适用于按用户、入口或出口做统计。"""
 
@@ -1008,6 +1092,15 @@ def build_parser() -> argparse.ArgumentParser:
     realtime_parser.add_argument("--scope", choices=VALID_SCOPES, help="过滤统计范围")
     realtime_parser.add_argument("--name", help="过滤用户名、inbound tag 或 outbound tag")
     realtime_parser.set_defaults(func=command_realtime)
+
+    show_parser = subparsers.add_parser("show", help="按小时或天查看已存储流量")
+    show_parser.add_argument("period", nargs="?", choices=("hourly", "daily"), default="hourly", help="查看周期，默认 hourly")
+    show_parser.add_argument("--scope", choices=VALID_SCOPES, help="过滤统计范围")
+    show_parser.add_argument("--name", help="过滤用户名、inbound tag 或 outbound tag")
+    show_parser.add_argument("--date", help="查看单日，格式 YYYY-MM-DD")
+    show_parser.add_argument("--days", type=int, help="查看最近 N 天；hourly 默认 1，daily 默认 7")
+    show_parser.add_argument("--limit", type=int, default=500, help="最多输出行数，默认 500")
+    show_parser.set_defaults(func=command_show)
 
     summary_parser = subparsers.add_parser("summary", help="按条件汇总流量")
     add_common_query_options(summary_parser)

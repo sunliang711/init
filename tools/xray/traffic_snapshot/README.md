@@ -129,16 +129,28 @@ xray api statsquery --server=127.0.0.1:18080 -reset=true
 /opt/xray-traffic/bin/xray_traffic.py summary --period daily --scope user --days 7
 ```
 
-查看今天小时用户汇总：
+按小时查看已存储流量：
 
 ```bash
-/opt/xray-traffic/bin/xray_traffic.py summary --period hourly --scope user --date 2026-06-01
+/opt/xray-traffic/bin/xray_traffic.py show hourly
 ```
 
-查看某个用户的明细：
+按天查看已存储流量：
 
 ```bash
-/opt/xray-traffic/bin/xray_traffic.py query --period hourly --scope user --name alice --days 1
+/opt/xray-traffic/bin/xray_traffic.py show daily
+```
+
+只查看用户维度的小时流量：
+
+```bash
+/opt/xray-traffic/bin/xray_traffic.py show hourly --scope user
+```
+
+查看原始明细记录：
+
+```bash
+/opt/xray-traffic/bin/xray_traffic.py query --period hourly --days 1 --limit 200
 ```
 
 导出 CSV：
