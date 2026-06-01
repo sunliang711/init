@@ -826,17 +826,23 @@ def write_show_table(period: str, rows: Sequence[sqlite3.Row], tzinfo: timezone,
     """输出按小时或天聚合后的流量表格，适用于日常查看已存储流量。"""
 
     label = "Hour" if period == "hourly" else "Day"
+    separator = f"{'-' * 16} {'-' * 10} {'-' * 30} {'-' * 12} {'-' * 12} {'-' * 12}"
     output.write(f"{label:<16} {'Scope':<10} {'Name':<30} {'Up':>12} {'Down':>12} {'Total':>12}\n")
-    output.write(f"{'-' * 16} {'-' * 10} {'-' * 30} {'-' * 12} {'-' * 12} {'-' * 12}\n")
+    output.write(f"{separator}\n")
+    last_period_label = ""
     for row in rows:
         up_bytes = int(row["up_bytes"] or 0)
         down_bytes = int(row["down_bytes"] or 0)
         total_bytes = int(row["total_bytes"] or 0)
+        current_period_label = format_period_label(period, int(row["start_ts"]), tzinfo)
+        if last_period_label and current_period_label != last_period_label:
+            output.write(f"{separator}\n")
         output.write(
-            f"{format_period_label(period, int(row['start_ts']), tzinfo):<16} "
+            f"{current_period_label:<16} "
             f"{row['scope']:<10} {row['name']:<30} "
             f"{format_bytes(up_bytes):>12} {format_bytes(down_bytes):>12} {format_bytes(total_bytes):>12}\n"
         )
+        last_period_label = current_period_label
 
 
 def command_show(args: argparse.Namespace, config: AppConfig) -> int:
