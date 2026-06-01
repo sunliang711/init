@@ -12,6 +12,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import time as time_module
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -32,6 +33,7 @@ DEFAULT_RETENTION_DAYS = 180
 DEFAULT_TIMEOUT_SECONDS = 30
 VALID_SCOPES = ("inbound", "outbound", "user")
 VALID_DIRECTIONS = ("up", "down")
+CounterKey = Tuple[str, str, str]
 
 
 class CliError(Exception):
@@ -435,16 +437,10 @@ def parse_stats(output: str) -> List[ParsedStat]:
     return parse_text_stats(output)
 
 
-def normalize_stats(
-    stats: Iterable[ParsedStat],
-    period: str,
-    start_ts: int,
-    end_ts: int,
-    tzinfo: timezone,
-) -> List[TrafficRecord]:
-    """将 Xray 原始统计名转换为 scope/name/direction 结构，适用于统一入库。"""
+def stats_to_counters(stats: Iterable[ParsedStat]) -> Dict[CounterKey, int]:
+    """将 Xray 原始统计转换为计数字典，适用于入库和实时速率计算。"""
 
-    merged: Dict[Tuple[str, str, str], int] = {}
+    counters: Dict[CounterKey, int] = {}
     for stat in stats:
         parts = stat.name.split(">>>")
         if len(parts) < 4 or parts[2] != "traffic":
@@ -466,8 +462,20 @@ def normalize_stats(
             continue
 
         key = (scope, item_name, direction)
-        merged[key] = merged.get(key, 0) + stat.value
+        counters[key] = counters.get(key, 0) + stat.value
+    return counters
 
+
+def normalize_stats(
+    stats: Iterable[ParsedStat],
+    period: str,
+    start_ts: int,
+    end_ts: int,
+    tzinfo: timezone,
+) -> List[TrafficRecord]:
+    """将 Xray 原始统计名转换为 scope/name/direction 结构，适用于统一入库。"""
+
+    counters = stats_to_counters(stats)
     start_time = isoformat(start_ts, tzinfo)
     end_time = isoformat(end_ts, tzinfo)
     records = [
@@ -482,7 +490,7 @@ def normalize_stats(
             direction=direction,
             bytes_value=bytes_value,
         )
-        for (scope, name, direction), bytes_value in sorted(merged.items())
+        for (scope, name, direction), bytes_value in sorted(counters.items())
     ]
     return records
 
@@ -611,6 +619,93 @@ def command_daily(args: argparse.Namespace, config: AppConfig) -> int:
     return 0
 
 
+def read_current_counters(config: AppConfig) -> Dict[CounterKey, int]:
+    """读取当前 Xray 统计计数且不 reset，适用于实时速率采样。"""
+
+    raw_output = run_statsquery(config, reset=False)
+    return stats_to_counters(parse_stats(raw_output))
+
+
+def calculate_realtime_rates(
+    before: Dict[CounterKey, int],
+    after: Dict[CounterKey, int],
+    elapsed: float,
+    scope_filter: Optional[str],
+    name_filter: Optional[str],
+) -> List[Tuple[str, str, float, float, float]]:
+    """根据两次累计计数计算实时速率，适用于 realtime 子命令输出。"""
+
+    if elapsed <= 0:
+        raise CliError("elapsed time must be greater than 0")
+
+    grouped: Dict[Tuple[str, str], Dict[str, float]] = {}
+    for scope, name, direction in sorted(set(before) | set(after)):
+        if scope_filter and scope != scope_filter:
+            continue
+        if name_filter and name != name_filter:
+            continue
+
+        delta = after.get((scope, name, direction), 0) - before.get((scope, name, direction), 0)
+        if delta < 0:
+            # 采样期间如果 hourly timer reset 了 Xray 计数，避免展示负速率。
+            delta = 0
+
+        item = grouped.setdefault((scope, name), {"up": 0.0, "down": 0.0})
+        item[direction] = item.get(direction, 0.0) + delta / elapsed
+
+    rows = []
+    for (scope, name), values in grouped.items():
+        up_rate = values.get("up", 0.0)
+        down_rate = values.get("down", 0.0)
+        total_rate = up_rate + down_rate
+        if total_rate <= 0:
+            continue
+        rows.append((scope, name, up_rate, down_rate, total_rate))
+    rows.sort(key=lambda row: (-row[4], row[0], row[1]))
+    return rows
+
+
+def write_realtime_table(rows: Sequence[Tuple[str, str, float, float, float]], output: TextIO) -> None:
+    """输出实时速率表格，适用于 realtime 子命令的人类可读结果。"""
+
+    output.write(f"{'Scope':<10} {'Name':<30} {'Up/s':>12} {'Down/s':>12} {'Total/s':>12}\n")
+    output.write(f"{'-' * 10} {'-' * 30} {'-' * 12} {'-' * 12} {'-' * 12}\n")
+    for scope, name, up_rate, down_rate, total_rate in rows:
+        output.write(
+            f"{scope:<10} {name:<30} "
+            f"{format_rate(up_rate):>12} {format_rate(down_rate):>12} {format_rate(total_rate):>12}\n"
+        )
+
+
+def command_realtime(args: argparse.Namespace, config: AppConfig) -> int:
+    """采样并输出实时流量速率，适用于不落库的即时观测。"""
+
+    if args.interval <= 0:
+        raise CliError("--interval must be greater than 0")
+    if args.count <= 0:
+        raise CliError("--count must be greater than 0")
+
+    before = read_current_counters(config)
+    for index in range(args.count):
+        start_monotonic = time_module.monotonic()
+        time_module.sleep(args.interval)
+        after = read_current_counters(config)
+        elapsed = time_module.monotonic() - start_monotonic
+        rows = calculate_realtime_rates(before, after, elapsed, args.scope, args.name)
+
+        if args.count > 1:
+            sampled_at = datetime.now(get_timezone(config)).replace(microsecond=0).isoformat()
+            sys.stdout.write(f"Sample {index + 1}/{args.count} at {sampled_at}, elapsed={elapsed:.3f}s\n")
+        if rows:
+            write_realtime_table(rows, sys.stdout)
+        else:
+            sys.stdout.write("No active traffic\n")
+        if index + 1 < args.count:
+            sys.stdout.write("\n")
+        before = after
+    return 0
+
+
 def format_bytes(value: int) -> str:
     """将字节数格式化为 IEC 单位，适用于终端表格展示。"""
 
@@ -623,6 +718,14 @@ def format_bytes(value: int) -> str:
             return f"{size:.2f}{unit}"
         size /= 1024.0
     return f"{value}B"
+
+
+def format_rate(value: float) -> str:
+    """将每秒速率格式化为 IEC 单位，适用于 realtime 子命令展示。"""
+
+    if value < 1:
+        return f"{value:.2f}B/s"
+    return f"{format_bytes(int(round(value)))}/s"
 
 
 def write_summary_table(rows: Sequence[sqlite3.Row], output: TextIO) -> None:
@@ -840,6 +943,13 @@ def build_parser() -> argparse.ArgumentParser:
     daily_parser = subparsers.add_parser("daily", help="聚合每日快照")
     daily_parser.add_argument("--date", help="聚合指定日期，格式 YYYY-MM-DD；默认昨天")
     daily_parser.set_defaults(func=command_daily)
+
+    realtime_parser = subparsers.add_parser("realtime", help="查看实时流量速率")
+    realtime_parser.add_argument("--interval", type=float, default=1.0, help="采样间隔秒数，默认 1")
+    realtime_parser.add_argument("--count", type=int, default=1, help="采样次数，默认 1")
+    realtime_parser.add_argument("--scope", choices=VALID_SCOPES, help="过滤统计范围")
+    realtime_parser.add_argument("--name", help="过滤用户名、inbound tag 或 outbound tag")
+    realtime_parser.set_defaults(func=command_realtime)
 
     summary_parser = subparsers.add_parser("summary", help="按条件汇总流量")
     add_common_query_options(summary_parser)

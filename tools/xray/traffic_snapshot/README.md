@@ -1,6 +1,6 @@
 # Xray Traffic Snapshot
 
-`xray_traffic.py` 用 Python 标准库实现 Xray 流量小时快照、每日聚合、查询、统计、导出和清理。
+`xray_traffic.py` 用 Python 标准库实现 Xray 流量小时快照、每日聚合、实时速率、查询、统计、导出和清理。
 
 运行环境要求 Python 3.9+，因为脚本使用标准库 `zoneinfo` 处理时区。
 
@@ -98,6 +98,18 @@ xray api statsquery --server=127.0.0.1:18080 -reset=true
 因此小时记录保存的是两次采集之间的增量。`daily` 不再调用 Xray，只从 SQLite 中的 `hourly` 记录聚合。
 
 ## 查询示例
+
+查看当前实时速率：
+
+```bash
+/opt/xray-traffic/bin/xray_traffic.py realtime
+```
+
+连续查看 5 次用户实时速率：
+
+```bash
+/opt/xray-traffic/bin/xray_traffic.py realtime --scope user --interval 1 --count 5
+```
 
 查看最近 7 天每日用户汇总：
 
