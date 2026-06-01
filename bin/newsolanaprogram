@@ -313,7 +313,6 @@ if [ -n "${editor}" ]; then
     ed=${editor}
 fi
 
-
 # available VARs: user, home, rootID
 # available color vars: RED GREEN YELLOW BLUE CYAN BOLD NORMAL
 # available functions:
@@ -388,7 +387,7 @@ _example() {
     # TODO
 }
 
-newprogram(){
+newprogram() {
     name=${1:?'missing solana program name'}
     echo "create solana program: ${name}"
     cp -r "${this}/../templates/projects/solana-program" "${name}"
@@ -414,7 +413,7 @@ EOF2
 }
 
 case "$1" in
- -h | --help | help)
+-h | --help | help)
     _help
     ;;
 *)

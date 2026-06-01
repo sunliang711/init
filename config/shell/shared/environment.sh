@@ -32,7 +32,6 @@ append_paths /usr/sbin /usr/bin
 
 append_paths /sbin /bin
 
-
 #BEGIN custom PATH
 
 #END custom PATH

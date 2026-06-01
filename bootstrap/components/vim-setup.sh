@@ -159,5 +159,4 @@ uninstall() {
     log SUCCESS "Done"
 }
 
-
 dispatch_cli show_help resolve_cli_handler "$@"

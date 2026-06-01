@@ -41,8 +41,28 @@ BASH_SYNTAX_FILES=(
     "${ROOT_DIR}/bin/newsolanaprogram"
     "${ROOT_DIR}/bin/sdctl"
 )
+# functions.sh 同时包含 bash 和 zsh 专用语法，shfmt 不能用单一 dialect 正确解析。
 SHFMT_FILES=(
-    "${BASH_SYNTAX_FILES[@]}"
+    "${ROOT_DIR}/install.sh"
+    "${ROOT_DIR}/bootstrap/lib/runtime.sh"
+    "${ROOT_DIR}/bootstrap/verify.sh"
+    "${ROOT_DIR}/bootstrap/components/git-config.sh"
+    "${ROOT_DIR}/bootstrap/components/zsh-setup.sh"
+    "${ROOT_DIR}/bootstrap/components/fzf.sh"
+    "${ROOT_DIR}/bootstrap/components/tmux-setup.sh"
+    "${ROOT_DIR}/bootstrap/components/vim-setup.sh"
+    "${ROOT_DIR}/bootstrap/jobs/repo-update.sh"
+    "${ROOT_DIR}/config/shell/init.sh"
+    "${ROOT_DIR}/config/shell/local.example.sh"
+    "${ROOT_DIR}/config/shell/shared/colors.sh"
+    "${ROOT_DIR}/config/shell/shared/environment.sh"
+    "${ROOT_DIR}/config/shell/shared/aliases.sh"
+    "${ROOT_DIR}/config/shell/shared/extras.sh"
+    "${ROOT_DIR}/config/shell/shared/shelllib.sh"
+    "${ROOT_DIR}/bin/newsh"
+    "${ROOT_DIR}/bin/newrust"
+    "${ROOT_DIR}/bin/newsolanaprogram"
+    "${ROOT_DIR}/bin/sdctl"
 )
 SHELLCHECK_FILES=(
     "${ROOT_DIR}/bootstrap/lib/runtime.sh"

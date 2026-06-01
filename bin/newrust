@@ -313,7 +313,6 @@ if [ -n "${editor}" ]; then
     ed=${editor}
 fi
 
-
 # available VARs: user, home, rootID
 # available color vars: RED GREEN YELLOW BLUE CYAN BOLD NORMAL
 # available functions:
@@ -388,7 +387,7 @@ _example() {
     # TODO
 }
 
-new(){
+new() {
     projectName=${1:?'missing project name'}
     set -e
 
@@ -400,7 +399,6 @@ new(){
 
 # write your code above
 ###############################################################################
-
 
 em() {
     $ed $0

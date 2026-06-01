@@ -60,7 +60,7 @@ parse_component_tokens() {
     local IFS=','
     local -a parts=()
 
-    read -r -a parts <<< "$raw"
+    read -r -a parts <<<"$raw"
     for token in "${parts[@]}"; do
         token="$(trim_whitespace "$token")"
         [ -z "$token" ] && continue

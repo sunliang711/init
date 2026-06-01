@@ -252,5 +252,4 @@ uninstall() {
     cleanup_state_file
 }
 
-
 dispatch_cli show_help resolve_cli_handler "$@"

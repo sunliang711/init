@@ -157,7 +157,6 @@ EOF
     fi
 }
 
-
 check() {
     require_commands git tmux
 }

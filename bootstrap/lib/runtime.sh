@@ -278,7 +278,7 @@ _write_kv_file() {
     local file="${1:?missing file}"
     shift
 
-    if [ $(( $# % 2 )) -ne 0 ]; then
+    if [ $(($# % 2)) -ne 0 ]; then
         echo "need key/value pairs for ${file}" >&2
         return 1
     fi

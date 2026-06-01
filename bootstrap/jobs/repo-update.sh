@@ -191,6 +191,5 @@ update() {
     fi
 }
 
-
 dispatch_cli show_help resolve_cli_handler "$@"
 unset SCRIPT_DIR
