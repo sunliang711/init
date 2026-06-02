@@ -781,6 +781,34 @@ def format_rate(value: float) -> str:
     return f"{format_bytes(int(round(value)))}/s"
 
 
+def format_datetime_label(ts: int, tzinfo: timezone) -> str:
+    """格式化带时区的时间标签，适用于 summary 元信息展示。"""
+
+    label_dt = datetime.fromtimestamp(ts, tzinfo).replace(microsecond=0)
+    offset = label_dt.strftime("%z")
+    if offset:
+        offset = f"{offset[:3]}:{offset[3:]}"
+        return f"{label_dt.strftime('%Y-%m-%d %H:%M:%S')} {offset}"
+    return label_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def write_summary_context(
+    period: str,
+    start_ts: int,
+    end_ts: int,
+    tzinfo: timezone,
+    scope: Optional[str],
+    name: Optional[str],
+    output: TextIO,
+) -> None:
+    """输出 summary 查询上下文，避免汇总结果缺少时间范围说明。"""
+
+    output.write(f"Period: {period}\n")
+    output.write(f"Range:  {format_datetime_label(start_ts, tzinfo)} -> {format_datetime_label(end_ts, tzinfo)}\n")
+    output.write(f"Scope:  {scope or 'all'}\n")
+    output.write(f"Name:   {name or 'all'}\n\n")
+
+
 def write_summary_table(rows: Sequence[sqlite3.Row], output: TextIO) -> None:
     """输出汇总表格，适用于 summary 子命令的人类可读结果。"""
 
@@ -917,6 +945,7 @@ def command_summary(args: argparse.Namespace, config: AppConfig) -> int:
     with open_database(config.db_path) as connection:
         rows = connection.execute(query, params).fetchall()
 
+    write_summary_context(args.period, start_ts, end_ts, tzinfo, args.scope, args.name, sys.stdout)
     if not rows:
         sys.stdout.write("No records found\n")
         return 0

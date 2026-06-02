@@ -29,6 +29,12 @@ systemd 文件安装到：
 /etc/systemd/system/xray-traffic-daily.timer
 ```
 
+同时安装命令行软链接：
+
+```text
+/usr/local/bin/xray_traffic.py -> /opt/xray-traffic/bin/xray_traffic.py
+```
+
 ## 安装、更新和卸载
 
 ```bash
@@ -43,6 +49,8 @@ sudo ./manage.sh uninstall --purge
 `uninstall` 默认保留 `/opt/xray-traffic/config`、`/opt/xray-traffic/data` 和 `/opt/xray-traffic/logs`。
 
 `uninstall --purge` 会删除整个 `/opt/xray-traffic`，包括 SQLite 数据库。
+
+卸载时会删除本脚本管理的 `/usr/local/bin/xray_traffic.py` 软链接；如果该路径是普通文件或指向其他目标的软链接，则会保留并输出警告。
 
 ## 配置
 
@@ -73,6 +81,12 @@ XRAY_TRAFFIC_TIMEOUT_SECONDS=30
 
 ```bash
 /opt/xray-traffic/bin/xray_traffic.py --server 127.0.0.1:18080 health
+```
+
+安装后也可以通过软链接执行：
+
+```bash
+xray_traffic.py health
 ```
 
 ## 定时任务
@@ -128,6 +142,8 @@ xray api statsquery --server=127.0.0.1:18080 -reset=true
 ```bash
 /opt/xray-traffic/bin/xray_traffic.py summary --period daily --scope user --days 7
 ```
+
+`summary` 会在汇总表格前显示 `Period`、`Range`、`Scope` 和 `Name`，便于确认统计范围。
 
 按小时查看已存储流量：
 

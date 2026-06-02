@@ -9,6 +9,8 @@ LOG_DIR="${APP_DIR}/logs"
 CONFIG_FILE="${CONFIG_DIR}/xray-traffic.env"
 PY_TARGET="${BIN_DIR}/xray_traffic.py"
 MANAGE_TARGET="${APP_DIR}/manage.sh"
+LOCAL_BIN_DIR="/usr/local/bin"
+PY_LINK="${LOCAL_BIN_DIR}/xray_traffic.py"
 SYSTEMD_DIR="/etc/systemd/system"
 HOURLY_SERVICE="xray-traffic-hourly.service"
 HOURLY_TIMER="xray-traffic-hourly.timer"
@@ -170,6 +172,48 @@ copy_manage_file() {
     log_info "Manager installed: ${MANAGE_TARGET}"
 }
 
+install_python_link() {
+    # 创建 /usr/local/bin 软链接，适用于安装和兼容旧版本更新。
+    local existing_target=""
+
+    install -d -m 0755 "${LOCAL_BIN_DIR}"
+    if [ -e "${PY_LINK}" ] && [ ! -L "${PY_LINK}" ]; then
+        die "Refuse to overwrite non-symlink: ${PY_LINK}"
+    fi
+
+    if [ -L "${PY_LINK}" ]; then
+        existing_target="$(readlink "${PY_LINK}" || true)"
+        if [ "${existing_target}" != "${PY_TARGET}" ]; then
+            log_warn "Replace existing symlink: ${PY_LINK} -> ${existing_target}"
+        fi
+    fi
+
+    ln -sfn "${PY_TARGET}" "${PY_LINK}"
+    log_info "Python symlink installed: ${PY_LINK} -> ${PY_TARGET}"
+}
+
+remove_python_link() {
+    # 删除由本脚本管理的 /usr/local/bin 软链接，避免误删用户文件。
+    local existing_target=""
+
+    if [ ! -e "${PY_LINK}" ] && [ ! -L "${PY_LINK}" ]; then
+        return 0
+    fi
+    if [ ! -L "${PY_LINK}" ]; then
+        log_warn "Keep non-symlink file: ${PY_LINK}"
+        return 0
+    fi
+
+    existing_target="$(readlink "${PY_LINK}" || true)"
+    if [ "${existing_target}" != "${PY_TARGET}" ]; then
+        log_warn "Keep unmanaged symlink: ${PY_LINK} -> ${existing_target}"
+        return 0
+    fi
+
+    rm -f "${PY_LINK}"
+    log_info "Python symlink removed: ${PY_LINK}"
+}
+
 warn_xray_binary() {
     # 检查配置中的 xray 路径，缺失时提示但不阻断安装。
     local xray_bin
@@ -281,6 +325,7 @@ install_app() {
     install_config_if_missing
     copy_python_file "${source_py}"
     copy_manage_file
+    install_python_link
     warn_xray_binary
     write_systemd_units
     reload_and_enable_timers
@@ -303,6 +348,7 @@ update_app() {
     ensure_directories
     copy_python_file "${source_py}"
     copy_manage_file
+    install_python_link
     write_systemd_units
     systemctl daemon-reload
     run_health_check
@@ -350,6 +396,7 @@ uninstall_app() {
 
     disable_timers
     remove_systemd_units
+    remove_python_link
     rm -f "${PY_TARGET}" "${MANAGE_TARGET}"
     rmdir "${BIN_DIR}" >/dev/null 2>&1 || true
 
@@ -367,6 +414,7 @@ show_status() {
     printf 'APP_DIR=%s\n' "${APP_DIR}"
     printf 'CONFIG_FILE=%s\n' "${CONFIG_FILE}"
     printf 'PY_TARGET=%s\n' "${PY_TARGET}"
+    printf 'PY_LINK=%s\n' "${PY_LINK}"
 
     if command -v systemctl >/dev/null 2>&1; then
         systemctl list-timers "${HOURLY_TIMER}" "${DAILY_TIMER}" --no-pager || true
