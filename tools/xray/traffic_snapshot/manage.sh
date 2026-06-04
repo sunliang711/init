@@ -7,17 +7,19 @@ CONFIG_DIR="${APP_DIR}/config"
 DATA_DIR="${APP_DIR}/data"
 LOG_DIR="${APP_DIR}/logs"
 CONFIG_FILE="${CONFIG_DIR}/xray-traffic.env"
-PY_TARGET="${BIN_DIR}/xray_traffic.py"
+PY_TARGET="${BIN_DIR}/xray-traffic"
+OLD_PY_TARGET="${BIN_DIR}/xray_traffic.py"
 MANAGE_TARGET="${APP_DIR}/manage.sh"
 LOCAL_BIN_DIR="/usr/local/bin"
-PY_LINK="${LOCAL_BIN_DIR}/xray_traffic.py"
+PY_LINK="${LOCAL_BIN_DIR}/xray-traffic"
+OLD_PY_LINK="${LOCAL_BIN_DIR}/xray_traffic.py"
 SYSTEMD_DIR="/etc/systemd/system"
 HOURLY_SERVICE="xray-traffic-hourly.service"
 HOURLY_TIMER="xray-traffic-hourly.timer"
 DAILY_SERVICE="xray-traffic-daily.service"
 DAILY_TIMER="xray-traffic-daily.timer"
 DEFAULT_XRAY_BIN="/usr/local/bin/xray"
-DEFAULT_API_SERVER="127.0.0.1:18080"
+DEFAULT_INSTANCES="default=127.0.0.1:18080"
 DEFAULT_RETENTION_DAYS="180"
 DEFAULT_TIMEZONE="Asia/Shanghai"
 
@@ -45,14 +47,18 @@ usage() {
     # 输出管理脚本帮助，适用于手工安装、更新和卸载。
     cat <<'EOF'
 Usage:
-  manage.sh install [--py /path/to/xray_traffic.py]
-  manage.sh update [--py /path/to/xray_traffic.py]
+  manage.sh install [--py /path/to/xray-traffic]
+  manage.sh update [--py /path/to/xray-traffic]
   manage.sh uninstall [--purge]
   manage.sh status
   manage.sh help
 
 Environment:
   XRAY_TRAFFIC_HOME  Install directory, default /opt/xray-traffic
+
+Installed timers:
+  collect hourly --instance ALL
+  collect daily --instance ALL
 EOF
 }
 
@@ -70,16 +76,16 @@ require_command() {
 }
 
 check_python_version() {
-    # 检查 Python 版本，xray_traffic.py 依赖 Python 3.9+ 标准库 zoneinfo。
-    python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' \
-        || die "Python 3.9 or newer is required"
+    # 检查 Python 版本，xray-traffic 依赖 Python 3.9+ 标准库 zoneinfo。
+    python3 -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' ||
+        die "Python 3.9 or newer is required"
 }
 
 validate_app_dir() {
     # 限制安装目录必须位于 /opt 子目录，避免卸载时误删系统路径。
     case "${APP_DIR}" in
-        /opt/*) ;;
-        *) die "APP_DIR must be under /opt: ${APP_DIR}" ;;
+    /opt/*) ;;
+    *) die "APP_DIR must be under /opt: ${APP_DIR}" ;;
     esac
 
     if [ "${APP_DIR}" = "/opt" ] || [ "${APP_DIR}" = "/opt/" ]; then
@@ -116,12 +122,12 @@ resolve_source_py() {
         return 0
     fi
 
-    if [ -f "${SCRIPT_DIR}/xray_traffic.py" ]; then
-        printf '%s\n' "${SCRIPT_DIR}/xray_traffic.py"
+    if [ -f "${SCRIPT_DIR}/xray-traffic" ]; then
+        printf '%s\n' "${SCRIPT_DIR}/xray-traffic"
         return 0
     fi
 
-    die "Python source file not found. Use --py /path/to/xray_traffic.py"
+    die "Python source file not found. Use --py /path/to/xray-traffic"
 }
 
 ensure_directories() {
@@ -142,7 +148,7 @@ install_config_if_missing() {
 
     umask 077
     cat >"${CONFIG_FILE}" <<EOF
-XRAY_API_SERVER=${DEFAULT_API_SERVER}
+XRAY_TRAFFIC_INSTANCES=${DEFAULT_INSTANCES}
 XRAY_BIN=${DEFAULT_XRAY_BIN}
 XRAY_TRAFFIC_DB=${DATA_DIR}/traffic.db
 XRAY_TRAFFIC_RETENTION_DAYS=${DEFAULT_RETENTION_DAYS}
@@ -154,13 +160,13 @@ EOF
 }
 
 copy_python_file() {
-    # 复制 Python 主脚本，适用于安装和只更新 py 文件。
+    # 复制 Python 主脚本，适用于安装和只更新主命令文件。
     local source_py="$1"
     local resolved_source
     resolved_source="$(resolve_source_py "${source_py}")"
 
     install -m 0755 "${resolved_source}" "${PY_TARGET}"
-    log_info "Python file installed: ${PY_TARGET}"
+    log_info "Command file installed: ${PY_TARGET}"
 }
 
 copy_manage_file() {
@@ -173,7 +179,7 @@ copy_manage_file() {
 }
 
 install_python_link() {
-    # 创建 /usr/local/bin 软链接，适用于安装和兼容旧版本更新。
+    # 创建 /usr/local/bin 软链接，适用于安装和更新后直接执行命令。
     local existing_target=""
 
     install -d -m 0755 "${LOCAL_BIN_DIR}"
@@ -214,6 +220,28 @@ remove_python_link() {
     log_info "Python symlink removed: ${PY_LINK}"
 }
 
+remove_legacy_python_entry() {
+    # 清理旧文件名的受管入口，避免更新后留下过期命令。
+    local existing_target=""
+
+    if [ -L "${OLD_PY_LINK}" ]; then
+        existing_target="$(readlink "${OLD_PY_LINK}" || true)"
+        if [ "${existing_target}" = "${OLD_PY_TARGET}" ] || [ "${existing_target}" = "${PY_TARGET}" ]; then
+            rm -f "${OLD_PY_LINK}"
+            log_info "Legacy Python symlink removed: ${OLD_PY_LINK}"
+        else
+            log_warn "Keep unmanaged legacy symlink: ${OLD_PY_LINK} -> ${existing_target}"
+        fi
+    elif [ -e "${OLD_PY_LINK}" ]; then
+        log_warn "Keep non-symlink legacy file: ${OLD_PY_LINK}"
+    fi
+
+    if [ -e "${OLD_PY_TARGET}" ] || [ -L "${OLD_PY_TARGET}" ]; then
+        rm -f "${OLD_PY_TARGET}"
+        log_info "Legacy Python file removed: ${OLD_PY_TARGET}"
+    fi
+}
+
 warn_xray_binary() {
     # 检查配置中的 xray 路径，缺失时提示但不阻断安装。
     local xray_bin
@@ -237,7 +265,7 @@ Wants=network-online.target
 Type=oneshot
 EnvironmentFile=-${CONFIG_FILE}
 WorkingDirectory=${APP_DIR}
-ExecStart=${PYTHON_BIN} ${PY_TARGET} --config ${CONFIG_FILE} hourly
+ExecStart=${PYTHON_BIN} ${PY_TARGET} --config ${CONFIG_FILE} collect hourly --instance ALL
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
@@ -268,7 +296,7 @@ Wants=network-online.target
 Type=oneshot
 EnvironmentFile=-${CONFIG_FILE}
 WorkingDirectory=${APP_DIR}
-ExecStart=${PYTHON_BIN} ${PY_TARGET} --config ${CONFIG_FILE} daily
+ExecStart=${PYTHON_BIN} ${PY_TARGET} --config ${CONFIG_FILE} collect daily --instance ALL
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
@@ -306,7 +334,7 @@ reload_and_enable_timers() {
 
 run_health_check() {
     # 调用 Python health 子命令，适用于安装或更新后验证数据库可打开。
-    "${PYTHON_BIN}" "${PY_TARGET}" --config "${CONFIG_FILE}" health >/dev/null
+    "${PYTHON_BIN}" "${PY_TARGET}" --config "${CONFIG_FILE}" check health >/dev/null
     log_info "Health check passed"
 }
 
@@ -325,11 +353,12 @@ install_app() {
     install_config_if_missing
     copy_python_file "${source_py}"
     copy_manage_file
+    remove_legacy_python_entry
     install_python_link
     warn_xray_binary
+    run_health_check
     write_systemd_units
     reload_and_enable_timers
-    run_health_check
     log_info "Install finished"
 }
 
@@ -348,10 +377,11 @@ update_app() {
     ensure_directories
     copy_python_file "${source_py}"
     copy_manage_file
+    remove_legacy_python_entry
     install_python_link
+    run_health_check
     write_systemd_units
     systemctl daemon-reload
-    run_health_check
     log_info "Update finished"
 }
 
@@ -397,6 +427,7 @@ uninstall_app() {
     disable_timers
     remove_systemd_units
     remove_python_link
+    remove_legacy_python_entry
     rm -f "${PY_TARGET}" "${MANAGE_TARGET}"
     rmdir "${BIN_DIR}" >/dev/null 2>&1 || true
 
@@ -436,45 +467,45 @@ main() {
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
-            --purge)
-                purge="1"
-                ;;
-            --py)
-                shift
-                [ "$#" -gt 0 ] || die "Missing value for --py"
-                source_py="$1"
-                ;;
-            -h|--help)
-                usage
-                return 0
-                ;;
-            *)
-                die "Unknown option: $1"
-                ;;
+        --purge)
+            purge="1"
+            ;;
+        --py)
+            shift
+            [ "$#" -gt 0 ] || die "Missing value for --py"
+            source_py="$1"
+            ;;
+        -h | --help)
+            usage
+            return 0
+            ;;
+        *)
+            die "Unknown option: $1"
+            ;;
         esac
         shift
     done
 
     case "${command}" in
-        install)
-            install_app "${source_py}"
-            ;;
-        update)
-            update_app "${source_py}"
-            ;;
-        uninstall)
-            uninstall_app "${purge}"
-            ;;
-        status)
-            show_status
-            ;;
-        help|-h|--help)
-            usage
-            ;;
-        *)
-            usage
-            die "Unknown command: ${command}"
-            ;;
+    install)
+        install_app "${source_py}"
+        ;;
+    update)
+        update_app "${source_py}"
+        ;;
+    uninstall)
+        uninstall_app "${purge}"
+        ;;
+    status)
+        show_status
+        ;;
+    help | -h | --help)
+        usage
+        ;;
+    *)
+        usage
+        die "Unknown command: ${command}"
+        ;;
     esac
 }
 

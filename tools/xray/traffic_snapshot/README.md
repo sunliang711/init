@@ -1,6 +1,6 @@
 # Xray Traffic Snapshot
 
-`xray_traffic.py` 用 Python 标准库实现 Xray 流量小时快照、每日聚合、实时速率、查询、统计、导出和清理。
+`xray-traffic` 用 Python 标准库实现 Xray 多实例流量小时快照、每日聚合、当前累计查询、历史展示、汇总、导出和清理。
 
 运行环境要求 Python 3.9+，因为脚本使用标准库 `zoneinfo` 处理时区。
 
@@ -11,7 +11,7 @@
 ```text
 /opt/xray-traffic/
 ├── bin/
-│   └── xray_traffic.py
+│   └── xray-traffic
 ├── config/
 │   └── xray-traffic.env
 ├── data/
@@ -32,7 +32,7 @@ systemd 文件安装到：
 同时安装命令行软链接：
 
 ```text
-/usr/local/bin/xray_traffic.py -> /opt/xray-traffic/bin/xray_traffic.py
+/usr/local/bin/xray-traffic -> /opt/xray-traffic/bin/xray-traffic
 ```
 
 ## 安装、更新和卸载
@@ -40,7 +40,7 @@ systemd 文件安装到：
 ```bash
 sudo ./manage.sh install
 sudo ./manage.sh update
-sudo ./manage.sh update --py ./xray_traffic.py
+sudo ./manage.sh update --py ./xray-traffic
 sudo ./manage.sh status
 sudo ./manage.sh uninstall
 sudo ./manage.sh uninstall --purge
@@ -50,7 +50,7 @@ sudo ./manage.sh uninstall --purge
 
 `uninstall --purge` 会删除整个 `/opt/xray-traffic`，包括 SQLite 数据库。
 
-卸载时会删除本脚本管理的 `/usr/local/bin/xray_traffic.py` 软链接；如果该路径是普通文件或指向其他目标的软链接，则会保留并输出警告。
+卸载时会删除本脚本管理的 `/usr/local/bin/xray-traffic` 软链接；如果该路径是普通文件或指向其他目标的软链接，则会保留并输出警告。
 
 ## 配置
 
@@ -63,7 +63,7 @@ sudo ./manage.sh uninstall --purge
 默认内容：
 
 ```bash
-XRAY_API_SERVER=127.0.0.1:18080
+XRAY_TRAFFIC_INSTANCES=default=127.0.0.1:18080
 XRAY_BIN=/usr/local/bin/xray
 XRAY_TRAFFIC_DB=/opt/xray-traffic/data/traffic.db
 XRAY_TRAFFIC_RETENTION_DAYS=180
@@ -71,114 +71,132 @@ XRAY_TRAFFIC_TIMEZONE=Asia/Shanghai
 XRAY_TRAFFIC_TIMEOUT_SECONDS=30
 ```
 
+多实例配置示例：
+
+```bash
+XRAY_TRAFFIC_INSTANCES=default=127.0.0.1:18080,edge=127.0.0.1:18081
+```
+
+实例名只能使用字母、数字、下划线、点和横线。`ALL` 是保留值，表示所有配置实例，不能作为实例名。
+
 配置优先级：
 
 ```text
 命令行参数 > 环境变量 > 配置文件 > 默认值
 ```
 
-例如临时查询其他 Xray API 地址：
+安装后可以通过软链接执行：
 
 ```bash
-/opt/xray-traffic/bin/xray_traffic.py --server 127.0.0.1:18080 health
+xray-traffic check config
 ```
 
-安装后也可以通过软链接执行：
+## 命令结构
+
+所有子命令统一为：
+
+```text
+xray-traffic <action> <noun> [options]
+```
+
+核心命令：
 
 ```bash
-xray_traffic.py health
+xray-traffic collect hourly --instance ALL
+xray-traffic collect daily --instance ALL
+xray-traffic show hourly --instance default
+xray-traffic show daily --instance default
+xray-traffic summarize hourly --instance default
+xray-traffic summarize daily --instance default
+xray-traffic show current --instance default
+xray-traffic list instances
+xray-traffic export daily --instance default --output daily.csv
+xray-traffic cleanup records
+xray-traffic check health
+xray-traffic check config
 ```
+
+所有涉及 Xray 实例的命令都必须传 `--instance`。可传具体实例名，也可传 `ALL`：
+
+```bash
+xray-traffic show hourly --instance default
+xray-traffic show hourly --instance ALL
+```
+
+未传 `--instance` 或传入未知实例时，工具会提示可用实例列表。
 
 ## 定时任务
 
 小时任务：
 
 ```text
-每小时 00 分执行 xray_traffic.py hourly
+每小时 00 分执行 xray-traffic collect hourly --instance ALL
 ```
 
 每日任务：
 
 ```text
-每天 00:10 执行 xray_traffic.py daily
+每天 00:10 执行 xray-traffic collect daily --instance ALL
 ```
 
-`hourly` 默认调用：
+`collect hourly` 会立即调用每个目标实例：
 
 ```bash
-xray api statsquery --server=127.0.0.1:18080 -reset=true
+xray api statsquery --server=<instance-server> -reset=true
 ```
 
-因此小时记录保存的是两次采集之间的增量。`daily` 不再调用 Xray，只从 SQLite 中的 `hourly` 记录聚合。
+因此小时记录保存的是两次采集之间的增量。`collect daily` 不调用 Xray，只从 SQLite 中的 `hourly` 记录聚合。
 
-## 查询示例
+## 查看示例
 
-查看上次 reset 后的当前累计流量：
+列出实例：
 
 ```bash
-/opt/xray-traffic/bin/xray_traffic.py current
+xray-traffic list instances
+```
+
+查看上次 reset 后的当前累计流量，不入库、不 reset：
+
+```bash
+xray-traffic show current --instance default
 ```
 
 查看某个用户的当前累计流量：
 
 ```bash
-/opt/xray-traffic/bin/xray_traffic.py current --scope user --name alice
+xray-traffic show current --instance default --scope user --name alice
 ```
-
-查看当前实时速率：
-
-```bash
-/opt/xray-traffic/bin/xray_traffic.py realtime
-```
-
-连续查看 5 次用户实时速率：
-
-```bash
-/opt/xray-traffic/bin/xray_traffic.py realtime --scope user --interval 1 --count 5
-```
-
-查看最近 7 天每日用户汇总：
-
-```bash
-/opt/xray-traffic/bin/xray_traffic.py summary --period daily --scope user --days 7
-```
-
-`summary` 会在汇总表格前显示 `Period`、`Range`、`Scope` 和 `Name`，便于确认统计范围。
 
 按小时查看已存储流量：
 
 ```bash
-/opt/xray-traffic/bin/xray_traffic.py show hourly
+xray-traffic show hourly --instance default
 ```
 
 按天查看已存储流量：
 
 ```bash
-/opt/xray-traffic/bin/xray_traffic.py show daily
+xray-traffic show daily --instance default --days 7
 ```
 
-只查看用户维度的小时流量：
+汇总最近 7 天每日用户流量：
 
 ```bash
-/opt/xray-traffic/bin/xray_traffic.py show hourly --scope user
+xray-traffic summarize daily --instance default --scope user --days 7
 ```
 
-查看原始明细记录：
-
-```bash
-/opt/xray-traffic/bin/xray_traffic.py query --period hourly --days 1 --limit 200
-```
+`summarize` 会在汇总表格前显示 `Period`、`Range`、`Instance`、`Scope` 和 `Name`，便于确认统计范围。
 
 导出 CSV：
 
 ```bash
-/opt/xray-traffic/bin/xray_traffic.py export --period daily --scope user --from 2026-05-01 --to 2026-06-01 --output users.csv
+xray-traffic export daily --instance default --scope user --from 2026-05-01 --to 2026-06-01 --output users.csv
 ```
 
 手工清理超过保留期的数据：
 
 ```bash
-/opt/xray-traffic/bin/xray_traffic.py cleanup
+xray-traffic cleanup records
 ```
 
 ## 数据库
@@ -198,6 +216,8 @@ traffic_records
 主要字段：
 
 ```text
+instance    实例名
+server      记录写入时的 Xray API 地址
 period      hourly / daily
 start_ts    统计开始 Unix 时间戳
 end_ts      统计结束 Unix 时间戳
@@ -206,3 +226,13 @@ name        用户名、inbound tag 或 outbound tag
 direction   up / down
 bytes       字节数
 ```
+
+主键：
+
+```text
+instance, period, start_ts, scope, name, direction
+```
+
+这个版本不兼容旧数据库 schema。如果旧库没有 `instance` 和 `server` 字段，工具会报错提示先备份并删除旧的 `traffic.db`。
+
+如果配置文件已经存在但缺少 `XRAY_TRAFFIC_INSTANCES`，工具会直接报错，不会回退到默认实例，避免旧配置被静默忽略后监控错端口。
