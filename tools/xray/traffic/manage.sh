@@ -2,14 +2,14 @@
 set -euo pipefail
 
 APP_DIR="${XRAY_TRAFFIC_HOME:-/opt/xray-traffic}"
-BIN_DIR="${APP_DIR}/bin"
-CONFIG_DIR="${APP_DIR}/config"
-DATA_DIR="${APP_DIR}/data"
-LOG_DIR="${APP_DIR}/logs"
-CONFIG_FILE="${CONFIG_DIR}/xray-traffic.env"
-PY_TARGET="${BIN_DIR}/xray-traffic"
-OLD_PY_TARGET="${BIN_DIR}/xray_traffic.py"
-MANAGE_TARGET="${APP_DIR}/manage.sh"
+BIN_DIR=""
+CONFIG_DIR=""
+DATA_DIR=""
+LOG_DIR=""
+CONFIG_FILE=""
+PY_TARGET=""
+OLD_PY_TARGET=""
+MANAGE_TARGET=""
 LOCAL_BIN_DIR="/usr/local/bin"
 PY_LINK="${LOCAL_BIN_DIR}/xray-traffic"
 OLD_PY_LINK="${LOCAL_BIN_DIR}/xray_traffic.py"
@@ -81,8 +81,26 @@ check_python_version() {
         die "Python 3.9 or newer is required"
 }
 
+refresh_app_paths() {
+    # 根据规范化后的 APP_DIR 刷新派生路径，避免校验路径和实际操作路径不一致。
+    BIN_DIR="${APP_DIR}/bin"
+    CONFIG_DIR="${APP_DIR}/config"
+    DATA_DIR="${APP_DIR}/data"
+    LOG_DIR="${APP_DIR}/logs"
+    CONFIG_FILE="${CONFIG_DIR}/xray-traffic.env"
+    PY_TARGET="${BIN_DIR}/xray-traffic"
+    OLD_PY_TARGET="${BIN_DIR}/xray_traffic.py"
+    MANAGE_TARGET="${APP_DIR}/manage.sh"
+}
+
 validate_app_dir() {
-    # 限制安装目录必须位于 /opt 子目录，避免卸载时误删系统路径。
+    # 规范化并限制安装目录必须位于 /opt 子目录，避免卸载时误删系统路径。
+    [ -n "${APP_DIR}" ] || die "APP_DIR must not be empty"
+    [ -n "${PYTHON_BIN}" ] || die "Missing required command: python3"
+
+    APP_DIR="$("${PYTHON_BIN}" -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${APP_DIR}")" ||
+        die "Failed to normalize APP_DIR: ${APP_DIR}"
+
     case "${APP_DIR}" in
     /opt/*) ;;
     *) die "APP_DIR must be under /opt: ${APP_DIR}" ;;
@@ -91,6 +109,8 @@ validate_app_dir() {
     if [ "${APP_DIR}" = "/opt" ] || [ "${APP_DIR}" = "/opt/" ]; then
         die "Refuse to use unsafe APP_DIR: ${APP_DIR}"
     fi
+
+    refresh_app_paths
 }
 
 read_env_value() {

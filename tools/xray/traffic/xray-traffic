@@ -712,7 +712,10 @@ def read_stats_source(args: argparse.Namespace, config: AppConfig, instance: Ins
 
     input_file = getattr(args, "input_file", None)
     if input_file:
-        return Path(input_file).read_text(encoding="utf-8")
+        try:
+            return Path(input_file).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise CliError(f"failed to read input file: {input_file}: {exc}") from exc
     return run_statsquery(config, instance, reset=reset)
 
 
@@ -916,6 +919,8 @@ def command_collect_hourly(args: argparse.Namespace, config: AppConfig) -> int:
                         reset=not getattr(args, "no_reset", False),
                     )
                     parsed_stats = parse_stats(raw_output)
+                    if raw_output.strip() and not parsed_stats:
+                        raise CliError(f"no valid stats parsed for instance: {instance.name}")
                     start_ts = int(last_end) if last_end else end_ts - 3600
 
                     records = normalize_stats(instance, parsed_stats, "hourly", start_ts, end_ts, tzinfo)
@@ -1186,6 +1191,8 @@ def command_show_records(args: argparse.Namespace, config: AppConfig) -> int:
 
     tzinfo = get_timezone(config)
     selected_instances = select_instances(config, args.instance)
+    if args.limit <= 0:
+        raise CliError("--limit must be greater than 0")
     start_ts, end_ts = resolve_show_time_range(args, tzinfo)
     instance_filter, instance_params = instance_filter_sql(selected_instances)
     filters = [instance_filter, "period = ?", "start_ts >= ?", "start_ts < ?"]
@@ -1298,7 +1305,10 @@ def command_export_records(args: argparse.Namespace, config: AppConfig) -> int:
     try:
         output: TextIO
         if args.output:
-            output_file = Path(args.output).open("w", encoding="utf-8", newline="")
+            try:
+                output_file = Path(args.output).open("w", encoding="utf-8", newline="")
+            except OSError as exc:
+                raise CliError(f"failed to open output file: {args.output}: {exc}") from exc
             output = output_file
         else:
             output = sys.stdout
