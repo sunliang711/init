@@ -7,6 +7,7 @@ import argparse
 import csv
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -14,6 +15,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import time as time_module
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -38,6 +40,46 @@ VALID_DIRECTIONS = ("up", "down")
 VALID_PERIODS = ("hourly", "daily")
 CounterKey = Tuple[str, str, str]
 
+
+def should_page_help(help_text: str, output: TextIO) -> bool:
+    """判断帮助信息是否需要分页，适用于交互式终端输出。"""
+
+    if output is not sys.stdout:
+        return False
+    if not output.isatty():
+        return False
+    if shutil.which("less") is None:
+        return False
+    terminal_lines = shutil.get_terminal_size(fallback=(80, 24)).lines
+    return len(help_text.splitlines()) > terminal_lines
+
+
+def page_help_text(help_text: str) -> bool:
+    """使用 less 分页输出帮助信息，适用于内容超过当前终端高度的场景。"""
+
+    less_bin = shutil.which("less")
+    if less_bin is None:
+        return False
+    try:
+        result = subprocess.run([less_bin, "-R"], input=help_text, text=True, check=False)
+    except OSError:
+        return False
+    return result.returncode == 0
+
+
+class PagingArgumentParser(argparse.ArgumentParser):
+    """支持交互式分页输出帮助信息的命令行解析器。"""
+
+    def print_help(self, file: Optional[TextIO] = None) -> None:
+        """打印帮助信息，交互式终端内容超屏时自动使用 less 分页。"""
+
+        if file is None:
+            file = sys.stdout
+        help_text = self.format_help()
+        if should_page_help(help_text, file) and page_help_text(help_text):
+            return
+        file.write(help_text)
+
 TOP_LEVEL_HELP = f"""\
 命令结构:
   xray-traffic <action> <noun> [options]
@@ -55,6 +97,7 @@ TOP_LEVEL_HELP = f"""\
   xray-traffic collect hourly --instance ALL
   xray-traffic collect daily --instance ALL
   xray-traffic show current --instance default
+  xray-traffic watch current --instance default
   xray-traffic show hourly --instance default --days 1
   xray-traffic show daily --instance default --days 7
   xray-traffic summarize daily --instance default --scope user --days 7
@@ -91,6 +134,16 @@ SHOW_HELP = """\
   xray-traffic show hourly --instance default --days 1
   xray-traffic show hourly --instance ALL --date 2026-06-01
   xray-traffic show daily --instance default --days 7
+"""
+
+WATCH_HELP = """\
+持续查看命令:
+  watch current  持续查看上次 reset 后的当前累计流量，不入库、不 reset
+
+示例:
+  xray-traffic watch current --instance default
+  xray-traffic watch current --instance default --scope user --name alice --interval 2 --count 10
+  xray-traffic watch current --instance default --no-clear
 """
 
 SUMMARIZE_HELP = """\
@@ -1050,25 +1103,98 @@ def write_current_table(rows: Sequence[Tuple[str, str, str, int, int, int]], out
         )
 
 
+def read_current_rows(
+    config: AppConfig,
+    instances: Sequence[InstanceConfig],
+    scope_filter: Optional[str],
+    name_filter: Optional[str],
+    log_errors: bool = True,
+) -> Tuple[List[Tuple[str, str, str, int, int, int]], List[str]]:
+    """查询当前累计流量并返回表格行，适用于 show/watch current 复用。"""
+
+    rows: List[Tuple[str, str, str, int, int, int]] = []
+    errors: List[str] = []
+    for instance in instances:
+        try:
+            counters = stats_to_counters(parse_stats(run_statsquery(config, instance, reset=False)))
+            rows.extend(calculate_current_totals(instance, counters, scope_filter, name_filter))
+        except CliError as exc:
+            errors.append(str(exc))
+            if log_errors:
+                logging.error("%s", exc)
+    return rows, errors
+
+
+def write_current_rows(rows: Sequence[Tuple[str, str, str, int, int, int]], output: TextIO) -> None:
+    """输出当前累计流量或空提示，适用于 show/watch current 共用。"""
+
+    if rows:
+        write_current_table(rows, output)
+    else:
+        output.write("No current traffic counters found\n")
+
+
+def clear_terminal(output: TextIO) -> None:
+    """清空终端视图，适用于 watch current 默认刷新显示。"""
+
+    output.write("\033[2J\033[H")
+
+
+def write_watch_current_view(
+    rows: Sequence[Tuple[str, str, str, int, int, int]],
+    errors: Sequence[str],
+    tzinfo: timezone,
+    output: TextIO,
+) -> None:
+    """输出 watch current 单轮视图，适用于持续查看当前累计流量。"""
+
+    output.write(f"Current time: {format_datetime_label(now_ts(), tzinfo)}\n")
+    for error in errors:
+        output.write(f"ERROR {error}\n")
+    write_current_rows(rows, output)
+
+
 def command_show_current(args: argparse.Namespace, config: AppConfig) -> int:
     """查询上次 reset 后的当前累计流量，适用于不落库的即时累计查看。"""
 
     selected_instances = select_instances(config, args.instance)
-    rows: List[Tuple[str, str, str, int, int, int]] = []
-    errors: List[str] = []
-    for instance in selected_instances:
-        try:
-            counters = stats_to_counters(parse_stats(run_statsquery(config, instance, reset=False)))
-            rows.extend(calculate_current_totals(instance, counters, args.scope, args.name))
-        except CliError as exc:
-            errors.append(str(exc))
-            logging.error("%s", exc)
-
-    if rows:
-        write_current_table(rows, sys.stdout)
-    else:
-        sys.stdout.write("No current traffic counters found\n")
+    rows, errors = read_current_rows(config, selected_instances, args.scope, args.name)
+    write_current_rows(rows, sys.stdout)
     return 1 if errors else 0
+
+
+def command_watch_current(args: argparse.Namespace, config: AppConfig) -> int:
+    """持续查询当前累计流量，适用于观察指定实例的即时累计变化。"""
+
+    if not math.isfinite(args.interval) or args.interval <= 0:
+        raise CliError("--interval must be greater than 0")
+    if args.count < 0:
+        raise CliError("--count must be greater than or equal to 0")
+
+    tzinfo = get_timezone(config)
+    selected_instances = select_instances(config, args.instance)
+    iteration = 0
+    had_errors = False
+    try:
+        while args.count == 0 or iteration < args.count:
+            if args.no_clear and iteration > 0:
+                sys.stdout.write("\n")
+            elif not args.no_clear:
+                clear_terminal(sys.stdout)
+
+            rows, errors = read_current_rows(config, selected_instances, args.scope, args.name, log_errors=False)
+            had_errors = had_errors or bool(errors)
+            write_watch_current_view(rows, errors, tzinfo, sys.stdout)
+            sys.stdout.flush()
+
+            iteration += 1
+            if args.count != 0 and iteration >= args.count:
+                break
+            time_module.sleep(args.interval)
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        return 0
+    return 1 if had_errors else 0
 
 
 def format_bytes(value: int) -> str:
@@ -1459,7 +1585,7 @@ def build_collect_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
         epilog=COLLECT_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    collect_subparsers = collect_parser.add_subparsers(dest="noun", required=True)
+    collect_subparsers = collect_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
 
     hourly_parser = collect_subparsers.add_parser("hourly", help="立即采集小时增量快照并 reset")
     add_instance_option(hourly_parser)
@@ -1484,7 +1610,7 @@ def build_show_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
         epilog=SHOW_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    show_subparsers = show_parser.add_subparsers(dest="noun", required=True)
+    show_subparsers = show_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
 
     for period in VALID_PERIODS:
         period_parser = show_subparsers.add_parser(period, help=f"查看 {period} 记录")
@@ -1501,6 +1627,30 @@ def build_show_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     current_parser.set_defaults(func=command_show_current)
 
 
+def build_watch_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """构建 watch <noun> 命令，适用于持续查看即时数据。"""
+
+    watch_parser = subparsers.add_parser(
+        "watch",
+        help="持续查看当前累计流量",
+        description="持续查看当前累计流量，不写入 SQLite，也不重置 Xray 计数。",
+        epilog=WATCH_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    watch_subparsers = watch_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
+    current_parser = watch_subparsers.add_parser(
+        "current",
+        help="持续查看上次 reset 后当前累计",
+        description="持续查看当前累计流量，不写入 SQLite，也不重置 Xray 计数。",
+    )
+    add_instance_option(current_parser)
+    add_filter_options(current_parser)
+    current_parser.add_argument("--interval", type=float, default=1, help="刷新间隔秒数，默认 1")
+    current_parser.add_argument("--count", type=int, default=0, help="刷新次数，0 表示无限循环，默认 0")
+    current_parser.add_argument("--no-clear", action="store_true", help="不清屏，追加输出每轮结果")
+    current_parser.set_defaults(func=command_watch_current)
+
+
 def build_summarize_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     """构建 summarize <noun> 命令，适用于聚合已存储记录。"""
 
@@ -1511,7 +1661,7 @@ def build_summarize_parser(subparsers: argparse._SubParsersAction[argparse.Argum
         epilog=SUMMARIZE_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    summarize_subparsers = summarize_parser.add_subparsers(dest="noun", required=True)
+    summarize_subparsers = summarize_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
     for period in VALID_PERIODS:
         period_parser = summarize_subparsers.add_parser(period, help=f"汇总 {period} 记录")
         add_read_options(period_parser, period, default_days=7)
@@ -1528,7 +1678,7 @@ def build_export_parser(subparsers: argparse._SubParsersAction[argparse.Argument
         epilog=EXPORT_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    export_subparsers = export_parser.add_subparsers(dest="noun", required=True)
+    export_subparsers = export_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
     for period in VALID_PERIODS:
         period_parser = export_subparsers.add_parser(period, help=f"导出 {period} 明细")
         add_read_options(period_parser, period, default_days=7)
@@ -1547,7 +1697,7 @@ def build_list_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
         epilog=LIST_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    list_subparsers = list_parser.add_subparsers(dest="noun", required=True)
+    list_subparsers = list_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
     instances_parser = list_subparsers.add_parser("instances", help="列出可用实例")
     instances_parser.set_defaults(func=command_list_instances)
 
@@ -1562,7 +1712,7 @@ def build_cleanup_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
         epilog=CLEANUP_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    cleanup_subparsers = cleanup_parser.add_subparsers(dest="noun", required=True)
+    cleanup_subparsers = cleanup_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
     records_parser = cleanup_subparsers.add_parser("records", help="清理超过保留期的记录")
     records_parser.set_defaults(func=command_cleanup_records)
 
@@ -1577,7 +1727,7 @@ def build_check_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
         epilog=CHECK_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    check_subparsers = check_parser.add_subparsers(dest="noun", required=True)
+    check_subparsers = check_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
     config_parser = check_subparsers.add_parser("config", help="检查配置解析结果")
     config_parser.set_defaults(func=command_check_config)
     health_parser = check_subparsers.add_parser("health", help="检查运行环境和数据库")
@@ -1594,7 +1744,7 @@ def build_edit_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
         epilog=EDIT_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    edit_subparsers = edit_parser.add_subparsers(dest="noun", required=True)
+    edit_subparsers = edit_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
     config_parser = edit_subparsers.add_parser(
         "config",
         help="编辑配置文件",
@@ -1608,7 +1758,7 @@ def build_edit_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
 def build_parser() -> argparse.ArgumentParser:
     """构建命令行解析器，适用于所有子命令入口。"""
 
-    parser = argparse.ArgumentParser(
+    parser = PagingArgumentParser(
         description="Xray traffic snapshot collector",
         epilog=TOP_LEVEL_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1622,9 +1772,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-level", default="INFO", help="日志级别，默认 INFO")
     parser.add_argument("--version", action="version", version=f"xray-traffic {VERSION}")
 
-    subparsers = parser.add_subparsers(dest="action", required=True)
+    subparsers = parser.add_subparsers(dest="action", required=True, parser_class=PagingArgumentParser)
     build_collect_parser(subparsers)
     build_show_parser(subparsers)
+    build_watch_parser(subparsers)
     build_summarize_parser(subparsers)
     build_export_parser(subparsers)
     build_list_parser(subparsers)
@@ -1638,6 +1789,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     """命令行主入口，负责解析参数、加载配置并分发子命令。"""
 
     parser = build_parser()
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv:
+        parser.print_help()
+        return 0
     args = parser.parse_args(argv)
     configure_logging(args.log_level)
 

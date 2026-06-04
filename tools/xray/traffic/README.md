@@ -123,6 +123,7 @@ xray-traffic show daily --instance default
 xray-traffic summarize hourly --instance default
 xray-traffic summarize daily --instance default
 xray-traffic show current --instance default
+xray-traffic watch current --instance default
 xray-traffic list instances
 xray-traffic export daily --instance default --output daily.csv
 xray-traffic cleanup records
@@ -180,6 +181,13 @@ xray-traffic show current --instance default
 
 ```bash
 xray-traffic show current --instance default --scope user --name alice
+```
+
+持续查看当前累计流量，不入库、不 reset：
+
+```bash
+xray-traffic watch current --instance default --interval 1
+xray-traffic watch current --instance default --scope user --name alice --no-clear
 ```
 
 按小时查看已存储流量：
