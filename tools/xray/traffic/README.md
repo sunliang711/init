@@ -91,6 +91,20 @@ XRAY_TRAFFIC_INSTANCES=default=127.0.0.1:18080,edge=127.0.0.1:18081
 xray-traffic check config
 ```
 
+直接编辑配置文件：
+
+```bash
+xray-traffic edit config
+```
+
+`edit config` 会按 `$EDITOR -> vim -> vi -> nano` 选择编辑器。打开前会创建备份文件，例如：
+
+```text
+/opt/xray-traffic/config/xray-traffic.env.bak.20260604-153000
+```
+
+编辑结束后会自动执行配置校验。校验失败时会保留备份路径，方便手工恢复。
+
 ## 命令结构
 
 所有子命令统一为：
@@ -114,6 +128,7 @@ xray-traffic export daily --instance default --output daily.csv
 xray-traffic cleanup records
 xray-traffic check health
 xray-traffic check config
+xray-traffic edit config
 ```
 
 所有涉及 Xray 实例的命令都必须传 `--instance`。可传具体实例名，也可传 `ALL`：

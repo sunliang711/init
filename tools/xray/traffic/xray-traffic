@@ -9,6 +9,8 @@ import json
 import logging
 import os
 import re
+import shlex
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -58,6 +60,7 @@ TOP_LEVEL_HELP = f"""\
   xray-traffic summarize daily --instance default --scope user --days 7
   xray-traffic export daily --instance default --from 2026-05-01 --to 2026-06-01 --output users.csv
   xray-traffic cleanup records
+  xray-traffic edit config
 
 定时任务入口:
   每小时: xray-traffic collect hourly --instance ALL
@@ -139,6 +142,19 @@ CHECK_HELP = """\
 示例:
   xray-traffic check config
   xray-traffic check health
+"""
+
+EDIT_HELP = """\
+编辑命令:
+  edit config  直接打开配置文件编辑，编辑前备份，编辑后自动校验
+
+编辑器选择:
+  $EDITOR -> vim -> vi -> nano
+
+示例:
+  xray-traffic edit config
+  EDITOR=vim xray-traffic edit config
+  xray-traffic --config /opt/xray-traffic/config/xray-traffic.env edit config
 """
 
 
@@ -230,6 +246,90 @@ def pick_config_value(
     return default
 
 
+def parse_int_config_value(value: Any, config_name: str) -> int:
+    """解析整数配置项，适用于将配置错误统一转换为 CliError。"""
+
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise CliError(f"{config_name} must be an integer: {value}") from exc
+
+
+def resolve_config_file_path(args: argparse.Namespace) -> Path:
+    """解析配置文件路径，适用于编辑配置和完整配置加载前定位文件。"""
+
+    config_file_value = args.config or os.environ.get("XRAY_TRAFFIC_CONFIG")
+    return Path(config_file_value) if config_file_value else DEFAULT_CONFIG_FILE
+
+
+def default_config_text(config_file: Path) -> str:
+    """生成默认配置内容，适用于 edit config 首次创建配置文件。"""
+
+    del config_file
+    return "\n".join(
+        [
+            "XRAY_TRAFFIC_INSTANCES=default=127.0.0.1:18080",
+            f"XRAY_BIN={DEFAULT_XRAY_BIN}",
+            f"XRAY_TRAFFIC_DB={DEFAULT_DB_PATH}",
+            f"XRAY_TRAFFIC_RETENTION_DAYS={DEFAULT_RETENTION_DAYS}",
+            "XRAY_TRAFFIC_TIMEZONE=Asia/Shanghai",
+            f"XRAY_TRAFFIC_TIMEOUT_SECONDS={DEFAULT_TIMEOUT_SECONDS}",
+            "",
+        ]
+    )
+
+
+def ensure_config_file_exists(config_file: Path) -> None:
+    """确保配置文件存在，适用于 edit config 打开编辑器前准备目标文件。"""
+
+    if config_file.exists():
+        return
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(default_config_text(config_file), encoding="utf-8")
+    config_file.chmod(0o600)
+    logging.info("Config file created: %s", config_file)
+
+
+def backup_config_file(config_file: Path) -> Path:
+    """备份配置文件，适用于 edit config 编辑前保留可回滚版本。"""
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_path = config_file.with_name(f"{config_file.name}.bak.{timestamp}")
+    suffix = 1
+    while backup_path.exists():
+        backup_path = config_file.with_name(f"{config_file.name}.bak.{timestamp}.{suffix}")
+        suffix += 1
+    shutil.copy2(config_file, backup_path)
+    logging.info("Config backup created: %s", backup_path)
+    return backup_path
+
+
+def editor_command_exists(command_name: str) -> bool:
+    """判断编辑器命令是否可执行，适用于选择 $EDITOR 或默认编辑器。"""
+
+    if "/" in command_name:
+        return Path(command_name).is_file() and os.access(command_name, os.X_OK)
+    return shutil.which(command_name) is not None
+
+
+def resolve_editor_command() -> List[str]:
+    """选择可用编辑器命令，适用于 edit config 打开配置文件。"""
+
+    candidates: List[List[str]] = []
+    editor_value = os.environ.get("EDITOR", "").strip()
+    if editor_value:
+        try:
+            candidates.append(shlex.split(editor_value))
+        except ValueError as exc:
+            raise CliError(f"invalid EDITOR value: {editor_value}") from exc
+    candidates.extend([[name] for name in ("vim", "vi", "nano")])
+
+    for command in candidates:
+        if command and editor_command_exists(command[0]):
+            return command
+    raise CliError("no editor found; set EDITOR or install vim, vi, or nano")
+
+
 def parse_instances(raw_value: str) -> Tuple[InstanceConfig, ...]:
     """解析 XRAY_TRAFFIC_INSTANCES，适用于构建多实例运行配置。"""
 
@@ -266,8 +366,7 @@ def resolve_config(args: argparse.Namespace) -> AppConfig:
     """解析全局配置，适用于所有子命令执行前统一生成运行参数。"""
 
     env_values = dict(os.environ)
-    config_file_value = args.config or env_values.get("XRAY_TRAFFIC_CONFIG")
-    config_file = Path(config_file_value) if config_file_value else DEFAULT_CONFIG_FILE
+    config_file = resolve_config_file_path(args)
     file_values = parse_env_file(config_file)
     if config_file.exists() and "XRAY_TRAFFIC_INSTANCES" not in file_values:
         raise CliError(
@@ -275,23 +374,25 @@ def resolve_config(args: argparse.Namespace) -> AppConfig:
             f"{config_file}"
         )
 
-    retention_days = int(
+    retention_days = parse_int_config_value(
         pick_config_value(
             args.retention_days,
             env_values,
             file_values,
             "XRAY_TRAFFIC_RETENTION_DAYS",
             DEFAULT_RETENTION_DAYS,
-        )
+        ),
+        "XRAY_TRAFFIC_RETENTION_DAYS",
     )
-    timeout_seconds = int(
+    timeout_seconds = parse_int_config_value(
         pick_config_value(
             args.timeout,
             env_values,
             file_values,
             "XRAY_TRAFFIC_TIMEOUT_SECONDS",
             DEFAULT_TIMEOUT_SECONDS,
-        )
+        ),
+        "XRAY_TRAFFIC_TIMEOUT_SECONDS",
     )
     if "XRAY_TRAFFIC_INSTANCES" in env_values:
         raw_instances = env_values["XRAY_TRAFFIC_INSTANCES"]
@@ -341,6 +442,12 @@ def get_timezone(config: AppConfig) -> timezone:
     if local_tz is None:
         return timezone.utc
     return local_tz
+
+
+def validate_config(config: AppConfig) -> None:
+    """校验完整运行配置，适用于 check config 和 edit config 保存后检查。"""
+
+    get_timezone(config)
 
 
 def configure_logging(level: str) -> None:
@@ -1251,6 +1358,7 @@ def command_check_config(args: argparse.Namespace, config: AppConfig) -> int:
     """检查配置解析结果，适用于修改配置后验证实例和路径。"""
 
     del args
+    validate_config(config)
     sys.stdout.write(f"xray-traffic {VERSION}\n")
     sys.stdout.write(f"config={config.config_file}\n")
     sys.stdout.write(f"xray_bin={config.xray_bin}\n")
@@ -1276,6 +1384,28 @@ def command_check_health(args: argparse.Namespace, config: AppConfig) -> int:
     sys.stdout.write(f"records={record_count}\n")
     sys.stdout.write(f"instances={len(config.instances)}\n")
     return 0
+
+
+def command_edit_config(args: argparse.Namespace) -> int:
+    """打开配置文件供用户直接编辑，适用于运维调整实例、路径和保留期。"""
+
+    config_file = resolve_config_file_path(args)
+    ensure_config_file_exists(config_file)
+    backup_path = backup_config_file(config_file)
+    editor_command = resolve_editor_command()
+
+    result = subprocess.run([*editor_command, str(config_file)], check=False)
+    if result.returncode != 0:
+        raise CliError(f"editor exited with status {result.returncode}; backup kept at {backup_path}")
+
+    try:
+        config = resolve_config(args)
+        validate_config(config)
+    except CliError as exc:
+        raise CliError(f"config validation failed; backup kept at {backup_path}: {exc}") from exc
+
+    logging.info("Config validation passed")
+    return command_check_config(argparse.Namespace(), config)
 
 
 def add_instance_option(parser: argparse.ArgumentParser) -> None:
@@ -1444,6 +1574,27 @@ def build_check_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     health_parser.set_defaults(func=command_check_health)
 
 
+def build_edit_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """构建 edit <noun> 命令，适用于直接编辑配置文件。"""
+
+    edit_parser = subparsers.add_parser(
+        "edit",
+        help="编辑配置文件",
+        description="打开配置文件直接编辑，编辑前备份，编辑后自动校验。",
+        epilog=EDIT_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    edit_subparsers = edit_parser.add_subparsers(dest="noun", required=True)
+    config_parser = edit_subparsers.add_parser(
+        "config",
+        help="编辑配置文件",
+        description="打开配置文件直接编辑，编辑前备份，编辑后自动校验。",
+        epilog=EDIT_HELP,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    config_parser.set_defaults(func=command_edit_config, skip_config_resolution=True)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """构建命令行解析器，适用于所有子命令入口。"""
 
@@ -1469,6 +1620,7 @@ def build_parser() -> argparse.ArgumentParser:
     build_list_parser(subparsers)
     build_cleanup_parser(subparsers)
     build_check_parser(subparsers)
+    build_edit_parser(subparsers)
     return parser
 
 
@@ -1480,6 +1632,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     configure_logging(args.log_level)
 
     try:
+        if getattr(args, "skip_config_resolution", False):
+            return int(args.func(args))
         config = resolve_config(args)
         return int(args.func(args, config))
     except CliError as exc:
