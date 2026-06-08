@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import json
 import logging
 import math
@@ -421,7 +422,7 @@ def help_parser_for_argv(parser: argparse.ArgumentParser, argv: Sequence[str]) -
 
 
 def should_page_help(help_text: str, output: TextIO) -> bool:
-    """判断帮助信息是否需要分页，适用于交互式终端输出。"""
+    """判断文本是否需要分页，适用于帮助信息和 show 输出的交互式终端输出。"""
 
     if output is not sys.stdout:
         return False
@@ -434,7 +435,7 @@ def should_page_help(help_text: str, output: TextIO) -> bool:
 
 
 def page_help_text(help_text: str) -> bool:
-    """使用 less 分页输出帮助信息，适用于内容超过当前终端高度的场景。"""
+    """使用 less 分页输出文本，适用于内容超过当前终端高度的场景。"""
 
     less_bin = shutil.which("less")
     if less_bin is None:
@@ -444,6 +445,14 @@ def page_help_text(help_text: str) -> bool:
     except OSError:
         return False
     return result.returncode == 0
+
+
+def write_paged_text(text: str, output: TextIO) -> None:
+    """按需分页输出普通文本，适用于 show 输出超过当前终端高度的场景。"""
+
+    if should_page_help(text, output) and page_help_text(text):
+        return
+    output.write(text)
 
 
 class PagingArgumentParser(argparse.ArgumentParser):
@@ -1572,7 +1581,9 @@ def command_show_current(args: argparse.Namespace, config: AppConfig) -> int:
 
     selected_instances = select_instances(config, args.instance)
     rows, errors = read_current_rows(config, selected_instances, args.scope, args.name)
-    write_current_rows(rows, sys.stdout)
+    output = io.StringIO()
+    write_current_rows(rows, output)
+    write_paged_text(output.getvalue(), sys.stdout)
     return 1 if errors else 0
 
 
@@ -1767,7 +1778,9 @@ def command_show_records(args: argparse.Namespace, config: AppConfig) -> int:
     if not rows:
         sys.stdout.write("No records found\n")
         return 0
-    write_show_table(args.period, rows, tzinfo, sys.stdout)
+    output = io.StringIO()
+    write_show_table(args.period, rows, tzinfo, output)
+    write_paged_text(output.getvalue(), sys.stdout)
     return 0
 
 
