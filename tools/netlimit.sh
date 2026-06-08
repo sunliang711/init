@@ -5,11 +5,15 @@ SCRIPT_NAME="$(basename "$0")"
 SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/${SCRIPT_NAME}"
 APP_DIR="/etc/netlimit"
 CONFIG_FILE="${APP_DIR}/rules.conf"
+STATE_FILE="${APP_DIR}/active-devs"
+PID_CLASS_FILE="${APP_DIR}/pid-classes.conf"
 SYSTEMD_SERVICE="/etc/systemd/system/netlimit.service"
 INSTALL_PATH="/usr/local/sbin/netlimit"
 SERVICE_NAME="netlimit.service"
 MAX_RATE="10000mbit"
 DEFAULT_CLASS_MINOR="999"
+PID_CLASS_MINOR_START=30000
+PID_CLASS_MINOR_END=59999
 
 log_info() {
     printf 'INFO %s\n' "$*" >&2
@@ -34,7 +38,7 @@ Usage:
   ${SCRIPT_NAME} clear --dev DEV
   ${SCRIPT_NAME} clear-all
   ${SCRIPT_NAME} reset --dev DEV
-  ${SCRIPT_NAME} status [--dev DEV]
+  ${SCRIPT_NAME} status [--dev DEV|--all-devs]
   ${SCRIPT_NAME} install-service
   ${SCRIPT_NAME} uninstall-service
 
@@ -46,6 +50,7 @@ Notes:
   pid rules are runtime-only. They are not restored after reboot.
   pid download limiting is best-effort: it discovers current local ports with ss(8).
   Existing PID connections or future sockets may need the command to be run again.
+  status prints all saved config and runtime state; use --dev or --all-devs for live tc details.
 
 Examples:
   sudo ${SCRIPT_NAME} global --dev eth0 --upload 10mbit --download 20mbit
@@ -245,6 +250,61 @@ config_devs() {
     done <"${CONFIG_FILE}" | sort -u
 }
 
+# 记录脚本实际设置过的网卡，避免 clear-all 误清理其他 tc 规则。
+active_devs() {
+    local dev
+
+    [ -f "${STATE_FILE}" ] || return 0
+    while IFS= read -r dev || [ -n "${dev}" ]; do
+        [ -n "${dev}" ] || continue
+        case "${dev}" in
+            *[!a-zA-Z0-9_.:-]*)
+                continue
+                ;;
+        esac
+        printf '%s\n' "${dev}"
+    done <"${STATE_FILE}" | sort -u
+}
+
+tracked_devs() {
+    {
+        config_devs
+        active_devs
+    } | sort -u
+}
+
+record_active_dev() {
+    local dev="$1"
+    local tmp_file
+
+    validate_dev "${dev}"
+    ensure_config_dir
+    tmp_file="$(mktemp)" || die "Failed to create temporary file"
+    {
+        if [ -f "${STATE_FILE}" ]; then
+            cat "${STATE_FILE}"
+        fi
+        printf '%s\n' "${dev}"
+    } | awk 'NF > 0 { print }' | sort -u >"${tmp_file}"
+    install -m 0644 "${tmp_file}" "${STATE_FILE}"
+    rm -f "${tmp_file}"
+}
+
+remove_active_dev() {
+    local dev="$1"
+    local tmp_file
+
+    [ -f "${STATE_FILE}" ] || return 0
+    tmp_file="$(mktemp)" || die "Failed to create temporary file"
+    awk -v target_dev="${dev}" '$0 != target_dev { print }' "${STATE_FILE}" >"${tmp_file}"
+    install -m 0644 "${tmp_file}" "${STATE_FILE}"
+    rm -f "${tmp_file}"
+}
+
+clear_runtime_state() {
+    rm -f "${STATE_FILE}" "${PID_CLASS_FILE}"
+}
+
 write_config_line() {
     local id="$1"
     local line="$2"
@@ -379,6 +439,7 @@ setup_egress_dev() {
     tc qdisc replace dev "${dev}" root handle 1: htb default "${DEFAULT_CLASS_MINOR}"
     tc class replace dev "${dev}" parent 1: classid 1:1 htb rate "${root_rate}" ceil "${root_rate}"
     tc class replace dev "${dev}" parent 1:1 classid "1:${DEFAULT_CLASS_MINOR}" htb rate "${root_rate}" ceil "${root_rate}"
+    record_active_dev "${dev}"
 }
 
 setup_ingress_dev() {
@@ -401,6 +462,7 @@ setup_ingress_dev() {
     tc qdisc replace dev "${dev}" ingress
     tc filter del dev "${dev}" parent ffff: protocol all prio 1 matchall >/dev/null 2>&1 || true
     tc filter add dev "${dev}" parent ffff: protocol all prio 1 matchall action mirred egress redirect dev "${ifb_dev}"
+    record_active_dev "${dev}"
 }
 
 add_flower_filter() {
@@ -587,12 +649,180 @@ ensure_net_cls_mount() {
     printf '%s\n' "${mount_point}"
 }
 
-pid_class_minor() {
+# 使用进程启动时间区分 PID 复用，避免 runtime PID classid 互相覆盖。
+pid_start_time() {
     local pid="$1"
-    local minor_decimal
 
-    minor_decimal=$((30000 + (pid % 20000)))
-    printf '%x\n' "${minor_decimal}"
+    awk '{
+        line = $0
+        sub(/^.*\) /, "", line)
+        split(line, fields, " ")
+        print fields[20]
+    }' "/proc/${pid}/stat"
+}
+
+prune_pid_class_file() {
+    local line
+    local kind
+    local line_dev
+    local line_pid
+    local line_start
+    local line_minor
+    local current_start
+    local tmp_file
+
+    ensure_config_dir
+    [ -f "${PID_CLASS_FILE}" ] || return 0
+    tmp_file="$(mktemp)" || die "Failed to create temporary file"
+    while IFS= read -r line || [ -n "${line}" ]; do
+        is_rule_line "${line}" || continue
+        kind="$(line_kind "${line}")"
+        [ "${kind}" = "PID_CLASS" ] || continue
+        line_dev="$(line_value "${line}" "dev" || true)"
+        line_pid="$(line_value "${line}" "pid" || true)"
+        line_start="$(line_value "${line}" "start" || true)"
+        line_minor="$(line_value "${line}" "minor" || true)"
+        [ -n "${line_dev}" ] || continue
+        case "${line_dev}" in
+            *[!a-zA-Z0-9_.:-]*)
+                continue
+                ;;
+        esac
+        [[ "${line_pid}" =~ ^[0-9]+$ ]] || continue
+        [[ "${line_start}" =~ ^[0-9]+$ ]] || continue
+        case "${line_minor}" in
+            ""|*[!0-9a-f]*)
+                continue
+                ;;
+        esac
+        [ -d "/proc/${line_pid}" ] || continue
+        current_start="$(pid_start_time "${line_pid}" || true)"
+        [ "${current_start}" = "${line_start}" ] || continue
+        printf '%s\n' "${line}"
+    done <"${PID_CLASS_FILE}" >"${tmp_file}"
+    install -m 0644 "${tmp_file}" "${PID_CLASS_FILE}"
+    rm -f "${tmp_file}"
+}
+
+pid_class_minor_is_used() {
+    local dev="$1"
+    local minor="$2"
+    local line
+    local line_dev
+    local line_minor
+
+    [ -f "${PID_CLASS_FILE}" ] || return 1
+    while IFS= read -r line || [ -n "${line}" ]; do
+        is_rule_line "${line}" || continue
+        line_dev="$(line_value "${line}" "dev" || true)"
+        line_minor="$(line_value "${line}" "minor" || true)"
+        [ "${line_dev}" = "${dev}" ] || continue
+        [ "${line_minor}" = "${minor}" ] || continue
+        return 0
+    done <"${PID_CLASS_FILE}"
+
+    return 1
+}
+
+write_pid_class_line() {
+    local dev="$1"
+    local pid="$2"
+    local start_time="$3"
+    local minor="$4"
+    local tmp_file
+
+    ensure_config_dir
+    tmp_file="$(mktemp)" || die "Failed to create temporary file"
+    if [ -f "${PID_CLASS_FILE}" ]; then
+        awk -v dev_field="dev=${dev}" -v pid_field="pid=${pid}" '
+            {
+                has_dev = 0
+                has_pid = 0
+                for (i = 1; i <= NF; i++) {
+                    if ($i == dev_field) {
+                        has_dev = 1
+                    }
+                    if ($i == pid_field) {
+                        has_pid = 1
+                    }
+                }
+                if (has_dev == 0 || has_pid == 0) {
+                    print
+                }
+            }
+        ' "${PID_CLASS_FILE}" >"${tmp_file}"
+    fi
+    printf 'PID_CLASS dev=%s pid=%s start=%s minor=%s\n' "${dev}" "${pid}" "${start_time}" "${minor}" >>"${tmp_file}"
+    install -m 0644 "${tmp_file}" "${PID_CLASS_FILE}"
+    rm -f "${tmp_file}"
+}
+
+remove_pid_classes_dev() {
+    local dev="$1"
+    local tmp_file
+
+    [ -f "${PID_CLASS_FILE}" ] || return 0
+    tmp_file="$(mktemp)" || die "Failed to create temporary file"
+    awk -v dev_field="dev=${dev}" '
+        {
+            keep = 1
+            for (i = 1; i <= NF; i++) {
+                if ($i == dev_field) {
+                    keep = 0
+                }
+            }
+            if (keep == 1) {
+                print
+            }
+        }
+    ' "${PID_CLASS_FILE}" >"${tmp_file}"
+    install -m 0644 "${tmp_file}" "${PID_CLASS_FILE}"
+    rm -f "${tmp_file}"
+}
+
+pid_class_minor() {
+    local dev="$1"
+    local pid="$2"
+    local start_time
+    local line
+    local line_dev
+    local line_pid
+    local line_start
+    local line_minor
+    local minor_decimal
+    local class_minor
+
+    prune_pid_class_file
+    start_time="$(pid_start_time "${pid}" || true)"
+    [ -n "${start_time}" ] || die "Cannot read start time for pid=${pid}"
+
+    if [ -f "${PID_CLASS_FILE}" ]; then
+        while IFS= read -r line || [ -n "${line}" ]; do
+            is_rule_line "${line}" || continue
+            line_dev="$(line_value "${line}" "dev" || true)"
+            line_pid="$(line_value "${line}" "pid" || true)"
+            line_start="$(line_value "${line}" "start" || true)"
+            line_minor="$(line_value "${line}" "minor" || true)"
+            [ "${line_dev}" = "${dev}" ] || continue
+            [ "${line_pid}" = "${pid}" ] || continue
+            [ "${line_start}" = "${start_time}" ] || continue
+            printf '%s\n' "${line_minor}"
+            return 0
+        done <"${PID_CLASS_FILE}"
+    fi
+
+    minor_decimal="${PID_CLASS_MINOR_START}"
+    while [ "${minor_decimal}" -le "${PID_CLASS_MINOR_END}" ]; do
+        class_minor="$(printf '%x' "${minor_decimal}")"
+        if ! pid_class_minor_is_used "${dev}" "${class_minor}"; then
+            write_pid_class_line "${dev}" "${pid}" "${start_time}" "${class_minor}"
+            printf '%s\n' "${class_minor}"
+            return 0
+        fi
+        minor_decimal=$((minor_decimal + 1))
+    done
+
+    die "No available PID class id for dev=${dev}"
 }
 
 classid_to_net_cls_value() {
@@ -601,6 +831,25 @@ classid_to_net_cls_value() {
 
     minor_decimal=$((16#${minor_hex}))
     printf '0x%04x%04x\n' 1 "${minor_decimal}"
+}
+
+# PID 下载 filter 使用 class minor 作为唯一 prio，便于重跑时精确清理旧规则。
+pid_filter_prio() {
+    local minor_hex="$1"
+
+    printf '%d\n' "$((16#${minor_hex}))"
+}
+
+clear_pid_download_filters() {
+    local dev="$1"
+    local class_minor="$2"
+    local prio
+    local network_proto
+
+    prio="$(pid_filter_prio "${class_minor}")"
+    for network_proto in ip ipv6; do
+        tc filter del dev "${dev}" parent 1: protocol "${network_proto}" prio "${prio}" >/dev/null 2>&1 || true
+    done
 }
 
 apply_pid_upload_rule() {
@@ -618,7 +867,7 @@ apply_pid_upload_rule() {
     cgroup_dir="${mount_point}/netlimit/${dev}/${pid}"
     install -d -m 0755 "${cgroup_dir}"
 
-    class_minor="$(pid_class_minor "${pid}")"
+    class_minor="$(pid_class_minor "${dev}" "${pid}")"
     classid="1:${class_minor}"
     net_cls_value="$(classid_to_net_cls_value "${class_minor}")"
 
@@ -632,6 +881,7 @@ apply_pid_upload_rule() {
     tc class replace dev "${dev}" parent 1:1 classid "${classid}" htb rate "${rate}" ceil "${rate}"
     tc filter replace dev "${dev}" parent 1: protocol ip prio 1 handle 1: cgroup
     tc filter replace dev "${dev}" parent 1: protocol ipv6 prio 1 handle 1: cgroup
+    record_active_dev "${dev}"
     log_info "Applied runtime PID upload rule: pid=${pid} dev=${dev} rate=${rate}"
 }
 
@@ -661,15 +911,18 @@ apply_pid_download_rule() {
     local proto
     local port
     local found_port=0
-    local prio=300
+    local prio
 
     require_command ss
     ensure_ingress_ready "${dev}"
     ifb_dev="$(ifb_name "${dev}")"
-    class_minor="$(pid_class_minor "${pid}")"
+    class_minor="$(pid_class_minor "${dev}" "${pid}")"
     classid="1:${class_minor}"
+    prio="$(pid_filter_prio "${class_minor}")"
 
+    clear_pid_download_filters "${ifb_dev}" "${class_minor}"
     tc class replace dev "${ifb_dev}" parent 1:1 classid "${classid}" htb rate "${rate}" ceil "${rate}"
+    record_active_dev "${dev}"
 
     while IFS= read -r proto_port || [ -n "${proto_port}" ]; do
         [ -n "${proto_port}" ] || continue
@@ -677,7 +930,6 @@ apply_pid_download_rule() {
         port="${proto_port#*:}"
         add_port_filters_for_rule "${ifb_dev}" "download" "${proto}" "local" "${port}" "${classid}" "${prio}"
         found_port=1
-        prio=$((prio + 1))
         log_warn "PID download rule uses local port ${port}/${proto}; traffic from other processes on this port may also be limited"
     done < <(discover_pid_ports "${pid}")
 
@@ -869,17 +1121,30 @@ cmd_clear() {
 
     validate_dev "${dev}"
     clear_active_dev "${dev}"
+    remove_active_dev "${dev}"
+    remove_pid_classes_dev "${dev}"
     log_info "Cleared active tc rules on ${dev}; persistent config was kept"
 }
 
 cmd_clear_all() {
     local dev
+    local has_dev=0
 
     while IFS= read -r dev || [ -n "${dev}" ]; do
         [ -n "${dev}" ] || continue
+        has_dev=1
+        if [ ! -d "/sys/class/net/${dev}" ]; then
+            log_warn "Skip missing network device: ${dev}"
+            continue
+        fi
         clear_active_dev "${dev}"
         log_info "Cleared active tc rules on ${dev}"
-    done < <(config_devs)
+    done < <(tracked_devs)
+    clear_runtime_state
+
+    if [ "${has_dev}" -eq 0 ]; then
+        log_info "No active or persistent devices found"
+    fi
 }
 
 cmd_reset() {
@@ -905,12 +1170,77 @@ cmd_reset() {
     validate_dev "${dev}"
     clear_active_dev "${dev}"
     remove_config_dev "${dev}"
+    remove_active_dev "${dev}"
+    remove_pid_classes_dev "${dev}"
     log_info "Removed active and persistent rules for ${dev}"
+}
+
+print_status_file() {
+    local title="$1"
+    local path="$2"
+
+    printf '== %s: %s ==\n' "${title}" "${path}"
+    if [ ! -f "${path}" ]; then
+        printf '(missing)\n'
+        return 0
+    fi
+    if [ ! -s "${path}" ]; then
+        printf '(empty)\n'
+        return 0
+    fi
+    cat "${path}"
+}
+
+print_service_status() {
+    local service_enabled
+    local service_active
+
+    printf '\n== Service: %s ==\n' "${SERVICE_NAME}"
+    if [ -f "${SYSTEMD_SERVICE}" ]; then
+        printf 'unit_file=%s\n' "${SYSTEMD_SERVICE}"
+    else
+        printf 'unit_file=(missing)\n'
+    fi
+
+    if command -v systemctl >/dev/null 2>&1; then
+        service_enabled="$(systemctl is-enabled "${SERVICE_NAME}" 2>/dev/null || true)"
+        service_active="$(systemctl is-active "${SERVICE_NAME}" 2>/dev/null || true)"
+        printf 'enabled=%s\n' "${service_enabled:-unknown}"
+        printf 'active=%s\n' "${service_active:-unknown}"
+    else
+        printf 'systemctl=(missing)\n'
+    fi
+}
+
+print_tc_status_dev() {
+    local dev="$1"
+    local ifb_dev
+
+    require_commands cksum ip tc
+    validate_dev "${dev}"
+    ifb_dev="$(ifb_name "${dev}")"
+    printf '\n== qdisc dev %s ==\n' "${dev}"
+    tc qdisc show dev "${dev}" || true
+    printf '\n== class dev %s ==\n' "${dev}"
+    tc class show dev "${dev}" || true
+    printf '\n== filter dev %s ==\n' "${dev}"
+    tc filter show dev "${dev}" || true
+
+    if ip link show "${ifb_dev}" >/dev/null 2>&1; then
+        printf '\n== qdisc dev %s ==\n' "${ifb_dev}"
+        tc qdisc show dev "${ifb_dev}" || true
+        printf '\n== class dev %s ==\n' "${ifb_dev}"
+        tc class show dev "${ifb_dev}" || true
+        printf '\n== filter dev %s ==\n' "${ifb_dev}"
+        tc filter show dev "${ifb_dev}" || true
+    fi
 }
 
 cmd_status() {
     local dev=""
-    local ifb_dev
+    local all_devs=0
+    local status_dev
+    local has_dev=0
 
     while [ "$#" -gt 0 ]; do
         case "$1" in
@@ -918,6 +1248,10 @@ cmd_status() {
                 [ "$#" -ge 2 ] || die "Missing value for --dev"
                 dev="$2"
                 shift 2
+                ;;
+            --all-devs)
+                all_devs=1
+                shift
                 ;;
             -h|--help)
                 usage
@@ -929,31 +1263,34 @@ cmd_status() {
         esac
     done
 
-    if [ -f "${CONFIG_FILE}" ]; then
-        printf '== Persistent config: %s ==\n' "${CONFIG_FILE}"
-        cat "${CONFIG_FILE}"
-    else
-        printf '== Persistent config: %s ==\n' "${CONFIG_FILE}"
-        printf '(missing)\n'
+    if [ -n "${dev}" ] && [ "${all_devs}" -eq 1 ]; then
+        die "Use either --dev or --all-devs, not both"
     fi
 
-    if [ -n "${dev}" ]; then
-        validate_dev "${dev}"
-        ifb_dev="$(ifb_name "${dev}")"
-        printf '\n== qdisc dev %s ==\n' "${dev}"
-        tc qdisc show dev "${dev}" || true
-        printf '\n== class dev %s ==\n' "${dev}"
-        tc class show dev "${dev}" || true
-        printf '\n== filter dev %s ==\n' "${dev}"
-        tc filter show dev "${dev}" || true
+    print_status_file "Persistent config" "${CONFIG_FILE}"
+    printf '\n'
+    print_status_file "Runtime active devices" "${STATE_FILE}"
+    printf '\n'
+    print_status_file "Runtime PID class mappings" "${PID_CLASS_FILE}"
+    print_service_status
 
-        if ip link show "${ifb_dev}" >/dev/null 2>&1; then
-            printf '\n== qdisc dev %s ==\n' "${ifb_dev}"
-            tc qdisc show dev "${ifb_dev}" || true
-            printf '\n== class dev %s ==\n' "${ifb_dev}"
-            tc class show dev "${ifb_dev}" || true
-            printf '\n== filter dev %s ==\n' "${ifb_dev}"
-            tc filter show dev "${ifb_dev}" || true
+    if [ -n "${dev}" ]; then
+        print_tc_status_dev "${dev}"
+    fi
+
+    if [ "${all_devs}" -eq 1 ]; then
+        while IFS= read -r status_dev || [ -n "${status_dev}" ]; do
+            [ -n "${status_dev}" ] || continue
+            has_dev=1
+            if [ ! -d "/sys/class/net/${status_dev}" ]; then
+                log_warn "Skip missing network device: ${status_dev}"
+                continue
+            fi
+            print_tc_status_dev "${status_dev}"
+        done < <(tracked_devs)
+
+        if [ "${has_dev}" -eq 0 ]; then
+            log_info "No active or persistent devices found"
         fi
     fi
 }
@@ -1003,8 +1340,24 @@ main() {
             ;;
     esac
 
+    case "${command}" in
+        global|port|pid|apply|clear|clear-all|reset|status|install-service|uninstall-service)
+            ;;
+        *)
+            die "Unknown command: ${command}"
+            ;;
+    esac
+
     require_linux
     require_debian_or_ubuntu
+
+    if [ "${command}" = "status" ]; then
+        require_commands awk grep head cut sort
+        shift || true
+        cmd_status "$@"
+        return 0
+    fi
+
     require_root
     require_commands awk cksum grep head cut sort mktemp install tr ip tc modprobe
 
