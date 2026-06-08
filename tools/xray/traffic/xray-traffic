@@ -16,6 +16,7 @@ import sqlite3
 import subprocess
 import sys
 import time as time_module
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
@@ -39,6 +40,384 @@ VALID_SCOPES = ("inbound", "outbound", "user")
 VALID_DIRECTIONS = ("up", "down")
 VALID_PERIODS = ("hourly", "daily")
 CounterKey = Tuple[str, str, str]
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+ANSI_RESET = "\x1b[0m"
+ANSI_BOLD = "\x1b[1m"
+ANSI_DIM = "\x1b[2m"
+ANSI_CYAN = "\x1b[36m"
+ANSI_GREEN = "\x1b[32m"
+ANSI_YELLOW = "\x1b[33m"
+ANSI_BORDER = "\x1b[90m"
+
+
+def should_color_help(output: TextIO) -> bool:
+    """判断帮助信息是否应使用 ANSI 颜色，适用于终端和 less -R 分页输出。"""
+
+    if os.environ.get("NO_COLOR"):
+        return False
+    if os.environ.get("FORCE_COLOR"):
+        return True
+    if os.environ.get("TERM") == "dumb":
+        return False
+    return output.isatty()
+
+
+def color_text(text: str, color: str, enabled: bool) -> str:
+    """按需为帮助文本添加 ANSI 颜色，适用于终端样式渲染。"""
+
+    if not enabled:
+        return text
+    return f"{color}{text}{ANSI_RESET}"
+
+
+def display_width(text: str) -> int:
+    """计算帮助文本显示宽度，适用于包含中文和 ANSI 颜色的对齐场景。"""
+
+    plain_text = ANSI_RE.sub("", text)
+    width = 0
+    for char in plain_text:
+        if unicodedata.combining(char):
+            continue
+        width += 2 if unicodedata.east_asian_width(char) in ("F", "W") else 1
+    return width
+
+
+def pad_display(text: str, width: int) -> str:
+    """按显示宽度补齐空格，适用于帮助页表格列对齐。"""
+
+    return text + (" " * max(0, width - display_width(text)))
+
+
+def wrap_display_text(text: str, width: int) -> List[str]:
+    """按显示宽度折行，适用于帮助页长描述在窄终端中展示。"""
+
+    if width <= 0:
+        return [text]
+
+    lines: List[str] = []
+    for raw_line in text.splitlines() or [""]:
+        current = ""
+        current_width = 0
+        pending_space = ""
+        for token in re.findall(r"\S+|\s+", raw_line):
+            if token.isspace():
+                if current:
+                    pending_space = " "
+                continue
+
+            candidate = f"{pending_space}{token}"
+            candidate_width = display_width(candidate)
+            if current and current_width + candidate_width > width:
+                lines.append(current.rstrip())
+                current = ""
+                current_width = 0
+                pending_space = ""
+                candidate = token
+                candidate_width = display_width(candidate)
+
+            if candidate_width > width:
+                if current:
+                    lines.append(current.rstrip())
+                    current = ""
+                    current_width = 0
+                chunks = split_display_text(candidate, width)
+                lines.extend(chunks[:-1])
+                current = chunks[-1]
+                current_width = display_width(current)
+                pending_space = ""
+                continue
+
+            current += candidate
+            current_width += candidate_width
+            pending_space = ""
+        lines.append(current.rstrip())
+    return lines or [""]
+
+
+def split_display_text(text: str, width: int) -> List[str]:
+    """按显示宽度拆分单个长词，适用于路径或无空格中文内容折行。"""
+
+    chunks: List[str] = []
+    current = ""
+    current_width = 0
+    for char in text:
+        char_width = display_width(char)
+        if current and current_width + char_width > width:
+            chunks.append(current)
+            current = ""
+            current_width = 0
+        current += char
+        current_width += char_width
+    chunks.append(current)
+    return chunks or [""]
+
+
+def help_width() -> int:
+    """返回帮助页目标宽度，适用于模拟 click 风格的满宽边框。"""
+
+    columns = shutil.get_terminal_size(fallback=(100, 24)).columns
+    return max(80, min(200, columns - 2))
+
+
+def format_box(title: str, rows: Sequence[str], width: int, use_color: bool) -> List[str]:
+    """渲染带标题的边框区块，适用于 Options、Commands 等帮助页分组。"""
+
+    inner_width = width - 4
+    top_prefix = "╭─ "
+    top_repeat = max(0, width - display_width(top_prefix) - display_width(title) - 2)
+    top = f"{top_prefix}{title} {'─' * top_repeat}╮"
+    bottom = f"╰{'─' * (width - 2)}╯"
+    border_color = ANSI_BORDER
+    lines = [color_text(top, border_color, use_color)]
+    for row in rows:
+        line = f"{color_text('│', border_color, use_color)} {pad_display(row, inner_width)} {color_text('│', border_color, use_color)}"
+        lines.append(line)
+    lines.append(color_text(bottom, border_color, use_color))
+    return lines
+
+
+def format_table_rows(
+    rows: Sequence[Tuple[str, str, str, str]],
+    left_width: int,
+    inner_width: int,
+    use_color: bool,
+) -> List[str]:
+    """渲染帮助页双列表格，适用于参数名或命令名加说明的展示。"""
+
+    rendered_rows: List[str] = []
+    column_gap = 2
+    description_width = max(20, inner_width - left_width - column_gap)
+    for primary, meta, alias, description in rows:
+        primary_label = color_text(primary, ANSI_CYAN, use_color)
+        if meta:
+            primary_label = f"{primary_label} {meta}"
+        if alias:
+            primary_label = f"{primary_label}  {color_text(alias, ANSI_GREEN, use_color)}"
+
+        wrapped_description = wrap_display_text(description, description_width)
+        rendered_rows.append(f"{pad_display(primary_label, left_width)}{' ' * column_gap}{wrapped_description[0]}")
+        for wrapped_line in wrapped_description[1:]:
+            rendered_rows.append(f"{' ' * (left_width + column_gap)}{wrapped_line}")
+    return rendered_rows
+
+
+def format_table_box(
+    title: str,
+    rows: Sequence[Tuple[str, str, str, str]],
+    left_width: int,
+    width: int,
+    use_color: bool,
+) -> List[str]:
+    """渲染带边框的帮助页表格，适用于顶层命令帮助分组。"""
+
+    inner_width = width - 4
+    if rows:
+        max_label_width = max(display_width(" ".join(part for part in row[:3] if part)) for row in rows)
+        left_width = min(max(left_width, max_label_width), max(12, inner_width // 2))
+    return format_box(title, format_table_rows(rows, left_width, inner_width, use_color), width, use_color)
+
+
+def parser_subparser_action(parser: argparse.ArgumentParser) -> Optional[argparse._SubParsersAction[argparse.ArgumentParser]]:
+    """查找解析器的子命令 action，适用于渲染 Commands 分组。"""
+
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return action
+    return None
+
+
+def parser_option_actions(parser: argparse.ArgumentParser) -> List[argparse.Action]:
+    """收集解析器选项 action，适用于渲染 Typer 风格 Options 分组。"""
+
+    normal_actions: List[argparse.Action] = []
+    help_actions: List[argparse.Action] = []
+    for action in parser._actions:
+        if not action.option_strings:
+            continue
+        if action.help == argparse.SUPPRESS:
+            continue
+        if isinstance(action, argparse._HelpAction):
+            help_actions.append(action)
+            continue
+        normal_actions.append(action)
+    return normal_actions + help_actions
+
+
+def parser_argument_actions(parser: argparse.ArgumentParser) -> List[argparse.Action]:
+    """收集非子命令位置参数 action，适用于少量命令参数的展示。"""
+
+    argument_actions: List[argparse.Action] = []
+    for action in parser._actions:
+        if action.option_strings:
+            continue
+        if action.help == argparse.SUPPRESS:
+            continue
+        if isinstance(action, argparse._SubParsersAction):
+            continue
+        argument_actions.append(action)
+    return argument_actions
+
+
+def action_help_text(action: argparse.Action) -> str:
+    """格式化 argparse help 文本，适用于保留默认值占位符等内置写法。"""
+
+    if isinstance(action, argparse._HelpAction):
+        return "Show this message and exit."
+    if action.help in (None, argparse.SUPPRESS):
+        return ""
+    params = vars(action).copy()
+    params["prog"] = getattr(action.container, "prog", "") if action.container is not None else ""
+    params["default"] = action.default
+    try:
+        return str(action.help) % params
+    except (KeyError, TypeError, ValueError):
+        return str(action.help)
+
+
+def action_metavar(action: argparse.Action) -> str:
+    """推导选项或参数的值名，适用于 Usage 和 Options 列展示。"""
+
+    if action.metavar is not None:
+        if isinstance(action.metavar, tuple):
+            return " ".join(str(item) for item in action.metavar)
+        return str(action.metavar)
+    if action.choices is not None:
+        return "{" + ",".join(str(choice) for choice in action.choices) + "}"
+    return action.dest.upper()
+
+
+def action_takes_value(action: argparse.Action) -> bool:
+    """判断选项是否带值，适用于 Options 行左侧标签生成。"""
+
+    return getattr(action, "nargs", None) != 0
+
+
+def format_option_primary(action: argparse.Action, use_color: bool) -> Tuple[str, str, str, str]:
+    """格式化单个 option 行，适用于 Typer 风格的长选项、短选项和说明列。"""
+
+    long_options = [option for option in action.option_strings if option.startswith("--")]
+    short_options = [option for option in action.option_strings if option.startswith("-") and not option.startswith("--")]
+    primary = long_options[0] if long_options else action.option_strings[0]
+    alias = short_options[0] if short_options else ""
+    meta = action_metavar(action) if action_takes_value(action) else ""
+    return primary, meta, alias, action_help_text(action)
+
+
+def format_argument_primary(action: argparse.Action) -> Tuple[str, str, str, str]:
+    """格式化单个位置参数行，适用于 Arguments 分组展示。"""
+
+    name = action.metavar or action.dest.upper()
+    return str(name), "", "", action_help_text(action)
+
+
+def command_rows_from_parser(parser: argparse.ArgumentParser) -> List[Tuple[str, str, str, str]]:
+    """从子命令 action 中提取命令说明，适用于 Commands 分组展示。"""
+
+    subparser_action = parser_subparser_action(parser)
+    if subparser_action is None:
+        return []
+    rows: List[Tuple[str, str, str, str]] = []
+    for choice_action in subparser_action._choices_actions:
+        rows.append((choice_action.dest, "", "", choice_action.help or ""))
+    return rows
+
+
+def usage_has_options(parser: argparse.ArgumentParser) -> bool:
+    """判断 Usage 是否需要 [OPTIONS]，适用于模拟 Typer 的精简 usage。"""
+
+    return bool(parser_option_actions(parser))
+
+
+def usage_tokens_for_parser(parser: argparse.ArgumentParser) -> List[str]:
+    """构建 Usage 行 token，适用于所有命令层级。"""
+
+    tokens = [parser.prog]
+    if usage_has_options(parser):
+        tokens.append("[OPTIONS]")
+
+    for action in parser_argument_actions(parser):
+        name = action.metavar or action.dest.upper()
+        if action.nargs in ("?", "*"):
+            tokens.append(f"[{name}]")
+        elif action.nargs == "+":
+            tokens.append(f"{name}...")
+        else:
+            tokens.append(str(name))
+
+    if parser_subparser_action(parser) is not None:
+        tokens.extend(["COMMAND", "[ARGS]..."])
+    return tokens
+
+
+def format_usage_line(parser: argparse.ArgumentParser, output: TextIO) -> str:
+    """渲染 Typer 风格 Usage 行，适用于帮助页和 argparse 错误提示。"""
+
+    use_color = should_color_help(output)
+    tokens = usage_tokens_for_parser(parser)
+    program = color_text(tokens[0], ANSI_BOLD, use_color)
+    suffix = " ".join(tokens[1:])
+    if suffix:
+        suffix = f" {color_text(suffix, ANSI_DIM, use_color)}"
+    return f"{color_text('Usage:', ANSI_YELLOW, use_color)} {program}{suffix}"
+
+
+def format_styled_help(parser: argparse.ArgumentParser, output: TextIO) -> str:
+    """渲染 Typer/Rich 风格帮助页，适用于所有 xray-traffic 命令层级。"""
+
+    use_color = should_color_help(output)
+    width = help_width()
+    lines = ["", f" {format_usage_line(parser, output)}", ""]
+
+    if parser.description:
+        for description_line in wrap_display_text(parser.description, width - 2):
+            lines.append(f" {description_line}")
+        lines.append("")
+
+    option_rows = [format_option_primary(action, use_color) for action in parser_option_actions(parser)]
+    if option_rows:
+        lines.extend(format_table_box("Options", option_rows, 30, width, use_color))
+
+    argument_rows = [format_argument_primary(action) for action in parser_argument_actions(parser)]
+    if argument_rows:
+        if option_rows:
+            lines.append("")
+        lines.extend(format_table_box("Arguments", argument_rows, 18, width, use_color))
+
+    command_rows = command_rows_from_parser(parser)
+    if command_rows:
+        if option_rows or argument_rows:
+            lines.append("")
+        lines.extend(format_table_box("Commands", command_rows, 12, width, use_color))
+
+    return "\n".join(lines) + "\n"
+
+
+def help_parser_for_argv(parser: argparse.ArgumentParser, argv: Sequence[str]) -> argparse.ArgumentParser:
+    """根据已输入参数定位当前命令组，适用于实现 no_args_is_help 行为。"""
+
+    current_parser = parser
+    index = 0
+    while index < len(argv):
+        token = argv[index]
+        if token in ("-h", "--help"):
+            return current_parser
+
+        subparser_action = parser_subparser_action(current_parser)
+        if subparser_action is not None and token in subparser_action.choices:
+            current_parser = subparser_action.choices[token]
+            index += 1
+            continue
+
+        if token.startswith("-"):
+            option_name = token.split("=", 1)[0]
+            option_action = current_parser._option_string_actions.get(option_name)
+            index += 1
+            if option_action is not None and action_takes_value(option_action) and "=" not in token:
+                index += 1
+            continue
+
+        index += 1
+    return current_parser
 
 
 def should_page_help(help_text: str, output: TextIO) -> bool:
@@ -70,15 +449,49 @@ def page_help_text(help_text: str) -> bool:
 class PagingArgumentParser(argparse.ArgumentParser):
     """支持交互式分页输出帮助信息的命令行解析器。"""
 
+    def parse_args(
+        self,
+        args: Optional[Sequence[str]] = None,
+        namespace: Optional[argparse.Namespace] = None,
+    ) -> argparse.Namespace:
+        """解析参数并将未知参数错误定位到当前命令层级。"""
+
+        if args is None:
+            args = sys.argv[1:]
+        args_list = list(args)
+        parsed_args, unknown_args = self.parse_known_args(args_list, namespace)
+        if unknown_args:
+            help_parser = help_parser_for_argv(self, args_list)
+            help_parser.error(f"unrecognized arguments: {' '.join(unknown_args)}")
+        return parsed_args
+
+    def print_usage(self, file: Optional[TextIO] = None) -> None:
+        """打印 Typer 风格 usage 行，适用于 argparse 错误提示。"""
+
+        if file is None:
+            file = sys.stdout
+        file.write(f"{format_usage_line(self, file)}\n")
+
     def print_help(self, file: Optional[TextIO] = None) -> None:
         """打印帮助信息，交互式终端内容超屏时自动使用 less 分页。"""
 
         if file is None:
             file = sys.stdout
-        help_text = self.format_help()
+        help_text = format_styled_help(self, file)
         if should_page_help(help_text, file) and page_help_text(help_text):
             return
         file.write(help_text)
+
+    def error(self, message: str) -> None:
+        """打印 Typer 风格错误信息，适用于参数解析失败场景。"""
+
+        self.print_usage(sys.stderr)
+        sys.stderr.write(f"Try '{self.prog} --help' for help.\n")
+        width = help_width()
+        rows = wrap_display_text(message, width - 4)
+        sys.stderr.write("\n".join(format_box("Error", rows, width, should_color_help(sys.stderr))))
+        sys.stderr.write("\n")
+        self.exit(2)
 
 TOP_LEVEL_HELP = f"""\
 命令结构:
@@ -1585,7 +1998,7 @@ def build_collect_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
         epilog=COLLECT_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    collect_subparsers = collect_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
+    collect_subparsers = collect_parser.add_subparsers(dest="noun", parser_class=PagingArgumentParser)
 
     hourly_parser = collect_subparsers.add_parser("hourly", help="立即采集小时增量快照并 reset")
     add_instance_option(hourly_parser)
@@ -1610,7 +2023,7 @@ def build_show_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
         epilog=SHOW_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    show_subparsers = show_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
+    show_subparsers = show_parser.add_subparsers(dest="noun", parser_class=PagingArgumentParser)
 
     for period in VALID_PERIODS:
         period_parser = show_subparsers.add_parser(period, help=f"查看 {period} 记录")
@@ -1637,7 +2050,7 @@ def build_watch_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
         epilog=WATCH_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    watch_subparsers = watch_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
+    watch_subparsers = watch_parser.add_subparsers(dest="noun", parser_class=PagingArgumentParser)
     current_parser = watch_subparsers.add_parser(
         "current",
         help="持续查看上次 reset 后当前累计",
@@ -1661,7 +2074,7 @@ def build_summarize_parser(subparsers: argparse._SubParsersAction[argparse.Argum
         epilog=SUMMARIZE_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    summarize_subparsers = summarize_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
+    summarize_subparsers = summarize_parser.add_subparsers(dest="noun", parser_class=PagingArgumentParser)
     for period in VALID_PERIODS:
         period_parser = summarize_subparsers.add_parser(period, help=f"汇总 {period} 记录")
         add_read_options(period_parser, period, default_days=7)
@@ -1678,7 +2091,7 @@ def build_export_parser(subparsers: argparse._SubParsersAction[argparse.Argument
         epilog=EXPORT_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    export_subparsers = export_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
+    export_subparsers = export_parser.add_subparsers(dest="noun", parser_class=PagingArgumentParser)
     for period in VALID_PERIODS:
         period_parser = export_subparsers.add_parser(period, help=f"导出 {period} 明细")
         add_read_options(period_parser, period, default_days=7)
@@ -1697,7 +2110,7 @@ def build_list_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
         epilog=LIST_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    list_subparsers = list_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
+    list_subparsers = list_parser.add_subparsers(dest="noun", parser_class=PagingArgumentParser)
     instances_parser = list_subparsers.add_parser("instances", help="列出可用实例")
     instances_parser.set_defaults(func=command_list_instances)
 
@@ -1712,7 +2125,7 @@ def build_cleanup_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
         epilog=CLEANUP_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    cleanup_subparsers = cleanup_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
+    cleanup_subparsers = cleanup_parser.add_subparsers(dest="noun", parser_class=PagingArgumentParser)
     records_parser = cleanup_subparsers.add_parser("records", help="清理超过保留期的记录")
     records_parser.set_defaults(func=command_cleanup_records)
 
@@ -1727,7 +2140,7 @@ def build_check_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
         epilog=CHECK_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    check_subparsers = check_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
+    check_subparsers = check_parser.add_subparsers(dest="noun", parser_class=PagingArgumentParser)
     config_parser = check_subparsers.add_parser("config", help="检查配置解析结果")
     config_parser.set_defaults(func=command_check_config)
     health_parser = check_subparsers.add_parser("health", help="检查运行环境和数据库")
@@ -1744,7 +2157,7 @@ def build_edit_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
         epilog=EDIT_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    edit_subparsers = edit_parser.add_subparsers(dest="noun", required=True, parser_class=PagingArgumentParser)
+    edit_subparsers = edit_parser.add_subparsers(dest="noun", parser_class=PagingArgumentParser)
     config_parser = edit_subparsers.add_parser(
         "config",
         help="编辑配置文件",
@@ -1759,7 +2172,7 @@ def build_parser() -> argparse.ArgumentParser:
     """构建命令行解析器，适用于所有子命令入口。"""
 
     parser = PagingArgumentParser(
-        description="Xray traffic snapshot collector",
+        description="Xray 多实例流量快照采集、聚合和查询命令。",
         epilog=TOP_LEVEL_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1770,9 +2183,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timezone", help="统计使用的 IANA 时区，例如 Asia/Shanghai；默认使用系统本地时区")
     parser.add_argument("--timeout", type=int, help=f"调用 xray 的超时时间秒数，默认 {DEFAULT_TIMEOUT_SECONDS}")
     parser.add_argument("--log-level", default="INFO", help="日志级别，默认 INFO")
-    parser.add_argument("--version", action="version", version=f"xray-traffic {VERSION}")
+    parser.add_argument("--version", action="version", version=f"xray-traffic {VERSION}", help="输出 xray-traffic 版本。")
 
-    subparsers = parser.add_subparsers(dest="action", required=True, parser_class=PagingArgumentParser)
+    subparsers = parser.add_subparsers(dest="action", parser_class=PagingArgumentParser)
     build_collect_parser(subparsers)
     build_show_parser(subparsers)
     build_watch_parser(subparsers)
@@ -1795,6 +2208,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         parser.print_help()
         return 0
     args = parser.parse_args(argv)
+    if not hasattr(args, "func"):
+        help_parser = help_parser_for_argv(parser, argv)
+        help_parser.print_help()
+        return 0
     configure_logging(args.log_level)
 
     try:
