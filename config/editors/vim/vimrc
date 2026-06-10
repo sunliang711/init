@@ -36,7 +36,9 @@ set smarttab
 set backspace=indent,eol,start whichwrap+=<,>,[,]
 " set patchmode=.orig
 let mapleader=','
-set termencoding=utf8
+if !has('nvim')
+    set termencoding=utf8
+endif
 set encoding=utf8
 set fileencodings=utf8,ucs-bom,gbk,cp936,gb2312,gb18030
 "允许在未保存时切换buffer
@@ -259,10 +261,344 @@ function! GotoJump()
   endif
 endfunction
 
-set completeopt=longest,menuone
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+"
+"      basic completion, no lsp
+"
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+set completeopt=menuone,noinsert,noselect
+set wildmenu
+set wildmode=longest:full,full
+if exists('+wildoptions')
+    set wildoptions=pum
+endif
+if exists('+autocomplete')
+    set autocomplete
+endif
+set complete=.,w,b,u,t
 
-nnoremap <leader>e :NERDTreeToggle<CR>
+" 判断光标前是否为空白，用于在补全和普通 Tab 输入之间切换。
+function! s:CheckBackspace() abort
+    let col = col('.') - 1
+    return !col || getline('.')[col - 1] =~# '\s'
+endfunction
+
+inoremap <expr> <Tab> pumvisible() ? "\<C-n>" : <SID>CheckBackspace() ? "\<Tab>" : "\<C-n>"
+inoremap <expr> <S-Tab> pumvisible() ? "\<C-p>" : "\<C-h>"
+inoremap <expr> <C-j> pumvisible() ? "\<C-n>" : "\<C-j>"
+inoremap <expr> <C-k> pumvisible() ? "\<C-p>" : "\<C-k>"
+inoremap <expr> <CR> pumvisible() ? "\<C-y>" : "\<CR>"
+inoremap <expr> <C-Space> pumvisible() ? "\<C-n>" : "\<C-x>\<C-f>"
+inoremap <expr> <C-@> pumvisible() ? "\<C-n>" : "\<C-x>\<C-f>"
+
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+"
+"      plugin defaults
+"
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+let g:gitgutter_map_keys = 0
+let g:NERDTreeShowHidden = 1
+let g:NERDTreeMinimalUI = 1
+let g:EasyMotion_do_mapping = 0
+let g:fzf_vim = get(g:, 'fzf_vim', {})
+let g:fzf_vim.preview_window = ['right,50%', 'ctrl-/']
+let g:vim_fzf_search_hidden = get(g:, 'vim_fzf_search_hidden', 0)
+let g:vim_fzf_search_no_ignore = get(g:, 'vim_fzf_search_no_ignore', 0)
+let g:lightline = {
+            \ 'colorscheme': 'wombat',
+            \ }
+set noshowmode
+
+" 统一 which-key 浮层颜色，避免继承配色里的高饱和 Identifier 背景。
+function! s:ApplyWhichKeyHighlights() abort
+    highlight WhichKeyFloating cterm=NONE ctermfg=252 ctermbg=235 gui=NONE guifg=#d7dae0 guibg=#262626
+    highlight WhichKeyDesc cterm=NONE ctermfg=252 ctermbg=235 gui=NONE guifg=#d7dae0 guibg=#262626
+    highlight WhichKey cterm=bold ctermfg=39 ctermbg=235 gui=bold guifg=#4ea1ff guibg=#262626
+    highlight WhichKeySeperator cterm=NONE ctermfg=245 ctermbg=235 gui=NONE guifg=#8a8a8a guibg=#262626
+    highlight WhichKeyGroup cterm=bold ctermfg=221 ctermbg=235 gui=bold guifg=#d7ba7d guibg=#262626
+    highlight WhichKeyTrigger cterm=bold ctermfg=16 ctermbg=75 gui=bold guifg=#1f1f1f guibg=#7dcfff
+    highlight WhichKeyName cterm=bold ctermfg=252 ctermbg=239 gui=bold guifg=#d7dae0 guibg=#4e4e4e
+endfunction
+
+" 检测 fzf.vim 的 autoload 文件，避免 exists('*fzf#vim#...') 误判未安装。
+function! s:HasFzfVim() abort
+    return !empty(globpath(&runtimepath, 'autoload/fzf/vim.vim'))
+endfunction
+
+" 根据隐藏文件和 ignore 开关刷新 fzf 默认文件搜索命令。
+function! s:RefreshFzfDefaultCommand() abort
+    if !executable('rg')
+        return
+    endif
+
+    let cmd = 'rg --files --color=never --glob "!.git"'
+    if get(g:, 'vim_fzf_search_hidden', 0)
+        let cmd .= ' --hidden'
+    endif
+    if get(g:, 'vim_fzf_search_no_ignore', 0)
+        let cmd .= ' --no-ignore'
+    endif
+    let $FZF_DEFAULT_COMMAND = cmd
+endfunction
+
+" 使用 fzf.vim 打开文件搜索，缺少插件时给出明确提示。
+function! s:FzfFindFiles(with_preview) abort
+    if !s:HasFzfVim()
+        echoerr 'fzf.vim is not installed'
+        return
+    endif
+
+    call s:RefreshFzfDefaultCommand()
+    if a:with_preview
+        call fzf#vim#files('', fzf#vim#with_preview(), 0)
+    else
+        call fzf#vim#files('', {}, 0)
+    endif
+endfunction
+
+" 使用 fzf.vim 的 live grep，在 fzf 输入框中输入 pattern。
+function! s:FzfTextSearch() abort
+    if !s:HasFzfVim()
+        echoerr 'fzf.vim is not installed'
+        return
+    endif
+    if !executable('rg')
+        echoerr 'ripgrep is not installed'
+        return
+    endif
+
+    let cmd = 'rg --column --line-number --no-heading --color=always --smart-case'
+    if get(g:, 'vim_fzf_search_hidden', 0)
+        let cmd .= ' --hidden --glob "!.git"'
+    endif
+    if get(g:, 'vim_fzf_search_no_ignore', 0)
+        let cmd .= ' --no-ignore'
+    endif
+    let cmd .= ' -- '
+
+    call fzf#vim#grep2(cmd, '', fzf#vim#with_preview(), 0)
+endfunction
+
+" 切换 fzf 文件搜索是否包含隐藏文件。
+function! s:ToggleFzfHidden() abort
+    let g:vim_fzf_search_hidden = !get(g:, 'vim_fzf_search_hidden', 0)
+    call s:RefreshFzfDefaultCommand()
+    echo g:vim_fzf_search_hidden ? 'fzf hidden files shown' : 'fzf hidden files hidden'
+endfunction
+
+" 切换 fzf 文件搜索是否忽略 .gitignore。
+function! s:ToggleFzfNoIgnore() abort
+    let g:vim_fzf_search_no_ignore = !get(g:, 'vim_fzf_search_no_ignore', 0)
+    call s:RefreshFzfDefaultCommand()
+    echo g:vim_fzf_search_no_ignore ? 'fzf gitignored files shown' : 'fzf gitignored files hidden'
+endfunction
+
+" 打开 lazygit；未安装 lazygit 时回退到 fugitive 的 Git 状态窗口。
+function! s:OpenLazyGit() abort
+    if executable('lazygit') && exists(':terminal')
+        bel terminal lazygit
+    elseif exists(':Git')
+        Git
+    else
+        echoerr 'lazygit or vim-fugitive is not installed'
+    endif
+endfunction
+
+" 为 which-key 注册 leader 菜单，插件加载后再执行。
+function! s:RegisterWhichKey() abort
+    if !exists('*which_key#register')
+        return
+    endif
+
+    let g:which_key_map = {}
+    let g:which_key_map.f = {
+                \ 'name': '+file/search',
+                \ 'e': 'file-tree',
+                \ 'E': 'find-current-file',
+                \ 'f': 'find-files',
+                \ 'F': 'find-files-preview',
+                \ 't': 'find-text',
+                \ 'b': 'buffers',
+                \ 'r': 'recent-files',
+                \ 'c': 'commands',
+                \ 'w': 'write-all',
+                \ 'q': 'write-all-quit',
+                \ 'Q': 'quit-all',
+                \ }
+    let g:which_key_map.t = {
+                \ 'name': '+telescope-like',
+                \ 'k': 'keymaps',
+                \ 'h': 'command-history',
+                \ 'c': 'commands',
+                \ 'C': 'colorscheme',
+                \ '?': 'help',
+                \ }
+    let g:which_key_map.o = {
+                \ 'name': '+options',
+                \ 'w': 'wrap',
+                \ 'r': 'relative-number',
+                \ 'l': 'cursorline',
+                \ 'c': 'cursorcolumn',
+                \ 'd': 'fzf-hidden',
+                \ 'g': 'fzf-no-ignore',
+                \ 's': 'spell',
+                \ 'D': 'background-dark',
+                \ 'L': 'background-light',
+                \ 'h': 'search-highlight',
+                \ }
+    let g:which_key_map.b = {
+                \ 'name': '+buffer',
+                \ 'n': 'next-buffer',
+                \ 'p': 'previous-buffer',
+                \ 'b': 'previous-buffer',
+                \ 'd': 'delete-buffer',
+                \ 'j': 'jump-buffer',
+                \ }
+    let g:which_key_map.w = {
+                \ 'name': '+window',
+                \ 'h': 'left',
+                \ 'j': 'down',
+                \ 'k': 'up',
+                \ 'l': 'right',
+                \ '-': 'split-below',
+                \ '|': 'split-right',
+                \ 'q': 'close-window',
+                \ }
+    let g:which_key_map.g = {
+                \ 'name': '+git',
+                \ 'j': 'next-hunk',
+                \ 'k': 'previous-hunk',
+                \ 'p': 'preview-hunk',
+                \ 'r': 'undo-hunk',
+                \ 's': 'stage-hunk',
+                \ 'o': 'changed-files',
+                \ 'b': 'branches',
+                \ 'c': 'commits',
+                \ 'g': 'lazygit',
+                \ }
+    let g:which_key_map.x = {
+                \ 'name': '+lists',
+                \ 'l': 'location-list',
+                \ 'q': 'quickfix-list',
+                \ }
+    let g:which_key_map['/'] = 'comment'
+    call which_key#register(',', 'g:which_key_map')
+endfunction
+
+" 打开 which-key 菜单；插件缺失时避免普通 leader 按键报错。
+function! s:ShowWhichKey(visual) abort
+    if a:visual && exists(':WhichKeyVisual')
+        WhichKeyVisual ','
+    elseif !a:visual && exists(':WhichKey')
+        WhichKey ','
+    else
+        echoerr 'vim-which-key is not installed'
+    endif
+endfunction
+
+" 打开健康检查；Vim 缺少 Neovim checkhealth 时回退到版本信息。
+function! s:CheckHealth() abort
+    if exists(':checkhealth')
+        checkhealth
+    elseif exists(':CheckHealth')
+        CheckHealth
+    else
+        version
+    endif
+endfunction
+
+call s:RefreshFzfDefaultCommand()
+call s:ApplyWhichKeyHighlights()
+augroup InitVimPluginSetup
+    autocmd!
+    autocmd FileType which_key call <SID>ApplyWhichKeyHighlights()
+    autocmd VimEnter * call <SID>RegisterWhichKey()
+augroup END
+
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+"
+"      neovim-like plugin keymaps
+"
+"""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""""
+set timeout
+set timeoutlen=500
+
+nnoremap <silent> <leader> :<C-U>call <SID>ShowWhichKey(0)<CR>
+vnoremap <silent> <leader> :<C-U>call <SID>ShowWhichKey(1)<CR>
+
+nnoremap <silent> <leader>e :NERDTreeToggle<CR>
+nnoremap <silent> <leader>fe :NERDTreeToggle<CR>
+nnoremap <silent> <leader>fE :NERDTreeFind<CR>
+nnoremap <silent> <leader>ff :call <SID>FzfFindFiles(0)<CR>
+nnoremap <silent> <leader>fF :call <SID>FzfFindFiles(1)<CR>
+nnoremap <silent> <leader>ft :call <SID>FzfTextSearch()<CR>
+nnoremap <silent> <leader>fb :Buffers<CR>
+nnoremap <silent> <leader>fr :History<CR>
+nnoremap <silent> <leader>fc :Commands<CR>
+nnoremap <silent> <leader>fw :wall<CR>
+nnoremap <silent> <leader>fq :wqa<CR>
+nnoremap <silent> <leader>fQ :qa!<CR>
+
+nnoremap <silent> <leader>tk :Maps<CR>
+nnoremap <silent> <leader>th :History:<CR>
+nnoremap <silent> <leader>tc :Commands<CR>
+nnoremap <silent> <leader>tC :Colors<CR>
+nnoremap <silent> <leader>t? :Helptags<CR>
+
+nnoremap <silent> <leader>ow :set wrap!<CR>
+nnoremap <silent> <leader>or :set relativenumber!<CR>
+nnoremap <silent> <leader>ol :set cursorline!<CR>
+nnoremap <silent> <leader>oc :set cursorcolumn!<CR>
+nnoremap <silent> <leader>od :call <SID>ToggleFzfHidden()<CR>
+nnoremap <silent> <leader>og :call <SID>ToggleFzfNoIgnore()<CR>
+nnoremap <silent> <leader>os :set spell!<CR>
+nnoremap <silent> <leader>oD :set background=dark<CR>
+nnoremap <silent> <leader>oL :set background=light<CR>
+nnoremap <silent> <leader>oh :set hlsearch!<CR>
+
+nnoremap <silent> <leader>ce :tab e ~/.vimrc<CR>
+nnoremap <silent> <leader>cp :tab e ~/.vimrc<CR>
+nnoremap <silent> <leader>ch :call <SID>CheckHealth()<CR>
+
+nnoremap <silent> <leader>bn :bnext<CR>
+nnoremap <silent> <leader>bp :bprevious<CR>
+nnoremap <silent> <leader>bb :bprevious<CR>
+nnoremap <silent> <leader>bd :bdelete<CR>
+nnoremap <silent> <leader>bj :Buffers<CR>
+nnoremap <silent> <leader>wh <C-W>h
+nnoremap <silent> <leader>wj <C-W>j
+nnoremap <silent> <leader>wk <C-W>k
+nnoremap <silent> <leader>wl <C-W>l
+nnoremap <silent> <leader>w- :split<CR>
+nnoremap <silent> <leader>w\| :vsplit<CR>
+nnoremap <silent> <leader>wq :close<CR>
+
+nmap <silent> <leader>gj <Plug>(GitGutterNextHunk)
+nmap <silent> <leader>gk <Plug>(GitGutterPrevHunk)
+nmap <silent> <leader>gp <Plug>(GitGutterPreviewHunk)
+nmap <silent> <leader>gr <Plug>(GitGutterUndoHunk)
+xmap <silent> <leader>gr <Plug>(GitGutterUndoHunk)
+nmap <silent> <leader>gs <Plug>(GitGutterStageHunk)
+xmap <silent> <leader>gs <Plug>(GitGutterStageHunk)
+nnoremap <silent> <leader>go :GFiles?<CR>
+nnoremap <silent> <leader>gb :Git branch<CR>
+nnoremap <silent> <leader>gc :Commits<CR>
+nnoremap <silent> <leader>gg :call <SID>OpenLazyGit()<CR>
+
+nmap <silent> <leader>/ gcc
+xmap <silent> <leader>/ gc
+nmap gw <Plug>(easymotion-w)
+nmap gl <Plug>(easymotion-lineforward)
+nmap gp <Plug>(easymotion-sn)
+
+nnoremap <silent> <leader>xl :lopen<CR>
+nnoremap <silent> <leader>xq :copen<CR>
+
 nnoremap <c-h> <c-w>h
 nnoremap <c-l> <c-w>l
 nnoremap <c-j> <c-w>j
 nnoremap <c-k> <c-w>k
+nnoremap <up> :resize +2<CR>
+nnoremap <down> :resize -2<CR>
+nnoremap <left> :vertical resize -2<CR>
+nnoremap <right> :vertical resize +2<CR>

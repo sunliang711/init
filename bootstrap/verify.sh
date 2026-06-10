@@ -303,6 +303,15 @@ EOF
     chmod +x "${TEST_BIN}/git"
 }
 
+# 创建一个带指定 remote 的假 Vim 插件仓库，用于验证非托管插件不会被卸载。
+seed_fake_vim_plugin() {
+    local repo_dir="${1:?missing repo dir}"
+    local remote_url="${2:?missing remote url}"
+
+    mkdir -p "${repo_dir}/.git"
+    printf '%s\n' "${remote_url}" >"${repo_dir}/.git/init-remote"
+}
+
 install_fake_curl() {
     cat >"${TEST_BIN}/curl" <<'EOF'
 #!/bin/sh
@@ -640,9 +649,29 @@ test_vim_user_install() {
     assert_find_count "${TEST_HOME}" ".vimrc.init.bak.*" 1
     assert_exists "${TEST_HOME}/.vim/pack/vendor/start/nerdtree/.git"
     assert_exists "${TEST_HOME}/.vim/pack/vendor/start/nerdtree/doc/nerdtree.txt"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/fzf/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/fzf.vim/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-which-key/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-gitgutter/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-fugitive/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-surround/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-commentary/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/auto-pairs/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-easymotion/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/lightline.vim/.git"
     assert_exists "${state_file}"
     assert_file_contains "${state_file}" "MANAGED_USER_VIMRC=1"
     assert_file_contains "${state_file}" "MANAGED_NERDTREE_DIR=1"
+    assert_file_contains "${state_file}" "MANAGED_FZF_DIR=1"
+    assert_file_contains "${state_file}" "MANAGED_FZF_VIM_DIR=1"
+    assert_file_contains "${state_file}" "MANAGED_VIM_WHICH_KEY_DIR=1"
+    assert_file_contains "${state_file}" "MANAGED_VIM_GITGUTTER_DIR=1"
+    assert_file_contains "${state_file}" "MANAGED_VIM_FUGITIVE_DIR=1"
+    assert_file_contains "${state_file}" "MANAGED_VIM_SURROUND_DIR=1"
+    assert_file_contains "${state_file}" "MANAGED_VIM_COMMENTARY_DIR=1"
+    assert_file_contains "${state_file}" "MANAGED_AUTO_PAIRS_DIR=1"
+    assert_file_contains "${state_file}" "MANAGED_VIM_EASYMOTION_DIR=1"
+    assert_file_contains "${state_file}" "MANAGED_LIGHTLINE_DIR=1"
 }
 
 test_vim_user_uninstall() {
@@ -664,6 +693,16 @@ test_vim_user_uninstall() {
 
     assert_not_exists "${TEST_HOME}/.vimrc"
     assert_not_exists "${TEST_HOME}/.vim/pack/vendor/start/nerdtree"
+    assert_not_exists "${TEST_HOME}/.vim/pack/vendor/start/fzf"
+    assert_not_exists "${TEST_HOME}/.vim/pack/vendor/start/fzf.vim"
+    assert_not_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-which-key"
+    assert_not_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-gitgutter"
+    assert_not_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-fugitive"
+    assert_not_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-surround"
+    assert_not_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-commentary"
+    assert_not_exists "${TEST_HOME}/.vim/pack/vendor/start/auto-pairs"
+    assert_not_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-easymotion"
+    assert_not_exists "${TEST_HOME}/.vim/pack/vendor/start/lightline.vim"
     assert_exists "${TEST_HOME}/.vim/keep/marker"
     assert_not_exists "${state_file}"
 }
@@ -677,15 +716,34 @@ test_vim_uninstall_preserves_unmanaged_resources() {
     state_file="${TEST_HOME}/.local/state/init/vim.state"
 
     cp "${ROOT_DIR}/config/editors/vim/vimrc" "${TEST_HOME}/.vimrc"
-    mkdir -p "${TEST_HOME}/.vim/pack/vendor/start/nerdtree/.git"
     mkdir -p "${TEST_HOME}/.vim/pack/vendor/start/nerdtree/doc"
-    printf '%s\n' "https://github.com/preservim/nerdtree.git" >"${TEST_HOME}/.vim/pack/vendor/start/nerdtree/.git/init-remote"
+    seed_fake_vim_plugin "${TEST_HOME}/.vim/pack/vendor/start/nerdtree" "https://github.com/preservim/nerdtree.git"
+    seed_fake_vim_plugin "${TEST_HOME}/.vim/pack/vendor/start/fzf" "https://github.com/junegunn/fzf.git"
+    seed_fake_vim_plugin "${TEST_HOME}/.vim/pack/vendor/start/fzf.vim" "https://github.com/junegunn/fzf.vim.git"
+    seed_fake_vim_plugin "${TEST_HOME}/.vim/pack/vendor/start/vim-which-key" "https://github.com/liuchengxu/vim-which-key.git"
+    seed_fake_vim_plugin "${TEST_HOME}/.vim/pack/vendor/start/vim-gitgutter" "https://github.com/airblade/vim-gitgutter.git"
+    seed_fake_vim_plugin "${TEST_HOME}/.vim/pack/vendor/start/vim-fugitive" "https://github.com/tpope/vim-fugitive.git"
+    seed_fake_vim_plugin "${TEST_HOME}/.vim/pack/vendor/start/vim-surround" "https://github.com/tpope/vim-surround.git"
+    seed_fake_vim_plugin "${TEST_HOME}/.vim/pack/vendor/start/vim-commentary" "https://github.com/tpope/vim-commentary.git"
+    seed_fake_vim_plugin "${TEST_HOME}/.vim/pack/vendor/start/auto-pairs" "https://github.com/jiangmiao/auto-pairs.git"
+    seed_fake_vim_plugin "${TEST_HOME}/.vim/pack/vendor/start/vim-easymotion" "https://github.com/easymotion/vim-easymotion.git"
+    seed_fake_vim_plugin "${TEST_HOME}/.vim/pack/vendor/start/lightline.vim" "https://github.com/itchyny/lightline.vim.git"
     printf 'nerdtree help\n' >"${TEST_HOME}/.vim/pack/vendor/start/nerdtree/doc/nerdtree.txt"
 
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
         bash "${ROOT_DIR}/bootstrap/components/vim-setup.sh" user
     assert_file_contains "${state_file}" "MANAGED_USER_VIMRC=0"
     assert_file_contains "${state_file}" "MANAGED_NERDTREE_DIR=0"
+    assert_file_contains "${state_file}" "MANAGED_FZF_DIR=0"
+    assert_file_contains "${state_file}" "MANAGED_FZF_VIM_DIR=0"
+    assert_file_contains "${state_file}" "MANAGED_VIM_WHICH_KEY_DIR=0"
+    assert_file_contains "${state_file}" "MANAGED_VIM_GITGUTTER_DIR=0"
+    assert_file_contains "${state_file}" "MANAGED_VIM_FUGITIVE_DIR=0"
+    assert_file_contains "${state_file}" "MANAGED_VIM_SURROUND_DIR=0"
+    assert_file_contains "${state_file}" "MANAGED_VIM_COMMENTARY_DIR=0"
+    assert_file_contains "${state_file}" "MANAGED_AUTO_PAIRS_DIR=0"
+    assert_file_contains "${state_file}" "MANAGED_VIM_EASYMOTION_DIR=0"
+    assert_file_contains "${state_file}" "MANAGED_LIGHTLINE_DIR=0"
 
     run env HOME="${TEST_HOME}" INIT_HOME="${TEST_HOME}" PATH="${PATH}" \
         bash "${ROOT_DIR}/bootstrap/components/vim-setup.sh" uninstall
@@ -693,6 +751,16 @@ test_vim_uninstall_preserves_unmanaged_resources() {
     assert_exists "${TEST_HOME}/.vimrc"
     assert_exists "${TEST_HOME}/.vim/pack/vendor/start/nerdtree/.git"
     assert_exists "${TEST_HOME}/.vim/pack/vendor/start/nerdtree/doc/nerdtree.txt"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/fzf/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/fzf.vim/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-which-key/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-gitgutter/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-fugitive/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-surround/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-commentary/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/auto-pairs/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/vim-easymotion/.git"
+    assert_exists "${TEST_HOME}/.vim/pack/vendor/start/lightline.vim/.git"
     assert_not_exists "${state_file}"
 }
 

@@ -90,7 +90,7 @@ component_supports_action() {
         install:zsh | uninstall:zsh | check:zsh | \
         install:fzf | uninstall:fzf | check:fzf | \
         install:tmux | uninstall:tmux | check:tmux | \
-        install:vim | check:vim | \
+        install:vim | uninstall:vim | check:vim | \
         install:update | uninstall:update | check:update)
         return 0
         ;;
@@ -115,7 +115,7 @@ describe_component() {
         echo "tmux config and TPM plugin manager"
         ;;
     vim)
-        echo "user vimrc and nerdtree plugin"
+        echo "user vimrc and Vim package plugins"
         ;;
     update)
         echo "daily repo auto-update scheduler"
@@ -141,7 +141,7 @@ summarize_component_change() {
         echo "Clones TPM and writes ~/.tmux.conf."
         ;;
     install:vim)
-        echo "Copies ~/.vimrc and installs nerdtree under ~/.vim/pack."
+        echo "Copies ~/.vimrc and installs Vim package plugins under ~/.vim/pack."
         ;;
     install:update)
         echo "Adds a daily scheduler entry to update this repo."
@@ -154,6 +154,9 @@ summarize_component_change() {
         ;;
     uninstall:tmux)
         echo "Removes ~/.tmux.conf and ~/.tmux."
+        ;;
+    uninstall:vim)
+        echo "Removes Vim artifacts managed by bootstrap/components/vim-setup.sh."
         ;;
     uninstall:update)
         echo "Removes the repo auto-update scheduler entry."
@@ -448,6 +451,9 @@ run_component_action() {
         ;;
     install:vim)
         bash "${SCRIPT_DIR}/bootstrap/components/vim-setup.sh" user
+        ;;
+    uninstall:vim)
+        bash "${SCRIPT_DIR}/bootstrap/components/vim-setup.sh" uninstall
         ;;
     check:update)
         bash "${SCRIPT_DIR}/bootstrap/jobs/repo-update.sh" check

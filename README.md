@@ -26,7 +26,7 @@ Useful examples:
 bash install.sh install --components zsh,fzf
 bash install.sh install --all --dry-run
 bash install.sh install git zsh --proxy http://127.0.0.1:7890
-bash install.sh uninstall --components zsh,fzf,tmux
+bash install.sh uninstall --components zsh,fzf,tmux,vim
 bash install.sh check all
 ```
 
@@ -181,7 +181,7 @@ The install scripts now try to avoid destructive changes:
 
 - `bash install.sh uninstall --components ...` removes only repo-managed artifacts for supported components.
 - When a managed install needs to take over an existing user file, it backs that file up as `*.init.bak.<timestamp>`.
-- `zsh`, `fzf`, `tmux`, and `update` support uninstall through `install.sh`.
+- `zsh`, `fzf`, `tmux`, `vim`, and `update` support uninstall through `install.sh`.
 
 ## Verification
 
