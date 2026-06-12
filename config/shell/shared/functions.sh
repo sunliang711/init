@@ -554,20 +554,27 @@ EOF
         echo "${remote}: ${current_url} -> ${new_url}"
     }
 
+    # 通过 HTTPS 克隆 GitHub 仓库，成功后进入克隆目录。
     function ghclone() {
         p=${1:?"Usage: ghclone githubAccount/xx.git [newDir]"}
-        local user_proj="$(echo $p | perl -lne 'print $2 if /^\s*(https:\/\/github.com\/)?([^\/]+\/[^\/]+)/')"
+        local user_proj
+        user_proj="$(echo "$p" | perl -lne 'print $2 if /^\s*(https:\/\/github.com\/)?([^\/]+\/[^\/]+)/')"
         if [ -z "${user_proj}" ]; then
             echo "Usage: ghclone [https://github.com/]USER/PROJ [newDIR]" >&2
             return 1
         fi
         if (($# > 1)); then
             newname=${2}
+            local target_dir="${newname}"
             set -x
-            git clone "https://github.com/$user_proj" "$newname"
+            git clone "https://github.com/$user_proj" "$newname" || return 1
+            cd -- "$target_dir" || return 1
         else
+            local target_dir="${user_proj##*/}"
+            target_dir="${target_dir%.git}"
             set -x
-            git clone "https://github.com/$user_proj"
+            git clone "https://github.com/$user_proj" || return 1
+            cd -- "$target_dir" || return 1
         fi
     }
 
