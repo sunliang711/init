@@ -143,24 +143,74 @@ function set_firewall() {
 }
 
 function enable_bbr(){
-    # if /etc/sysctl.conf not exist, create it
-    if [ ! -e /etc/sysctl.conf ]; then
-        log "enable bbr"
-        echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-        echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-        sysctl -p
-        return
+    local bbr_sysctl_file="/etc/sysctl.d/99-init-bbr.conf"
+    local legacy_sysctl_file="/etc/sysctl.conf"
+    local current_qdisc
+    local current_congestion
+
+    if ! command -v sysctl > /dev/null; then
+        log "sysctl command not found, exit"
+        exit 1
     fi
 
-    # if /etc/sysctl.conf exist, check if bbr is enabled
-    if grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf && grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf; then
-        log "bbr already enabled, skip"
+    log "enable bbr"
+
+    # 优先使用 sysctl.d，避免持续向 /etc/sysctl.conf 追加重复配置
+    if sysctl --help 2>&1 | grep -q -- "--system"; then
+        if mkdir -p /etc/sysctl.d; then
+            if cat > "$bbr_sysctl_file" <<EOF
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+EOF
+            then
+                if sysctl --system; then
+                    current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || true)
+                    current_congestion=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)
+                    if [ "$current_qdisc" = "fq" ] && [ "$current_congestion" = "bbr" ]; then
+                        log "bbr enabled with sysctl.d"
+                        return 0
+                    fi
+                    log "bbr sysctl.d verification failed, fallback to sysctl.conf"
+                else
+                    log "sysctl --system failed, fallback to sysctl.conf"
+                fi
+            else
+                log "write $bbr_sysctl_file failed, fallback to sysctl.conf"
+            fi
+        else
+            log "create /etc/sysctl.d failed, fallback to sysctl.conf"
+        fi
     else
-        log "enable bbr"
-        echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
-        echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
-        sysctl -p
+        log "sysctl --system unsupported, fallback to sysctl.conf"
     fi
+
+    # 旧系统兼容：只替换或追加脚本管理的两个配置项
+    touch "$legacy_sysctl_file"
+    if grep -q "^[[:space:]]*net.core.default_qdisc[[:space:]]*=" "$legacy_sysctl_file"; then
+        sed -i "s|^[[:space:]]*net.core.default_qdisc[[:space:]]*=.*|net.core.default_qdisc=fq|" "$legacy_sysctl_file"
+    else
+        echo "net.core.default_qdisc=fq" >> "$legacy_sysctl_file"
+    fi
+    if grep -q "^[[:space:]]*net.ipv4.tcp_congestion_control[[:space:]]*=" "$legacy_sysctl_file"; then
+        sed -i "s|^[[:space:]]*net.ipv4.tcp_congestion_control[[:space:]]*=.*|net.ipv4.tcp_congestion_control=bbr|" "$legacy_sysctl_file"
+    else
+        echo "net.ipv4.tcp_congestion_control=bbr" >> "$legacy_sysctl_file"
+    fi
+
+    if ! sysctl -p "$legacy_sysctl_file"; then
+        log "sysctl -p failed, exit"
+        exit 1
+    fi
+
+    current_qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null || true)
+    current_congestion=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)
+    if [ "$current_qdisc" = "fq" ] && [ "$current_congestion" = "bbr" ]; then
+        log "bbr enabled with sysctl.conf"
+        return 0
+    fi
+
+    log "bbr enable failed: net.core.default_qdisc=$current_qdisc, net.ipv4.tcp_congestion_control=$current_congestion"
+    exit 1
 }
 
 function install_acme(){
