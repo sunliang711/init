@@ -1745,7 +1745,7 @@ def command_show_records(args: argparse.Namespace, config: AppConfig) -> int:
         raise CliError("--limit must be greater than 0")
     start_ts, end_ts = resolve_show_time_range(args, tzinfo)
     instance_filter, instance_params = instance_filter_sql(selected_instances)
-    filters = [instance_filter, "period = ?", "start_ts >= ?", "start_ts < ?"]
+    filters = [instance_filter, "period = ?", "end_ts > ?", "start_ts < ?"]
     params: List[Any] = [*instance_params, args.period, start_ts, end_ts]
 
     if args.scope:
@@ -1791,7 +1791,7 @@ def command_summarize_records(args: argparse.Namespace, config: AppConfig) -> in
     selected_instances = select_instances(config, args.instance)
     start_ts, end_ts = resolve_time_range(args, tzinfo)
     instance_filter, instance_params = instance_filter_sql(selected_instances)
-    filters = [instance_filter, "period = ?", "start_ts >= ?", "start_ts < ?"]
+    filters = [instance_filter, "period = ?", "end_ts > ?", "start_ts < ?"]
     params: List[Any] = [*instance_params, args.period, start_ts, end_ts]
 
     if args.scope:
@@ -1833,7 +1833,7 @@ def command_export_records(args: argparse.Namespace, config: AppConfig) -> int:
     selected_instances = select_instances(config, args.instance)
     start_ts, end_ts = resolve_time_range(args, tzinfo)
     instance_filter, instance_params = instance_filter_sql(selected_instances)
-    filters = [instance_filter, "period = ?", "start_ts >= ?", "start_ts < ?"]
+    filters = [instance_filter, "period = ?", "end_ts > ?", "start_ts < ?"]
     params: List[Any] = [*instance_params, args.period, start_ts, end_ts]
 
     if args.scope:
