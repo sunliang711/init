@@ -32,7 +32,7 @@ mappings=(
 
 "tcp|5666|10.1.1.199|5666|fnOS web"
 
-"tcp|7190|10.1.1.33||http proxy only for aliyun|47.92.194.5"
+"tcp|7205|10.1.1.33||http proxy only for aliyun|47.92.194.5"
 
 )
 

@@ -549,6 +549,7 @@ SHOW_HELP = """\
   show current  查看上次 reset 后的当前累计流量，不入库、不 reset
   show hourly   按小时查看已存储快照
   show daily    按天查看已存储快照
+  --instance ALL 查询多个实例时，hourly/daily 会在每个周期后追加 ALL 小计行
 
 示例:
   xray-traffic show current --instance default
@@ -681,6 +682,19 @@ class TrafficRecord:
     name: str
     direction: str
     bytes_value: int
+
+
+@dataclass(frozen=True)
+class ShowTrafficRow:
+    """保存 show 表格的一行标准数据，适用于明细和跨实例小计展示。"""
+
+    start_ts: int
+    instance: str
+    scope: str
+    name: str
+    up_bytes: int
+    down_bytes: int
+    total_bytes: int
 
 
 def parse_env_file(path: Path) -> Dict[str, str]:
@@ -1713,7 +1727,119 @@ def instance_filter_sql(instances: Sequence[InstanceConfig]) -> Tuple[str, List[
     return f"instance IN ({placeholders})", [instance.name for instance in instances]
 
 
-def write_show_table(period: str, rows: Sequence[sqlite3.Row], tzinfo: timezone, output: TextIO) -> None:
+def show_row_from_sqlite(row: sqlite3.Row) -> ShowTrafficRow:
+    """将 SQLite 聚合结果转换为 show 表格行，适用于统一明细和小计渲染。"""
+
+    up_bytes = int(row["up_bytes"] or 0)
+    down_bytes = int(row["down_bytes"] or 0)
+    total_bytes = int(row["total_bytes"] or 0)
+    return ShowTrafficRow(
+        start_ts=int(row["start_ts"]),
+        instance=str(row["instance"]),
+        scope=str(row["scope"]),
+        name=str(row["name"]),
+        up_bytes=up_bytes,
+        down_bytes=down_bytes,
+        total_bytes=total_bytes,
+    )
+
+
+def show_total_rows_from_sqlite(rows: Sequence[sqlite3.Row]) -> Dict[Tuple[int, str, str], ShowTrafficRow]:
+    """将跨实例小计查询结果转换为索引，适用于避免受明细 LIMIT 截断影响。"""
+
+    total_rows: Dict[Tuple[int, str, str], ShowTrafficRow] = {}
+    for row in rows:
+        total_row = ShowTrafficRow(
+            start_ts=int(row["start_ts"]),
+            instance=ALL_INSTANCE,
+            scope=str(row["scope"]),
+            name=str(row["name"]),
+            up_bytes=int(row["up_bytes"] or 0),
+            down_bytes=int(row["down_bytes"] or 0),
+            total_bytes=int(row["total_bytes"] or 0),
+        )
+        total_rows[(total_row.start_ts, total_row.scope, total_row.name)] = total_row
+    return total_rows
+
+
+def build_period_total_rows(
+    period_rows: Sequence[ShowTrafficRow],
+    instance_total_rows: Optional[Dict[Tuple[int, str, str], ShowTrafficRow]] = None,
+) -> List[ShowTrafficRow]:
+    """按 scope/name 汇总单个周期内的多实例行，适用于 --instance ALL 小计。"""
+
+    if instance_total_rows is not None:
+        total_keys = {(row.start_ts, row.scope, row.name) for row in period_rows}
+        total_rows = [instance_total_rows[key] for key in total_keys if key in instance_total_rows]
+        total_rows.sort(key=lambda row: (-row.total_bytes, row.scope, row.name))
+        return total_rows
+
+    totals: Dict[Tuple[str, str], Dict[str, int]] = {}
+    start_ts = period_rows[0].start_ts
+    for row in period_rows:
+        item = totals.setdefault((row.scope, row.name), {"up": 0, "down": 0, "total": 0})
+        item["up"] += row.up_bytes
+        item["down"] += row.down_bytes
+        item["total"] += row.total_bytes
+
+    total_rows = [
+        ShowTrafficRow(
+            start_ts=start_ts,
+            instance=ALL_INSTANCE,
+            scope=scope,
+            name=name,
+            up_bytes=values["up"],
+            down_bytes=values["down"],
+            total_bytes=values["total"],
+        )
+        for (scope, name), values in totals.items()
+    ]
+    total_rows.sort(key=lambda row: (-row.total_bytes, row.scope, row.name))
+    return total_rows
+
+
+def build_show_rows(
+    rows: Sequence[sqlite3.Row],
+    include_instance_totals: bool,
+    instance_total_rows: Optional[Dict[Tuple[int, str, str], ShowTrafficRow]] = None,
+) -> List[ShowTrafficRow]:
+    """构造 show 表格输出行，适用于在周期明细后追加跨实例小计。"""
+
+    detail_rows = [show_row_from_sqlite(row) for row in rows]
+    if not include_instance_totals or not detail_rows:
+        return detail_rows
+
+    show_rows: List[ShowTrafficRow] = []
+    period_rows: List[ShowTrafficRow] = []
+    current_start_ts: Optional[int] = None
+
+    def flush_period_rows() -> None:
+        """输出当前周期明细和小计，适用于保持原有周期分隔顺序。"""
+
+        if not period_rows:
+            return
+        show_rows.extend(period_rows)
+        show_rows.extend(build_period_total_rows(period_rows, instance_total_rows))
+
+    for row in detail_rows:
+        if current_start_ts is not None and row.start_ts != current_start_ts:
+            flush_period_rows()
+            period_rows = []
+        current_start_ts = row.start_ts
+        period_rows.append(row)
+
+    flush_period_rows()
+    return show_rows
+
+
+def write_show_table(
+    period: str,
+    rows: Sequence[sqlite3.Row],
+    tzinfo: timezone,
+    output: TextIO,
+    include_instance_totals: bool = False,
+    instance_total_rows: Optional[Dict[Tuple[int, str, str], ShowTrafficRow]] = None,
+) -> None:
     """输出按小时或天聚合后的流量表格，适用于日常查看已存储流量。"""
 
     label = "Hour" if period == "hourly" else "Day"
@@ -1721,17 +1847,14 @@ def write_show_table(period: str, rows: Sequence[sqlite3.Row], tzinfo: timezone,
     output.write(f"{label:<16} {'Instance':<12} {'Scope':<10} {'Name':<30} {'Up':>12} {'Down':>12} {'Total':>12}\n")
     output.write(f"{separator}\n")
     last_period_label = ""
-    for row in rows:
-        up_bytes = int(row["up_bytes"] or 0)
-        down_bytes = int(row["down_bytes"] or 0)
-        total_bytes = int(row["total_bytes"] or 0)
-        current_period_label = format_period_label(period, int(row["start_ts"]), tzinfo)
+    for row in build_show_rows(rows, include_instance_totals, instance_total_rows):
+        current_period_label = format_period_label(period, row.start_ts, tzinfo)
         if last_period_label and current_period_label != last_period_label:
             output.write(f"{separator}\n")
         output.write(
-            f"{current_period_label:<16} {row['instance']:<12} "
-            f"{row['scope']:<10} {row['name']:<30} "
-            f"{format_bytes(up_bytes):>12} {format_bytes(down_bytes):>12} {format_bytes(total_bytes):>12}\n"
+            f"{current_period_label:<16} {row.instance:<12} "
+            f"{row.scope:<10} {row.name:<30} "
+            f"{format_bytes(row.up_bytes):>12} {format_bytes(row.down_bytes):>12} {format_bytes(row.total_bytes):>12}\n"
         )
         last_period_label = current_period_label
 
@@ -1755,7 +1878,7 @@ def command_show_records(args: argparse.Namespace, config: AppConfig) -> int:
         filters.append("name = ?")
         params.append(args.name)
 
-    params.append(args.limit)
+    detail_params = [*params, args.limit]
     query = f"""
         SELECT
             start_ts,
@@ -1771,15 +1894,32 @@ def command_show_records(args: argparse.Namespace, config: AppConfig) -> int:
         ORDER BY start_ts DESC, instance ASC, total_bytes DESC, scope ASC, name ASC
         LIMIT ?
     """
+    total_query = f"""
+        SELECT
+            start_ts,
+            scope,
+            name,
+            SUM(CASE WHEN direction = 'up' THEN bytes ELSE 0 END) AS up_bytes,
+            SUM(CASE WHEN direction = 'down' THEN bytes ELSE 0 END) AS down_bytes,
+            SUM(bytes) AS total_bytes
+        FROM traffic_records
+        WHERE {' AND '.join(filters)}
+        GROUP BY start_ts, scope, name
+        ORDER BY start_ts DESC, total_bytes DESC, scope ASC, name ASC
+    """
 
+    include_instance_totals = args.instance == ALL_INSTANCE and len(selected_instances) > 1
+    instance_total_rows: Optional[Dict[Tuple[int, str, str], ShowTrafficRow]] = None
     with open_database(config.db_path) as connection:
-        rows = connection.execute(query, params).fetchall()
+        rows = connection.execute(query, detail_params).fetchall()
+        if include_instance_totals and rows:
+            instance_total_rows = show_total_rows_from_sqlite(connection.execute(total_query, params).fetchall())
 
     if not rows:
         sys.stdout.write("No records found\n")
         return 0
     output = io.StringIO()
-    write_show_table(args.period, rows, tzinfo, output)
+    write_show_table(args.period, rows, tzinfo, output, include_instance_totals, instance_total_rows)
     write_paged_text(output.getvalue(), sys.stdout)
     return 0
 

@@ -196,6 +196,8 @@ xray-traffic watch current --instance default --scope user --name alice --no-cle
 xray-traffic show hourly --instance default
 ```
 
+当 `show hourly` 或 `show daily` 使用 `--instance ALL` 命中多个实例时，每个小时或每天的实例明细后会追加一行 `Instance` 为 `ALL` 的跨实例小计。
+
 按天查看已存储流量：
 
 ```bash
