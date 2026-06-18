@@ -18,6 +18,8 @@ HOURLY_SERVICE="xray-traffic-hourly.service"
 HOURLY_TIMER="xray-traffic-hourly.timer"
 DAILY_SERVICE="xray-traffic-daily.service"
 DAILY_TIMER="xray-traffic-daily.timer"
+MONTHLY_SERVICE="xray-traffic-monthly.service"
+MONTHLY_TIMER="xray-traffic-monthly.timer"
 DEFAULT_XRAY_BIN="/usr/local/bin/xray"
 DEFAULT_INSTANCES="default=127.0.0.1:18080"
 DEFAULT_RETENTION_DAYS="180"
@@ -59,6 +61,7 @@ Environment:
 Installed timers:
   collect hourly --instance ALL
   collect daily --instance ALL
+  collect monthly --instance ALL
 EOF
 }
 
@@ -272,7 +275,7 @@ warn_xray_binary() {
 }
 
 write_systemd_units() {
-    # 写入 systemd service 和 timer，适用于自动小时采集和每日聚合。
+    # 写入 systemd service 和 timer，适用于自动小时采集、每日聚合和每月聚合。
     [ -n "${PYTHON_BIN}" ] || die "Missing required command: python3"
 
     cat >"${SYSTEMD_DIR}/${HOURLY_SERVICE}" <<EOF
@@ -337,18 +340,51 @@ AccuracySec=1min
 WantedBy=timers.target
 EOF
 
+    cat >"${SYSTEMD_DIR}/${MONTHLY_SERVICE}" <<EOF
+[Unit]
+Description=Xray traffic monthly aggregation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-${CONFIG_FILE}
+WorkingDirectory=${APP_DIR}
+ExecStart=${PYTHON_BIN} ${PY_TARGET} --config ${CONFIG_FILE} collect monthly --instance ALL
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=${DATA_DIR} ${LOG_DIR}
+EOF
+
+    cat >"${SYSTEMD_DIR}/${MONTHLY_TIMER}" <<'EOF'
+[Unit]
+Description=Run Xray traffic monthly aggregation
+
+[Timer]
+OnCalendar=*-*-01 00:30:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
+EOF
+
     chmod 0644 \
         "${SYSTEMD_DIR}/${HOURLY_SERVICE}" \
         "${SYSTEMD_DIR}/${HOURLY_TIMER}" \
         "${SYSTEMD_DIR}/${DAILY_SERVICE}" \
-        "${SYSTEMD_DIR}/${DAILY_TIMER}"
+        "${SYSTEMD_DIR}/${DAILY_TIMER}" \
+        "${SYSTEMD_DIR}/${MONTHLY_SERVICE}" \
+        "${SYSTEMD_DIR}/${MONTHLY_TIMER}"
     log_info "Systemd units written"
 }
 
 reload_and_enable_timers() {
-    # 重新加载 systemd 并启用两个 timer。
+    # 重新加载 systemd 并启用三个 timer。
     systemctl daemon-reload
-    systemctl enable --now "${HOURLY_TIMER}" "${DAILY_TIMER}"
+    systemctl enable --now "${HOURLY_TIMER}" "${DAILY_TIMER}" "${MONTHLY_TIMER}"
     log_info "Systemd timers enabled"
 }
 
@@ -402,13 +438,14 @@ update_app() {
     run_health_check
     write_systemd_units
     systemctl daemon-reload
+    systemctl enable --now "${MONTHLY_TIMER}"
     log_info "Update finished"
 }
 
 disable_timers() {
     # 停止并禁用 timer，适用于卸载前解除自动任务。
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl disable --now "${HOURLY_TIMER}" "${DAILY_TIMER}" >/dev/null 2>&1 || true
+        systemctl disable --now "${HOURLY_TIMER}" "${DAILY_TIMER}" "${MONTHLY_TIMER}" >/dev/null 2>&1 || true
         systemctl daemon-reload >/dev/null 2>&1 || true
     fi
 }
@@ -419,7 +456,9 @@ remove_systemd_units() {
         "${SYSTEMD_DIR}/${HOURLY_SERVICE}" \
         "${SYSTEMD_DIR}/${HOURLY_TIMER}" \
         "${SYSTEMD_DIR}/${DAILY_SERVICE}" \
-        "${SYSTEMD_DIR}/${DAILY_TIMER}"
+        "${SYSTEMD_DIR}/${DAILY_TIMER}" \
+        "${SYSTEMD_DIR}/${MONTHLY_SERVICE}" \
+        "${SYSTEMD_DIR}/${MONTHLY_TIMER}"
 
     if command -v systemctl >/dev/null 2>&1; then
         systemctl daemon-reload
@@ -468,8 +507,8 @@ show_status() {
     printf 'PY_LINK=%s\n' "${PY_LINK}"
 
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl list-timers "${HOURLY_TIMER}" "${DAILY_TIMER}" --no-pager || true
-        systemctl is-enabled "${HOURLY_TIMER}" "${DAILY_TIMER}" 2>/dev/null || true
+        systemctl list-timers "${HOURLY_TIMER}" "${DAILY_TIMER}" "${MONTHLY_TIMER}" --no-pager || true
+        systemctl is-enabled "${HOURLY_TIMER}" "${DAILY_TIMER}" "${MONTHLY_TIMER}" 2>/dev/null || true
     else
         log_warn "systemctl not found"
     fi

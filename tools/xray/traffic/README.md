@@ -1,6 +1,6 @@
 # Xray Traffic Snapshot
 
-`xray-traffic` 用 Python 标准库实现 Xray 多实例流量小时快照、每日聚合、当前累计查询、历史展示、汇总、导出和清理。
+`xray-traffic` 用 Python 标准库实现 Xray 多实例流量小时快照、每日聚合、每月聚合、当前累计查询、历史展示、汇总、导出和清理。
 
 运行环境要求 Python 3.9+，因为脚本使用标准库 `zoneinfo` 处理时区。
 
@@ -27,6 +27,8 @@ systemd 文件安装到：
 /etc/systemd/system/xray-traffic-hourly.timer
 /etc/systemd/system/xray-traffic-daily.service
 /etc/systemd/system/xray-traffic-daily.timer
+/etc/systemd/system/xray-traffic-monthly.service
+/etc/systemd/system/xray-traffic-monthly.timer
 ```
 
 同时安装命令行软链接：
@@ -118,8 +120,11 @@ xray-traffic <action> <noun> [options]
 ```bash
 xray-traffic collect hourly --instance ALL
 xray-traffic collect daily --instance ALL
+xray-traffic collect monthly --instance ALL
 xray-traffic show hourly --instance default
 xray-traffic show daily --instance default
+xray-traffic show monthly --instance default
+xray-traffic show yearly --instance default
 xray-traffic summarize hourly --instance default
 xray-traffic summarize daily --instance default
 xray-traffic show current --instance default
@@ -155,13 +160,19 @@ xray-traffic show hourly --instance ALL
 每天 00:10 执行 xray-traffic collect daily --instance ALL
 ```
 
+每月任务：
+
+```text
+每月 1 日 00:30 执行 xray-traffic collect monthly --instance ALL
+```
+
 `collect hourly` 会立即调用每个目标实例：
 
 ```bash
 xray api statsquery --server=<instance-server> -reset=true
 ```
 
-因此小时记录保存的是两次采集之间的增量。`collect daily` 不调用 Xray，只从 SQLite 中的 `hourly` 记录聚合。
+因此小时记录保存的是两次采集之间的增量。`collect daily` 不调用 Xray，只从 SQLite 中的 `hourly` 记录聚合。`collect monthly` 不调用 Xray，只从 SQLite 中的 `daily` 记录聚合。
 
 ## 查看示例
 
@@ -196,12 +207,26 @@ xray-traffic watch current --instance default --scope user --name alice --no-cle
 xray-traffic show hourly --instance default
 ```
 
-当 `show hourly` 或 `show daily` 使用 `--instance ALL` 命中多个实例时，每个小时或每天的实例明细后会追加一行 `Instance` 为 `ALL` 的跨实例小计。
+当 `show hourly`、`show daily`、`show monthly` 或 `show yearly` 使用 `--instance ALL` 命中多个实例时，每个周期的实例明细后会追加一行 `Instance` 为 `ALL` 的跨实例小计。
 
 按天查看已存储流量：
 
 ```bash
 xray-traffic show daily --instance default --days 7
+```
+
+按月查看已持久化的 monthly 快照：
+
+```bash
+xray-traffic show monthly --instance default --month 2026-05
+xray-traffic show monthly --instance ALL --months 12
+```
+
+按年从 monthly 快照聚合查看，不额外落库：
+
+```bash
+xray-traffic show yearly --instance default --year 2026
+xray-traffic show yearly --instance ALL --years 3
 ```
 
 汇总最近 7 天每日用户流量：
@@ -224,6 +249,8 @@ xray-traffic export daily --instance default --scope user --from 2026-05-01 --to
 xray-traffic cleanup records
 ```
 
+清理策略按 `period` 分开执行：`hourly` 使用 `XRAY_TRAFFIC_RETENTION_DAYS`，`daily` 至少保留 `max(retention_days, 62)` 天，`monthly` 保留 36 个月。
+
 ## 数据库
 
 默认 SQLite 文件：
@@ -243,7 +270,7 @@ traffic_records
 ```text
 instance    实例名
 server      记录写入时的 Xray API 地址
-period      hourly / daily
+period      hourly / daily / monthly
 start_ts    统计开始 Unix 时间戳
 end_ts      统计结束 Unix 时间戳
 scope       user / inbound / outbound

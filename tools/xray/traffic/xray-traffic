@@ -34,9 +34,14 @@ DEFAULT_CONFIG_FILE = DEFAULT_APP_DIR / "config" / "xray-traffic.env"
 DEFAULT_DB_PATH = DEFAULT_APP_DIR / "data" / "traffic.db"
 DEFAULT_XRAY_BIN = "/usr/local/bin/xray"
 DEFAULT_RETENTION_DAYS = 180
+DEFAULT_MONTHLY_RETENTION_MONTHS = 36
+DEFAULT_SHOW_MONTHS = 12
+DEFAULT_SHOW_YEARS = 3
 DEFAULT_TIMEOUT_SECONDS = 30
 ALL_INSTANCE = "ALL"
 INSTANCE_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
+MONTH_RE = re.compile(r"^(\d{4})-(\d{2})$")
+YEAR_RE = re.compile(r"^\d{4}$")
 VALID_SCOPES = ("inbound", "outbound", "user")
 VALID_DIRECTIONS = ("up", "down")
 VALID_PERIODS = ("hourly", "daily")
@@ -518,10 +523,13 @@ TOP_LEVEL_HELP = f"""\
   xray-traffic check health
   xray-traffic collect hourly --instance ALL
   xray-traffic collect daily --instance ALL
+  xray-traffic collect monthly --instance ALL
   xray-traffic show current --instance default
   xray-traffic watch current --instance default
   xray-traffic show hourly --instance default --days 1
   xray-traffic show daily --instance default --days 7
+  xray-traffic show monthly --instance default --months 12
+  xray-traffic show yearly --instance default --years 3
   xray-traffic summarize daily --instance default --scope user --days 7
   xray-traffic export daily --instance default --from 2026-05-01 --to 2026-06-01 --output users.csv
   xray-traffic cleanup records
@@ -530,18 +538,22 @@ TOP_LEVEL_HELP = f"""\
 定时任务入口:
   每小时: xray-traffic collect hourly --instance ALL
   每天:   xray-traffic collect daily --instance ALL
+  每月:   xray-traffic collect monthly --instance ALL
 """
 
 COLLECT_HELP = """\
 采集命令:
   collect hourly  立即读取 Xray statsquery 并 reset，写入 hourly 快照
   collect daily   从 hourly 记录聚合生成 daily 快照，不调用 Xray
+  collect monthly 从 daily 记录聚合生成 monthly 快照，不调用 Xray
 
 示例:
   xray-traffic collect hourly --instance default
   xray-traffic collect hourly --instance ALL
   xray-traffic collect daily --instance ALL
   xray-traffic collect daily --instance default --date 2026-06-01
+  xray-traffic collect monthly --instance ALL
+  xray-traffic collect monthly --instance default --month 2026-05
 """
 
 SHOW_HELP = """\
@@ -549,7 +561,9 @@ SHOW_HELP = """\
   show current  查看上次 reset 后的当前累计流量，不入库、不 reset
   show hourly   按小时查看已存储快照
   show daily    按天查看已存储快照
-  --instance ALL 查询多个实例时，hourly/daily 会在每个周期后追加 ALL 小计行
+  show monthly  按月查看已持久化的 monthly 快照
+  show yearly   从 monthly 快照聚合年度流量，不落库
+  --instance ALL 查询多个实例时，会在每个周期后追加 ALL 小计行
 
 示例:
   xray-traffic show current --instance default
@@ -557,6 +571,9 @@ SHOW_HELP = """\
   xray-traffic show hourly --instance default --days 1
   xray-traffic show hourly --instance ALL --date 2026-06-01
   xray-traffic show daily --instance default --days 7
+  xray-traffic show monthly --instance default --month 2026-05
+  xray-traffic show monthly --instance ALL --months 12
+  xray-traffic show yearly --instance default --year 2026
 """
 
 WATCH_HELP = """\
@@ -603,7 +620,9 @@ CLEANUP_HELP = f"""\
   cleanup records  删除超过保留期的历史快照
 
 说明:
-  默认保留 {DEFAULT_RETENTION_DAYS} 天，可通过 --retention-days 或 XRAY_TRAFFIC_RETENTION_DAYS 调整。
+  hourly 默认保留 {DEFAULT_RETENTION_DAYS} 天，可通过 --retention-days 或 XRAY_TRAFFIC_RETENTION_DAYS 调整。
+  daily 至少保留 max(retention_days, 62) 天。
+  monthly 保留 {DEFAULT_MONTHLY_RETENTION_MONTHS} 个月。
 
 示例:
   xray-traffic cleanup records
@@ -1131,6 +1150,43 @@ def date_range_for_day(day: date, tzinfo: timezone) -> Tuple[int, int]:
     return int(start_dt.timestamp()), int(end_dt.timestamp())
 
 
+def add_months(month_start: date, months: int) -> date:
+    """按月偏移本地月份起点，适用于 monthly 查询和清理边界。"""
+
+    month_index = month_start.year * 12 + month_start.month - 1 + months
+    year = month_index // 12
+    month = month_index % 12 + 1
+    return date(year, month, 1)
+
+
+def month_start_for_date(day: date) -> date:
+    """返回日期所在月份的第一天，适用于默认月份范围计算。"""
+
+    return date(day.year, day.month, 1)
+
+
+def previous_month(day: date) -> date:
+    """返回指定日期所在月份的上一个月，适用于 monthly 默认聚合目标。"""
+
+    return add_months(month_start_for_date(day), -1)
+
+
+def month_range_for_month(month_start: date, tzinfo: timezone) -> Tuple[int, int]:
+    """返回指定本地月份的起止 Unix 时间戳，结束时间为开区间。"""
+
+    start_dt = datetime.combine(month_start, time.min, tzinfo=tzinfo)
+    end_dt = datetime.combine(add_months(month_start, 1), time.min, tzinfo=tzinfo)
+    return int(start_dt.timestamp()), int(end_dt.timestamp())
+
+
+def year_range_for_year(year: int, tzinfo: timezone) -> Tuple[int, int]:
+    """返回指定本地年份的起止 Unix 时间戳，结束时间为开区间。"""
+
+    start_dt = datetime(year, 1, 1, tzinfo=tzinfo)
+    end_dt = datetime(year + 1, 1, 1, tzinfo=tzinfo)
+    return int(start_dt.timestamp()), int(end_dt.timestamp())
+
+
 def parse_day(value: str) -> date:
     """解析 YYYY-MM-DD 日期参数，适用于按日期查询或聚合。"""
 
@@ -1138,6 +1194,34 @@ def parse_day(value: str) -> date:
         return date.fromisoformat(value)
     except ValueError as exc:
         raise CliError(f"invalid date: {value}") from exc
+
+
+def parse_month(value: str) -> date:
+    """解析 YYYY-MM 月份参数，适用于 monthly 聚合和查询。"""
+
+    match = MONTH_RE.fullmatch(value)
+    if not match:
+        raise CliError(f"invalid month: {value}")
+    year = int(match.group(1))
+    month = int(match.group(2))
+    try:
+        return date(year, month, 1)
+    except ValueError as exc:
+        raise CliError(f"invalid month: {value}") from exc
+
+
+def parse_year(value: str) -> int:
+    """解析 YYYY 年份参数，适用于 yearly 查询。"""
+
+    if not YEAR_RE.fullmatch(value):
+        raise CliError(f"invalid year: {value}")
+    year = int(value)
+    try:
+        date(year, 1, 1)
+        date(year + 1, 1, 1)
+    except ValueError as exc:
+        raise CliError(f"invalid year: {value}") from exc
+    return year
 
 
 def resolve_time_range(args: argparse.Namespace, tzinfo: timezone, default_days: int = 7) -> Tuple[int, int]:
@@ -1364,12 +1448,30 @@ def insert_records(connection: sqlite3.Connection, records: Sequence[TrafficReco
     )
 
 
-def cleanup_old_records(connection: sqlite3.Connection, config: AppConfig) -> int:
-    """删除超过保留期的记录，适用于每次采集或手工清理后执行。"""
+def cleanup_old_records(connection: sqlite3.Connection, config: AppConfig, tzinfo: Optional[timezone] = None) -> int:
+    """按 period 删除超过保留期的记录，适用于每次采集或手工清理后执行。"""
 
-    cutoff_ts = now_ts() - config.retention_days * 86400
-    cursor = connection.execute("DELETE FROM traffic_records WHERE start_ts < ?", (cutoff_ts,))
-    return int(cursor.rowcount if cursor.rowcount is not None else 0)
+    if tzinfo is None:
+        tzinfo = get_timezone(config)
+
+    current_ts = now_ts()
+    current_day = datetime.fromtimestamp(current_ts, tzinfo).date()
+    current_month = month_start_for_date(current_day)
+    daily_cutoff_day = current_day - timedelta(days=max(config.retention_days, 62))
+    cutoffs = {
+        "hourly": current_ts - config.retention_days * 86400,
+        "daily": date_range_for_day(daily_cutoff_day, tzinfo)[0],
+        "monthly": month_range_for_month(add_months(current_month, -DEFAULT_MONTHLY_RETENTION_MONTHS), tzinfo)[0],
+    }
+
+    removed = 0
+    for period, cutoff_ts in cutoffs.items():
+        cursor = connection.execute(
+            "DELETE FROM traffic_records WHERE period = ? AND start_ts < ?",
+            (period, cutoff_ts),
+        )
+        removed += int(cursor.rowcount if cursor.rowcount is not None else 0)
+    return removed
 
 
 def command_collect_hourly(args: argparse.Namespace, config: AppConfig) -> int:
@@ -1415,7 +1517,7 @@ def command_collect_hourly(args: argparse.Namespace, config: AppConfig) -> int:
                     records = normalize_stats(instance, parsed_stats, "hourly", start_ts, end_ts, tzinfo)
                     insert_records(connection, records)
                     write_metadata(connection, metadata_key, str(end_ts))
-                    removed = cleanup_old_records(connection, config)
+                    removed = cleanup_old_records(connection, config, tzinfo)
                     connection.commit()
             total_records += len(records)
             logging.info(
@@ -1490,10 +1592,73 @@ def command_collect_daily(args: argparse.Namespace, config: AppConfig) -> int:
                     target_day.isoformat(),
                     len(records),
                 )
-            removed = cleanup_old_records(connection, config)
+            removed = cleanup_old_records(connection, config, tzinfo)
             connection.commit()
 
     logging.info("Daily collection finished: instances=%s records=%s removed=%s", len(selected_instances), total_records, removed)
+    return 0
+
+
+def command_collect_monthly(args: argparse.Namespace, config: AppConfig) -> int:
+    """执行每月聚合，适用于每月从 daily 记录生成 monthly 记录。"""
+
+    tzinfo = get_timezone(config)
+    selected_instances = select_instances(config, args.instance)
+    target_month = parse_month(args.month) if args.month else previous_month(datetime.now(tzinfo).date())
+    start_ts, end_ts = month_range_for_month(target_month, tzinfo)
+    start_time = isoformat(start_ts, tzinfo)
+    end_time = isoformat(end_ts, tzinfo)
+    total_records = 0
+
+    with database_lock(config.db_path):
+        with open_database(config.db_path) as connection:
+            for instance in selected_instances:
+                rows = connection.execute(
+                    """
+                    SELECT scope, name, direction, SUM(bytes) AS bytes
+                    FROM traffic_records
+                    WHERE instance = ?
+                      AND period = 'daily'
+                      AND start_ts >= ?
+                      AND start_ts < ?
+                    GROUP BY scope, name, direction
+                    ORDER BY scope, name, direction
+                    """,
+                    (instance.name, start_ts, end_ts),
+                ).fetchall()
+
+                connection.execute(
+                    "DELETE FROM traffic_records WHERE instance = ? AND period = 'monthly' AND start_ts = ?",
+                    (instance.name, start_ts),
+                )
+                records = [
+                    TrafficRecord(
+                        instance=instance.name,
+                        server=instance.server,
+                        period="monthly",
+                        start_ts=start_ts,
+                        end_ts=end_ts,
+                        start_time=start_time,
+                        end_time=end_time,
+                        scope=str(row["scope"]),
+                        name=str(row["name"]),
+                        direction=str(row["direction"]),
+                        bytes_value=int(row["bytes"] or 0),
+                    )
+                    for row in rows
+                ]
+                insert_records(connection, records)
+                total_records += len(records)
+                logging.info(
+                    "Monthly snapshot saved: instance=%s month=%s records=%s",
+                    instance.name,
+                    target_month.strftime("%Y-%m"),
+                    len(records),
+                )
+            removed = cleanup_old_records(connection, config, tzinfo)
+            connection.commit()
+
+    logging.info("Monthly collection finished: instances=%s records=%s removed=%s", len(selected_instances), total_records, removed)
     return 0
 
 
@@ -1695,16 +1860,60 @@ def write_summary_table(rows: Sequence[sqlite3.Row], output: TextIO) -> None:
 
 
 def format_period_label(period: str, start_ts: int, tzinfo: timezone) -> str:
-    """格式化快照时间标签，适用于 show 子命令按小时或天展示。"""
+    """格式化快照时间标签，适用于 show 子命令按周期展示。"""
 
     start_dt = datetime.fromtimestamp(start_ts, tzinfo)
     if period == "hourly":
         return start_dt.strftime("%Y-%m-%d %H:00")
+    if period == "monthly":
+        return start_dt.strftime("%Y-%m")
+    if period == "yearly":
+        return start_dt.strftime("%Y")
     return start_dt.strftime("%Y-%m-%d")
+
+
+def resolve_monthly_time_range(args: argparse.Namespace, tzinfo: timezone) -> Tuple[int, int]:
+    """解析 show monthly 的月份范围，默认查询最近 12 个已完成月份。"""
+
+    if getattr(args, "month", None):
+        return month_range_for_month(parse_month(args.month), tzinfo)
+
+    months_value = getattr(args, "months", None)
+    months = DEFAULT_SHOW_MONTHS if months_value is None else int(months_value)
+    if months <= 0:
+        raise CliError("--months must be greater than 0")
+
+    current_month = month_start_for_date(datetime.now(tzinfo).date())
+    try:
+        start_month = add_months(current_month, -months)
+        return month_range_for_month(start_month, tzinfo)[0], month_range_for_month(current_month, tzinfo)[0]
+    except ValueError as exc:
+        raise CliError(f"invalid months: {months}") from exc
+
+
+def resolve_yearly_time_range(args: argparse.Namespace, tzinfo: timezone) -> Tuple[int, int]:
+    """解析 show yearly 的年份范围，默认查询当前年份和前两个年份。"""
+
+    if getattr(args, "year", None):
+        return year_range_for_year(parse_year(args.year), tzinfo)
+
+    years_value = getattr(args, "years", None)
+    years = DEFAULT_SHOW_YEARS if years_value is None else int(years_value)
+    if years <= 0:
+        raise CliError("--years must be greater than 0")
+
+    current_year = datetime.now(tzinfo).year
+    try:
+        return year_range_for_year(current_year - years + 1, tzinfo)[0], year_range_for_year(current_year + 1, tzinfo)[0]
+    except ValueError as exc:
+        raise CliError(f"invalid years: {years}") from exc
 
 
 def resolve_show_time_range(args: argparse.Namespace, tzinfo: timezone) -> Tuple[int, int]:
     """解析 show 子命令的时间范围，默认 hourly 查 1 天、daily 查 7 天。"""
+
+    if args.period == "monthly":
+        return resolve_monthly_time_range(args, tzinfo)
 
     if args.date:
         return date_range_for_day(parse_day(args.date), tzinfo)
@@ -1762,6 +1971,30 @@ def show_total_rows_from_sqlite(rows: Sequence[sqlite3.Row]) -> Dict[Tuple[int, 
     return total_rows
 
 
+def show_total_rows_from_detail(rows: Sequence[ShowTrafficRow]) -> Dict[Tuple[int, str, str], ShowTrafficRow]:
+    """从完整明细行构造跨实例小计索引，适用于 yearly 聚合后再追加 ALL 行。"""
+
+    totals: Dict[Tuple[int, str, str], Dict[str, int]] = {}
+    for row in rows:
+        item = totals.setdefault((row.start_ts, row.scope, row.name), {"up": 0, "down": 0, "total": 0})
+        item["up"] += row.up_bytes
+        item["down"] += row.down_bytes
+        item["total"] += row.total_bytes
+
+    return {
+        key: ShowTrafficRow(
+            start_ts=key[0],
+            instance=ALL_INSTANCE,
+            scope=key[1],
+            name=key[2],
+            up_bytes=values["up"],
+            down_bytes=values["down"],
+            total_bytes=values["total"],
+        )
+        for key, values in totals.items()
+    }
+
+
 def build_period_total_rows(
     period_rows: Sequence[ShowTrafficRow],
     instance_total_rows: Optional[Dict[Tuple[int, str, str], ShowTrafficRow]] = None,
@@ -1803,11 +2036,21 @@ def build_show_rows(
     include_instance_totals: bool,
     instance_total_rows: Optional[Dict[Tuple[int, str, str], ShowTrafficRow]] = None,
 ) -> List[ShowTrafficRow]:
-    """构造 show 表格输出行，适用于在周期明细后追加跨实例小计。"""
+    """构造 show 表格输出行，适用于 SQLite 聚合结果转换。"""
 
     detail_rows = [show_row_from_sqlite(row) for row in rows]
+    return build_show_rows_from_detail(detail_rows, include_instance_totals, instance_total_rows)
+
+
+def build_show_rows_from_detail(
+    detail_rows: Sequence[ShowTrafficRow],
+    include_instance_totals: bool,
+    instance_total_rows: Optional[Dict[Tuple[int, str, str], ShowTrafficRow]] = None,
+) -> List[ShowTrafficRow]:
+    """构造 show 表格输出行，适用于在周期明细后追加跨实例小计。"""
+
     if not include_instance_totals or not detail_rows:
-        return detail_rows
+        return list(detail_rows)
 
     show_rows: List[ShowTrafficRow] = []
     period_rows: List[ShowTrafficRow] = []
@@ -1832,22 +2075,22 @@ def build_show_rows(
     return show_rows
 
 
-def write_show_table(
-    period: str,
-    rows: Sequence[sqlite3.Row],
-    tzinfo: timezone,
-    output: TextIO,
-    include_instance_totals: bool = False,
-    instance_total_rows: Optional[Dict[Tuple[int, str, str], ShowTrafficRow]] = None,
-) -> None:
-    """输出按小时或天聚合后的流量表格，适用于日常查看已存储流量。"""
+def write_show_traffic_table(period: str, rows: Sequence[ShowTrafficRow], tzinfo: timezone, output: TextIO) -> None:
+    """输出 show 表格行，适用于已转换好的明细和小计数据。"""
 
-    label = "Hour" if period == "hourly" else "Day"
+    if period == "hourly":
+        label = "Hour"
+    elif period == "daily":
+        label = "Day"
+    elif period == "monthly":
+        label = "Month"
+    else:
+        label = "Year"
     separator = f"{'-' * 16} {'-' * 12} {'-' * 10} {'-' * 30} {'-' * 12} {'-' * 12} {'-' * 12}"
     output.write(f"{label:<16} {'Instance':<12} {'Scope':<10} {'Name':<30} {'Up':>12} {'Down':>12} {'Total':>12}\n")
     output.write(f"{separator}\n")
     last_period_label = ""
-    for row in build_show_rows(rows, include_instance_totals, instance_total_rows):
+    for row in rows:
         current_period_label = format_period_label(period, row.start_ts, tzinfo)
         if last_period_label and current_period_label != last_period_label:
             output.write(f"{separator}\n")
@@ -1859,8 +2102,26 @@ def write_show_table(
         last_period_label = current_period_label
 
 
+def write_show_table(
+    period: str,
+    rows: Sequence[sqlite3.Row],
+    tzinfo: timezone,
+    output: TextIO,
+    include_instance_totals: bool = False,
+    instance_total_rows: Optional[Dict[Tuple[int, str, str], ShowTrafficRow]] = None,
+) -> None:
+    """输出按存储周期聚合后的流量表格，适用于日常查看已存储流量。"""
+
+    write_show_traffic_table(
+        period,
+        build_show_rows(rows, include_instance_totals, instance_total_rows),
+        tzinfo,
+        output,
+    )
+
+
 def command_show_records(args: argparse.Namespace, config: AppConfig) -> int:
-    """按小时或天查看已存储流量，适用于日常阅读场景。"""
+    """按小时、天或月查看已存储流量，适用于日常阅读场景。"""
 
     tzinfo = get_timezone(config)
     selected_instances = select_instances(config, args.instance)
@@ -1920,6 +2181,91 @@ def command_show_records(args: argparse.Namespace, config: AppConfig) -> int:
         return 0
     output = io.StringIO()
     write_show_table(args.period, rows, tzinfo, output, include_instance_totals, instance_total_rows)
+    write_paged_text(output.getvalue(), sys.stdout)
+    return 0
+
+
+def build_yearly_detail_rows(rows: Sequence[sqlite3.Row], tzinfo: timezone) -> List[ShowTrafficRow]:
+    """从 monthly 查询结果聚合 yearly 明细行，适用于 show yearly 不落库展示。"""
+
+    grouped: Dict[Tuple[int, str, str, str], Dict[str, int]] = {}
+    for row in rows:
+        record_start_ts = int(row["start_ts"])
+        record_year = datetime.fromtimestamp(record_start_ts, tzinfo).year
+        year_start_ts = year_range_for_year(record_year, tzinfo)[0]
+        key = (year_start_ts, str(row["instance"]), str(row["scope"]), str(row["name"]))
+        item = grouped.setdefault(key, {"up": 0, "down": 0, "total": 0})
+        bytes_value = int(row["bytes"] or 0)
+        direction = str(row["direction"])
+        if direction == "up":
+            item["up"] += bytes_value
+        elif direction == "down":
+            item["down"] += bytes_value
+        item["total"] += bytes_value
+
+    detail_rows = [
+        ShowTrafficRow(
+            start_ts=year_start_ts,
+            instance=instance,
+            scope=scope,
+            name=name,
+            up_bytes=values["up"],
+            down_bytes=values["down"],
+            total_bytes=values["total"],
+        )
+        for (year_start_ts, instance, scope, name), values in grouped.items()
+    ]
+    detail_rows.sort(key=lambda row: (-row.start_ts, row.instance, -row.total_bytes, row.scope, row.name))
+    return detail_rows
+
+
+def command_show_yearly_records(args: argparse.Namespace, config: AppConfig) -> int:
+    """从 monthly 记录聚合年度流量，适用于不落库的年度视图。"""
+
+    tzinfo = get_timezone(config)
+    selected_instances = select_instances(config, args.instance)
+    if args.limit <= 0:
+        raise CliError("--limit must be greater than 0")
+    start_ts, end_ts = resolve_yearly_time_range(args, tzinfo)
+    instance_filter, instance_params = instance_filter_sql(selected_instances)
+    filters = [instance_filter, "period = 'monthly'", "start_ts >= ?", "start_ts < ?"]
+    params: List[Any] = [*instance_params, start_ts, end_ts]
+
+    if args.scope:
+        filters.append("scope = ?")
+        params.append(args.scope)
+    if args.name:
+        filters.append("name = ?")
+        params.append(args.name)
+
+    query = f"""
+        SELECT start_ts, instance, scope, name, direction, SUM(bytes) AS bytes
+        FROM traffic_records
+        WHERE {' AND '.join(filters)}
+        GROUP BY start_ts, instance, scope, name, direction
+        ORDER BY start_ts DESC, instance ASC, scope ASC, name ASC, direction ASC
+    """
+
+    with open_database(config.db_path) as connection:
+        monthly_rows = connection.execute(query, params).fetchall()
+
+    detail_rows = build_yearly_detail_rows(monthly_rows, tzinfo)
+    if not detail_rows:
+        sys.stdout.write("No records found\n")
+        return 0
+
+    include_instance_totals = args.instance == ALL_INSTANCE and len(selected_instances) > 1
+    instance_total_rows: Optional[Dict[Tuple[int, str, str], ShowTrafficRow]] = None
+    if include_instance_totals:
+        instance_total_rows = show_total_rows_from_detail(detail_rows)
+
+    output_rows = build_show_rows_from_detail(
+        detail_rows[: args.limit],
+        include_instance_totals,
+        instance_total_rows,
+    )
+    output = io.StringIO()
+    write_show_traffic_table("yearly", output_rows, tzinfo, output)
     write_paged_text(output.getvalue(), sys.stdout)
     return 0
 
@@ -2142,12 +2488,12 @@ def add_read_options(parser: argparse.ArgumentParser, period: str, default_days:
 
 
 def build_collect_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """构建 collect <noun> 命令，适用于写入 hourly/daily 数据。"""
+    """构建 collect <noun> 命令，适用于写入 hourly/daily/monthly 数据。"""
 
     collect_parser = subparsers.add_parser(
         "collect",
         help="采集或生成快照数据",
-        description="采集 Xray 流量快照，或从小时快照聚合每日快照。",
+        description="采集 Xray 流量快照，或从已有快照聚合 daily/monthly 快照。",
         epilog=COLLECT_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -2165,6 +2511,11 @@ def build_collect_parser(subparsers: argparse._SubParsersAction[argparse.Argumen
     daily_parser.add_argument("--date", help="聚合指定日期，格式 YYYY-MM-DD；默认昨天")
     daily_parser.set_defaults(func=command_collect_daily)
 
+    monthly_parser = collect_subparsers.add_parser("monthly", help="立即从 daily 聚合每月快照")
+    add_instance_option(monthly_parser)
+    monthly_parser.add_argument("--month", help="聚合指定月份，格式 YYYY-MM；默认上个月")
+    monthly_parser.set_defaults(func=command_collect_monthly)
+
 
 def build_show_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     """构建 show <noun> 命令，适用于人类可读查看。"""
@@ -2172,7 +2523,7 @@ def build_show_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     show_parser = subparsers.add_parser(
         "show",
         help="查看已存储或当前累计流量",
-        description="查看当前累计流量，或按小时/天查看 SQLite 中已存储的快照。",
+        description="查看当前累计流量，或按小时、天、月、年查看流量快照。",
         epilog=SHOW_HELP,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -2186,6 +2537,22 @@ def build_show_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
         period_parser.add_argument("--date", help="查看单日，格式 YYYY-MM-DD")
         period_parser.add_argument("--days", type=int, help="查看最近 N 天；hourly 默认 1，daily 默认 7")
         period_parser.add_argument("--limit", type=int, default=500, help="最多输出行数，默认 500")
+
+    monthly_parser = show_subparsers.add_parser("monthly", help="查看 monthly 记录")
+    monthly_parser.set_defaults(period="monthly", func=command_show_records)
+    add_instance_option(monthly_parser)
+    add_filter_options(monthly_parser)
+    monthly_parser.add_argument("--month", help="查看单月，格式 YYYY-MM")
+    monthly_parser.add_argument("--months", type=int, default=DEFAULT_SHOW_MONTHS, help=f"查看最近 N 个已完成月份，默认 {DEFAULT_SHOW_MONTHS}")
+    monthly_parser.add_argument("--limit", type=int, default=500, help="最多输出行数，默认 500")
+
+    yearly_parser = show_subparsers.add_parser("yearly", help="从 monthly 聚合查看年度流量")
+    yearly_parser.set_defaults(func=command_show_yearly_records)
+    add_instance_option(yearly_parser)
+    add_filter_options(yearly_parser)
+    yearly_parser.add_argument("--year", help="查看单年，格式 YYYY")
+    yearly_parser.add_argument("--years", type=int, default=DEFAULT_SHOW_YEARS, help=f"查看最近 N 年，默认 {DEFAULT_SHOW_YEARS}")
+    yearly_parser.add_argument("--limit", type=int, default=500, help="最多输出行数，默认 500")
 
     current_parser = show_subparsers.add_parser("current", help="查看上次 reset 后当前累计")
     add_instance_option(current_parser)
