@@ -356,8 +356,54 @@ def print_download_progress(label: str, downloaded: int, total: int, *, final: b
     return True
 
 
+def download_file_with_curl(url: str, output: str | Path, *, timeout: int = 300) -> bool:
+    """优先复用 curl 下载 release 包；curl 不存在时返回 False 交给 urllib 兜底。"""
+    if not command_exists("curl"):
+        return False
+    target = Path(output)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("wb", delete=False, dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp") as handle:
+            tmp_path = Path(handle.name)
+        curl_args = [
+            "curl",
+            "--fail",
+            "--location",
+            "--show-error",
+            "--retry",
+            "3",
+            "--connect-timeout",
+            "10",
+            "--max-time",
+            str(timeout),
+            "--user-agent",
+            "nomad-init-tools/1",
+            "--output",
+            str(tmp_path),
+        ]
+        if sys.stderr.isatty():
+            curl_args.append("--progress-bar")
+        else:
+            curl_args.append("--silent")
+        result = run([*curl_args, url], check=False)
+        if result.returncode != 0:
+            raise CLIError(f"Download failed: curl exited with {result.returncode}")
+        os.replace(tmp_path, target)
+        tmp_path = None
+        log_success(f"Downloaded: {target.name}")
+        return True
+    except OSError as exc:
+        raise CLIError(f"Download file write failed: {exc}") from exc
+    finally:
+        if tmp_path is not None:
+            tmp_path.unlink(missing_ok=True)
+
+
 def download_file(url: str, output: str | Path, *, timeout: int = 300) -> None:
     """分块下载文件到临时文件，适用于较大的 release 包下载。"""
+    if download_file_with_curl(url, output, timeout=timeout):
+        return
     target = Path(output)
     target.parent.mkdir(parents=True, exist_ok=True)
     label = target.name
