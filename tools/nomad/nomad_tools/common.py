@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import platform
@@ -35,6 +36,9 @@ COLOR_GREEN = "\033[32m"
 COLOR_YELLOW = "\033[33m"
 COLOR_RED = "\033[31m"
 COLOR_RESET = "\033[0m"
+DOWNLOAD_CHUNK_SIZE = 1024 * 1024
+DOWNLOAD_PROGRESS_WIDTH = 24
+DOWNLOAD_MAX_ATTEMPTS = 3
 
 
 class CLIHelpFormatter(argparse.RawDescriptionHelpFormatter):
@@ -325,9 +329,95 @@ def fetch_url(url: str, *, timeout: int = 60, no_proxy: bool = False) -> bytes:
         return response.read()
 
 
+def format_download_size(size: int) -> str:
+    """格式化下载进度中的字节数，适用于终端状态输出。"""
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if value < 1024 or unit == "GiB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} {unit}"
+        value /= 1024
+    return f"{value:.1f} GiB"
+
+
+def print_download_progress(label: str, downloaded: int, total: int, *, final: bool = False) -> bool:
+    """在交互式终端输出单行下载进度，非终端环境保持静默。"""
+    if not sys.stderr.isatty():
+        return False
+    if total > 0:
+        percent = min(100.0, downloaded * 100.0 / total)
+        filled = min(DOWNLOAD_PROGRESS_WIDTH, int(DOWNLOAD_PROGRESS_WIDTH * downloaded / total))
+        bar = "#" * filled + "-" * (DOWNLOAD_PROGRESS_WIDTH - filled)
+        detail = f"{percent:6.2f}% {format_download_size(downloaded)}/{format_download_size(total)}"
+    else:
+        bar = "#" * (downloaded // DOWNLOAD_CHUNK_SIZE % (DOWNLOAD_PROGRESS_WIDTH + 1))
+        bar = bar.ljust(DOWNLOAD_PROGRESS_WIDTH, "-")
+        detail = format_download_size(downloaded)
+    print(f"\r[INFO] Downloading {label} [{bar}] {detail}", end="\n" if final else "", file=sys.stderr, flush=True)
+    return True
+
+
 def download_file(url: str, output: str | Path, *, timeout: int = 300) -> None:
-    data = fetch_url(url, timeout=timeout)
-    Path(output).write_bytes(data)
+    """分块下载文件到临时文件，适用于较大的 release 包下载。"""
+    target = Path(output)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    label = target.name
+    last_error: BaseException | None = None
+    for attempt in range(1, DOWNLOAD_MAX_ATTEMPTS + 1):
+        tmp_name = ""
+        progress_started = False
+        try:
+            with tempfile.NamedTemporaryFile("wb", delete=False, dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp") as handle:
+                tmp_name = handle.name
+                opener = urllib.request.build_opener()
+                request = urllib.request.Request(url, headers={"User-Agent": "nomad-init-tools/1"})
+                with opener.open(request, timeout=timeout) as response:
+                    raw_total = response.headers.get("Content-Length", "")
+                    total = int(raw_total) if raw_total.isdigit() else 0
+                    downloaded = 0
+                    while True:
+                        chunk = response.read(DOWNLOAD_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                        downloaded += len(chunk)
+                        progress_started = print_download_progress(label, downloaded, total)
+                    if total > 0 and downloaded != total:
+                        raise urllib.error.ContentTooShortError(
+                            f"Incomplete download: {downloaded} bytes read, {total - downloaded} more expected",
+                            None,
+                        )
+            if progress_started:
+                print_download_progress(label, downloaded, total, final=True)
+            os.replace(tmp_name, target)
+            log_success(f"Downloaded: {target.name}")
+            return
+        except urllib.error.HTTPError as exc:
+            if progress_started:
+                print(file=sys.stderr)
+            if tmp_name:
+                Path(tmp_name).unlink(missing_ok=True)
+            last_error = exc
+            if exc.code < 500 or attempt == DOWNLOAD_MAX_ATTEMPTS:
+                raise CLIError(f"Download failed: HTTP {exc.code} {exc.reason}") from exc
+            log_warn(f"Download failed, retrying ({attempt}/{DOWNLOAD_MAX_ATTEMPTS}): HTTP {exc.code} {exc.reason}")
+            time.sleep(attempt)
+        except (urllib.error.URLError, http.client.HTTPException, TimeoutError) as exc:
+            if progress_started:
+                print(file=sys.stderr)
+            if tmp_name:
+                Path(tmp_name).unlink(missing_ok=True)
+            last_error = exc
+            if attempt == DOWNLOAD_MAX_ATTEMPTS:
+                break
+            log_warn(f"Download failed, retrying ({attempt}/{DOWNLOAD_MAX_ATTEMPTS}): {exc}")
+            time.sleep(attempt)
+        except OSError as exc:
+            if progress_started:
+                print(file=sys.stderr)
+            if tmp_name:
+                Path(tmp_name).unlink(missing_ok=True)
+            raise CLIError(f"Download file write failed: {exc}") from exc
+    raise CLIError(f"Download failed after {DOWNLOAD_MAX_ATTEMPTS} attempts: {last_error}")
 
 
 def extract_zip(zip_file: str | Path, output_dir: str | Path) -> None:
