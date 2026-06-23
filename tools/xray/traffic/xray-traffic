@@ -1995,6 +1995,233 @@ def show_total_rows_from_detail(rows: Sequence[ShowTrafficRow]) -> Dict[Tuple[in
     }
 
 
+def sort_show_detail_rows(rows: Sequence[ShowTrafficRow]) -> List[ShowTrafficRow]:
+    """按 show 查询顺序排序明细行，适用于混合历史快照和动态周期。"""
+
+    return sorted(rows, key=lambda row: (-row.start_ts, row.instance, -row.total_bytes, row.scope, row.name))
+
+
+def merge_show_rows(rows: Sequence[ShowTrafficRow], start_ts: int) -> List[ShowTrafficRow]:
+    """将多行合并到同一个展示周期，适用于当前日、月、年动态汇总。"""
+
+    grouped: Dict[Tuple[str, str, str], Dict[str, int]] = {}
+    for row in rows:
+        item = grouped.setdefault((row.instance, row.scope, row.name), {"up": 0, "down": 0, "total": 0})
+        item["up"] += row.up_bytes
+        item["down"] += row.down_bytes
+        item["total"] += row.total_bytes
+
+    merged_rows = [
+        ShowTrafficRow(
+            start_ts=start_ts,
+            instance=instance,
+            scope=scope,
+            name=name,
+            up_bytes=values["up"],
+            down_bytes=values["down"],
+            total_bytes=values["total"],
+        )
+        for (instance, scope, name), values in grouped.items()
+        if values["total"] > 0
+    ]
+    return sort_show_detail_rows(merged_rows)
+
+
+def current_rows_to_show_rows(
+    rows: Sequence[Tuple[str, str, str, int, int, int]],
+    start_ts: int,
+) -> List[ShowTrafficRow]:
+    """将 current 输出行转换成 show 明细行，适用于追加当前进行中周期。"""
+
+    return sort_show_detail_rows(
+        [
+            ShowTrafficRow(
+                start_ts=start_ts,
+                instance=instance,
+                scope=scope,
+                name=name,
+                up_bytes=up_bytes,
+                down_bytes=down_bytes,
+                total_bytes=total_bytes,
+            )
+            for instance, scope, name, up_bytes, down_bytes, total_bytes in rows
+        ]
+    )
+
+
+def query_period_sum_rows(
+    connection: sqlite3.Connection,
+    source_period: str,
+    start_ts: int,
+    end_ts: int,
+    output_start_ts: int,
+    selected_instances: Sequence[InstanceConfig],
+    scope_filter: Optional[str],
+    name_filter: Optional[str],
+) -> List[ShowTrafficRow]:
+    """按源周期聚合已落库快照，适用于构造当前进行中周期的动态值。"""
+
+    if end_ts <= start_ts:
+        return []
+
+    instance_filter, instance_params = instance_filter_sql(selected_instances)
+    filters = [instance_filter, "period = ?", "start_ts >= ?", "start_ts < ?"]
+    params: List[Any] = [*instance_params, source_period, start_ts, end_ts]
+    if scope_filter:
+        filters.append("scope = ?")
+        params.append(scope_filter)
+    if name_filter:
+        filters.append("name = ?")
+        params.append(name_filter)
+
+    query = f"""
+        SELECT
+            instance,
+            scope,
+            name,
+            SUM(CASE WHEN direction = 'up' THEN bytes ELSE 0 END) AS up_bytes,
+            SUM(CASE WHEN direction = 'down' THEN bytes ELSE 0 END) AS down_bytes,
+            SUM(bytes) AS total_bytes
+        FROM traffic_records
+        WHERE {' AND '.join(filters)}
+        GROUP BY instance, scope, name
+        ORDER BY instance ASC, total_bytes DESC, scope ASC, name ASC
+    """
+    rows = connection.execute(query, params).fetchall()
+    return sort_show_detail_rows(
+        [
+            ShowTrafficRow(
+                start_ts=output_start_ts,
+                instance=str(row["instance"]),
+                scope=str(row["scope"]),
+                name=str(row["name"]),
+                up_bytes=int(row["up_bytes"] or 0),
+                down_bytes=int(row["down_bytes"] or 0),
+                total_bytes=int(row["total_bytes"] or 0),
+            )
+            for row in rows
+        ]
+    )
+
+
+def build_dynamic_show_rows(
+    config: AppConfig,
+    connection: sqlite3.Connection,
+    period: str,
+    selected_instances: Sequence[InstanceConfig],
+    tzinfo: timezone,
+    scope_filter: Optional[str],
+    name_filter: Optional[str],
+    current_ts: int,
+) -> Tuple[List[ShowTrafficRow], List[str]]:
+    """计算当前进行中周期的展示行，适用于 show 历史快照后追加动态结果。"""
+
+    current_dt = datetime.fromtimestamp(current_ts, tzinfo)
+    current_hour_start_ts = floor_to_hour(current_ts, tzinfo)
+    current_day_start_ts = date_range_for_day(current_dt.date(), tzinfo)[0]
+    current_month_start_ts = month_range_for_month(month_start_for_date(current_dt.date()), tzinfo)[0]
+    current_year_start_ts = year_range_for_year(current_dt.year, tzinfo)[0]
+
+    if period == "hourly":
+        current_rows, errors = read_current_rows(config, selected_instances, scope_filter, name_filter)
+        return current_rows_to_show_rows(current_rows, current_hour_start_ts), errors
+
+    if period == "daily":
+        current_rows, errors = read_current_rows(config, selected_instances, scope_filter, name_filter)
+        hourly_rows = query_period_sum_rows(
+            connection,
+            "hourly",
+            current_day_start_ts,
+            current_hour_start_ts,
+            current_day_start_ts,
+            selected_instances,
+            scope_filter,
+            name_filter,
+        )
+        dynamic_rows = hourly_rows + current_rows_to_show_rows(current_rows, current_day_start_ts)
+        return merge_show_rows(dynamic_rows, current_day_start_ts), errors
+
+    if period == "monthly":
+        today_rows, errors = build_dynamic_show_rows(
+            config,
+            connection,
+            "daily",
+            selected_instances,
+            tzinfo,
+            scope_filter,
+            name_filter,
+            current_ts,
+        )
+        daily_rows = query_period_sum_rows(
+            connection,
+            "daily",
+            current_month_start_ts,
+            current_day_start_ts,
+            current_month_start_ts,
+            selected_instances,
+            scope_filter,
+            name_filter,
+        )
+        dynamic_rows = daily_rows + today_rows
+        return merge_show_rows(dynamic_rows, current_month_start_ts), errors
+
+    month_rows, errors = build_dynamic_show_rows(
+        config,
+        connection,
+        "monthly",
+        selected_instances,
+        tzinfo,
+        scope_filter,
+        name_filter,
+        current_ts,
+    )
+    monthly_rows = query_period_sum_rows(
+        connection,
+        "monthly",
+        current_year_start_ts,
+        current_month_start_ts,
+        current_year_start_ts,
+        selected_instances,
+        scope_filter,
+        name_filter,
+    )
+    dynamic_rows = monthly_rows + month_rows
+    return merge_show_rows(dynamic_rows, current_year_start_ts), errors
+
+
+def should_append_current_period(args: argparse.Namespace, tzinfo: timezone, current_ts: int) -> bool:
+    """判断 show 查询是否覆盖当前周期，适用于避免过去显式查询追加当前数据。"""
+
+    current_dt = datetime.fromtimestamp(current_ts, tzinfo)
+    if args.period in ("hourly", "daily"):
+        if getattr(args, "date", None):
+            return parse_day(args.date) == current_dt.date()
+        return True
+
+    if args.period == "monthly":
+        current_month = month_start_for_date(current_dt.date())
+        if getattr(args, "month", None):
+            return parse_month(args.month) == current_month
+        return True
+
+    if getattr(args, "year", None):
+        return parse_year(args.year) == current_dt.year
+    return True
+
+
+def completed_period_end_ts(period: str, end_ts: int, tzinfo: timezone, current_ts: int) -> int:
+    """返回已完成周期查询上界，适用于历史快照和动态周期拆分展示。"""
+
+    current_dt = datetime.fromtimestamp(current_ts, tzinfo)
+    if period == "hourly":
+        return min(end_ts, floor_to_hour(current_ts, tzinfo))
+    if period == "daily":
+        return min(end_ts, date_range_for_day(current_dt.date(), tzinfo)[0])
+    if period == "monthly":
+        return min(end_ts, month_range_for_month(month_start_for_date(current_dt.date()), tzinfo)[0])
+    return min(end_ts, year_range_for_year(current_dt.year, tzinfo)[0])
+
+
 def build_period_total_rows(
     period_rows: Sequence[ShowTrafficRow],
     instance_total_rows: Optional[Dict[Tuple[int, str, str], ShowTrafficRow]] = None,
@@ -2128,9 +2355,12 @@ def command_show_records(args: argparse.Namespace, config: AppConfig) -> int:
     if args.limit <= 0:
         raise CliError("--limit must be greater than 0")
     start_ts, end_ts = resolve_show_time_range(args, tzinfo)
+    current_ts = now_ts()
+    append_current = should_append_current_period(args, tzinfo, current_ts)
+    history_end_ts = completed_period_end_ts(args.period, end_ts, tzinfo, current_ts) if append_current else end_ts
     instance_filter, instance_params = instance_filter_sql(selected_instances)
     filters = [instance_filter, "period = ?", "end_ts > ?", "start_ts < ?"]
-    params: List[Any] = [*instance_params, args.period, start_ts, end_ts]
+    params: List[Any] = [*instance_params, args.period, start_ts, history_end_ts]
 
     if args.scope:
         filters.append("scope = ?")
@@ -2172,17 +2402,40 @@ def command_show_records(args: argparse.Namespace, config: AppConfig) -> int:
     include_instance_totals = args.instance == ALL_INSTANCE and len(selected_instances) > 1
     instance_total_rows: Optional[Dict[Tuple[int, str, str], ShowTrafficRow]] = None
     with open_database(config.db_path) as connection:
-        rows = connection.execute(query, detail_params).fetchall()
-        if include_instance_totals and rows:
-            instance_total_rows = show_total_rows_from_sqlite(connection.execute(total_query, params).fetchall())
+        rows = connection.execute(query, detail_params).fetchall() if history_end_ts > start_ts else []
+        dynamic_rows: List[ShowTrafficRow] = []
+        current_errors: List[str] = []
+        if append_current:
+            dynamic_rows, current_errors = build_dynamic_show_rows(
+                config,
+                connection,
+                args.period,
+                selected_instances,
+                tzinfo,
+                args.scope,
+                args.name,
+                current_ts,
+            )
+        if include_instance_totals and (rows or dynamic_rows):
+            instance_total_rows = show_total_rows_from_sqlite(
+                connection.execute(total_query, params).fetchall() if history_end_ts > start_ts else []
+            )
+            instance_total_rows.update(show_total_rows_from_detail(dynamic_rows))
 
-    if not rows:
+    detail_rows = sort_show_detail_rows([show_row_from_sqlite(row) for row in rows] + dynamic_rows)
+    limited_detail_rows = detail_rows[: args.limit]
+    if not limited_detail_rows:
         sys.stdout.write("No records found\n")
-        return 0
+        return 1 if current_errors else 0
     output = io.StringIO()
-    write_show_table(args.period, rows, tzinfo, output, include_instance_totals, instance_total_rows)
+    write_show_traffic_table(
+        args.period,
+        build_show_rows_from_detail(limited_detail_rows, include_instance_totals, instance_total_rows),
+        tzinfo,
+        output,
+    )
     write_paged_text(output.getvalue(), sys.stdout)
-    return 0
+    return 1 if current_errors else 0
 
 
 def build_yearly_detail_rows(rows: Sequence[sqlite3.Row], tzinfo: timezone) -> List[ShowTrafficRow]:
@@ -2227,9 +2480,12 @@ def command_show_yearly_records(args: argparse.Namespace, config: AppConfig) -> 
     if args.limit <= 0:
         raise CliError("--limit must be greater than 0")
     start_ts, end_ts = resolve_yearly_time_range(args, tzinfo)
+    current_ts = now_ts()
+    append_current = should_append_current_period(args, tzinfo, current_ts)
+    history_end_ts = completed_period_end_ts("yearly", end_ts, tzinfo, current_ts) if append_current else end_ts
     instance_filter, instance_params = instance_filter_sql(selected_instances)
     filters = [instance_filter, "period = 'monthly'", "start_ts >= ?", "start_ts < ?"]
-    params: List[Any] = [*instance_params, start_ts, end_ts]
+    params: List[Any] = [*instance_params, start_ts, history_end_ts]
 
     if args.scope:
         filters.append("scope = ?")
@@ -2247,12 +2503,25 @@ def command_show_yearly_records(args: argparse.Namespace, config: AppConfig) -> 
     """
 
     with open_database(config.db_path) as connection:
-        monthly_rows = connection.execute(query, params).fetchall()
+        monthly_rows = connection.execute(query, params).fetchall() if history_end_ts > start_ts else []
+        dynamic_rows: List[ShowTrafficRow] = []
+        current_errors: List[str] = []
+        if append_current:
+            dynamic_rows, current_errors = build_dynamic_show_rows(
+                config,
+                connection,
+                "yearly",
+                selected_instances,
+                tzinfo,
+                args.scope,
+                args.name,
+                current_ts,
+            )
 
-    detail_rows = build_yearly_detail_rows(monthly_rows, tzinfo)
+    detail_rows = sort_show_detail_rows(build_yearly_detail_rows(monthly_rows, tzinfo) + dynamic_rows)
     if not detail_rows:
         sys.stdout.write("No records found\n")
-        return 0
+        return 1 if current_errors else 0
 
     include_instance_totals = args.instance == ALL_INSTANCE and len(selected_instances) > 1
     instance_total_rows: Optional[Dict[Tuple[int, str, str], ShowTrafficRow]] = None
@@ -2267,7 +2536,7 @@ def command_show_yearly_records(args: argparse.Namespace, config: AppConfig) -> 
     output = io.StringIO()
     write_show_traffic_table("yearly", output_rows, tzinfo, output)
     write_paged_text(output.getvalue(), sys.stdout)
-    return 0
+    return 1 if current_errors else 0
 
 
 def command_summarize_records(args: argparse.Namespace, config: AppConfig) -> int:
@@ -2547,7 +2816,7 @@ def build_show_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     monthly_parser.add_argument("--limit", type=int, default=500, help="最多输出行数，默认 500")
 
     yearly_parser = show_subparsers.add_parser("yearly", help="从 monthly 聚合查看年度流量")
-    yearly_parser.set_defaults(func=command_show_yearly_records)
+    yearly_parser.set_defaults(period="yearly", func=command_show_yearly_records)
     add_instance_option(yearly_parser)
     add_filter_options(yearly_parser)
     yearly_parser.add_argument("--year", help="查看单年，格式 YYYY")

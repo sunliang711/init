@@ -1,4 +1,5 @@
 import os
+import json
 import sqlite3
 import subprocess
 import sys
@@ -6,6 +7,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Optional
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +66,15 @@ class XrayTrafficShowSummaryTest(unittest.TestCase):
     def run_tool_result(self, *args: str) -> subprocess.CompletedProcess[str]:
         """执行 xray-traffic CLI 并返回完整结果，适用于验证失败路径。"""
 
+        return self.run_tool_result_with_global_options([], *args)
+
+    def run_tool_result_with_global_options(
+        self,
+        global_options: list[str],
+        *args: str,
+    ) -> subprocess.CompletedProcess[str]:
+        """执行 xray-traffic CLI 并返回完整结果，适用于验证额外全局选项。"""
+
         return subprocess.run(
             [
                 sys.executable,
@@ -72,6 +83,7 @@ class XrayTrafficShowSummaryTest(unittest.TestCase):
                 str(self.db_path),
                 "--timezone",
                 "UTC",
+                *global_options,
                 *args,
             ],
             check=False,
@@ -79,6 +91,46 @@ class XrayTrafficShowSummaryTest(unittest.TestCase):
             text=True,
             env=self.env,
         )
+
+    def write_fake_xray(
+        self,
+        values_by_server: dict[str, tuple[int, int]],
+        fail_servers: Optional[set[str]] = None,
+    ) -> Path:
+        """写入临时 xray 可执行文件，适用于模拟 statsquery current 计数。"""
+
+        fail_servers = fail_servers or set()
+        fake_xray = Path(self.temp_dir.name) / "fake-xray"
+        payload = {
+            server: {"up": values[0], "down": values[1]}
+            for server, values in values_by_server.items()
+        }
+        script = f"""#!/usr/bin/env python3
+import json
+import sys
+
+values_by_server = json.loads({json.dumps(json.dumps(payload))})
+fail_servers = set(json.loads({json.dumps(json.dumps(sorted(fail_servers)))}))
+server = ""
+for arg in sys.argv:
+    if arg.startswith("--server="):
+        server = arg.split("=", 1)[1]
+
+if server in fail_servers:
+    sys.stderr.write("mock statsquery failure\\n")
+    sys.exit(9)
+
+values = values_by_server.get(server, {{"up": 0, "down": 0}})
+print(json.dumps({{
+    "stat": [
+        {{"name": "user>>>frp200>>>traffic>>>uplink", "value": values["up"]}},
+        {{"name": "user>>>frp200>>>traffic>>>downlink", "value": values["down"]}},
+    ]
+}}))
+"""
+        fake_xray.write_text(script, encoding="utf-8")
+        fake_xray.chmod(0o755)
+        return fake_xray
 
     def insert_traffic_rows(self, rows: list[tuple[str, str, str, int, int, str, str, str, int]]) -> None:
         """写入自定义流量记录，适用于构造 monthly、yearly 和 cleanup 场景。"""
@@ -310,10 +362,10 @@ class XrayTrafficShowSummaryTest(unittest.TestCase):
     def test_show_yearly_aggregates_from_monthly(self) -> None:
         """验证 yearly 不落库，直接从 monthly 记录聚合。"""
 
-        current_year = datetime.now(timezone.utc).year
-        january = datetime(current_year, 1, 1, tzinfo=timezone.utc)
-        february = datetime(current_year, 2, 1, tzinfo=timezone.utc)
-        march = datetime(current_year, 3, 1, tzinfo=timezone.utc)
+        target_year = datetime.now(timezone.utc).year - 1
+        january = datetime(target_year, 1, 1, tzinfo=timezone.utc)
+        february = datetime(target_year, 2, 1, tzinfo=timezone.utc)
+        march = datetime(target_year, 3, 1, tzinfo=timezone.utc)
         self.insert_traffic_rows(
             [
                 (
@@ -395,10 +447,10 @@ class XrayTrafficShowSummaryTest(unittest.TestCase):
             "--name",
             "frp200",
             "--year",
-            str(current_year),
+            str(target_year),
         )
 
-        self.assertRegex(output, rf"{current_year}\s+usa1\s+user\s+frp200\s+300B\s+700B\s+1000B")
+        self.assertRegex(output, rf"{target_year}\s+usa1\s+user\s+frp200\s+300B\s+700B\s+1000B")
 
         all_output = self.run_tool(
             "show",
@@ -410,12 +462,310 @@ class XrayTrafficShowSummaryTest(unittest.TestCase):
             "--name",
             "frp200",
             "--year",
-            str(current_year),
+            str(target_year),
         )
 
-        self.assertRegex(all_output, rf"{current_year}\s+usa1\s+user\s+frp200\s+300B\s+700B\s+1000B")
-        self.assertRegex(all_output, rf"{current_year}\s+usa3\s+user\s+frp200\s+20B\s+40B\s+60B")
-        self.assertRegex(all_output, rf"{current_year}\s+ALL\s+user\s+frp200\s+320B\s+740B\s+1\.04KiB")
+        self.assertRegex(all_output, rf"{target_year}\s+usa1\s+user\s+frp200\s+300B\s+700B\s+1000B")
+        self.assertRegex(all_output, rf"{target_year}\s+usa3\s+user\s+frp200\s+20B\s+40B\s+60B")
+        self.assertRegex(all_output, rf"{target_year}\s+ALL\s+user\s+frp200\s+320B\s+740B\s+1\.04KiB")
+
+    def test_show_hourly_appends_current_period(self) -> None:
+        """验证 hourly 会追加当前小时动态结果和 ALL 小计。"""
+
+        fake_xray = self.write_fake_xray(
+            {
+                "127.0.0.1:18080": (5, 7),
+                "127.0.0.1:18081": (11, 13),
+            }
+        )
+        current_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+
+        output = self.run_tool_with_global_options(
+            ["--xray-bin", str(fake_xray)],
+            "show",
+            "hourly",
+            "--instance",
+            "ALL",
+            "--scope",
+            "user",
+            "--name",
+            "frp200",
+        )
+
+        hour_label = current_hour.strftime("%Y-%m-%d %H:00")
+        self.assertRegex(output, rf"{hour_label}\s+usa1\s+user\s+frp200\s+5B\s+7B\s+12B")
+        self.assertRegex(output, rf"{hour_label}\s+usa3\s+user\s+frp200\s+11B\s+13B\s+24B")
+        self.assertRegex(output, rf"{hour_label}\s+ALL\s+user\s+frp200\s+16B\s+20B\s+36B")
+
+    def test_show_daily_current_combines_hourly_and_current(self) -> None:
+        """验证 daily 当前日由已落库 hourly 加 current 动态值组成。"""
+
+        fake_xray = self.write_fake_xray(
+            {
+                "127.0.0.1:18080": (5, 7),
+                "127.0.0.1:18081": (11, 13),
+            }
+        )
+        now = datetime.now(timezone.utc)
+        current_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        current_hour = now.replace(minute=0, second=0, microsecond=0)
+        history_up = 0
+        history_down = 0
+        if current_hour > current_day:
+            start_ts = int((current_hour - timedelta(hours=1)).timestamp())
+            self.insert_records("hourly", start_ts, int(current_hour.timestamp()))
+            history_up = 120
+            history_down = 340
+
+        output = self.run_tool_with_global_options(
+            ["--xray-bin", str(fake_xray)],
+            "show",
+            "daily",
+            "--instance",
+            "ALL",
+            "--scope",
+            "user",
+            "--name",
+            "frp200",
+            "--date",
+            current_day.strftime("%Y-%m-%d"),
+        )
+
+        day_label = current_day.strftime("%Y-%m-%d")
+        expected_up = history_up + 16
+        expected_down = history_down + 20
+        expected_total = expected_up + expected_down
+        self.assertRegex(output, rf"{day_label}\s+ALL\s+user\s+frp200\s+{expected_up}B\s+{expected_down}B\s+{expected_total}B")
+
+    def test_show_monthly_current_combines_daily_and_today(self) -> None:
+        """验证 monthly 当前月由已落库 daily 加今天动态值组成。"""
+
+        fake_xray = self.write_fake_xray(
+            {
+                "127.0.0.1:18080": (5, 7),
+                "127.0.0.1:18081": (11, 13),
+            }
+        )
+        now = datetime.now(timezone.utc)
+        current_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        current_month = current_day.replace(day=1)
+        history_up = 0
+        history_down = 0
+        if current_day > current_month:
+            start_ts = int((current_day - timedelta(days=1)).timestamp())
+            self.insert_records("daily", start_ts, int(current_day.timestamp()))
+            history_up = 120
+            history_down = 340
+
+        output = self.run_tool_with_global_options(
+            ["--xray-bin", str(fake_xray)],
+            "show",
+            "monthly",
+            "--instance",
+            "ALL",
+            "--scope",
+            "user",
+            "--name",
+            "frp200",
+            "--month",
+            current_month.strftime("%Y-%m"),
+        )
+
+        month_label = current_month.strftime("%Y-%m")
+        expected_up = history_up + 16
+        expected_down = history_down + 20
+        expected_total = expected_up + expected_down
+        self.assertRegex(output, rf"{month_label}\s+ALL\s+user\s+frp200\s+{expected_up}B\s+{expected_down}B\s+{expected_total}B")
+
+    def test_show_yearly_current_combines_monthly_and_month(self) -> None:
+        """验证 yearly 当前年由已落库 monthly 加本月动态值组成。"""
+
+        fake_xray = self.write_fake_xray(
+            {
+                "127.0.0.1:18080": (5, 7),
+                "127.0.0.1:18081": (11, 13),
+            }
+        )
+        now = datetime.now(timezone.utc)
+        current_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        current_year = current_month.replace(month=1)
+        history_up = 0
+        history_down = 0
+        if current_month > current_year:
+            previous_month = self.add_months(current_month, -1)
+            self.insert_records("monthly", int(previous_month.timestamp()), int(current_month.timestamp()))
+            history_up = 120
+            history_down = 340
+
+        output = self.run_tool_with_global_options(
+            ["--xray-bin", str(fake_xray)],
+            "show",
+            "yearly",
+            "--instance",
+            "ALL",
+            "--scope",
+            "user",
+            "--name",
+            "frp200",
+            "--year",
+            current_year.strftime("%Y"),
+        )
+
+        year_label = current_year.strftime("%Y")
+        expected_up = history_up + 16
+        expected_down = history_down + 20
+        expected_total = expected_up + expected_down
+        self.assertRegex(output, rf"{year_label}\s+ALL\s+user\s+frp200\s+{expected_up}B\s+{expected_down}B\s+{expected_total}B")
+
+    def test_show_current_error_keeps_history_rows(self) -> None:
+        """验证 current 读取失败时仍输出已落库历史行并返回非零。"""
+
+        fake_xray = self.write_fake_xray(
+            {
+                "127.0.0.1:18080": (5, 7),
+                "127.0.0.1:18081": (11, 13),
+            },
+            fail_servers={"127.0.0.1:18081"},
+        )
+        current_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        history_hour = current_hour - timedelta(hours=1)
+        self.insert_records("hourly", int(history_hour.timestamp()), int(current_hour.timestamp()))
+
+        result = self.run_tool_result_with_global_options(
+            ["--xray-bin", str(fake_xray)],
+            "show",
+            "hourly",
+            "--instance",
+            "ALL",
+            "--scope",
+            "user",
+            "--name",
+            "frp200",
+        )
+
+        history_label = history_hour.strftime("%Y-%m-%d %H:00")
+        current_label = current_hour.strftime("%Y-%m-%d %H:00")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertRegex(result.stdout, rf"{history_label}\s+usa3\s+user\s+frp200\s+20B\s+40B\s+60B")
+        self.assertRegex(result.stdout, rf"{current_label}\s+usa1\s+user\s+frp200\s+5B\s+7B\s+12B")
+        self.assertIn("xray statsquery failed for instance usa3", result.stderr)
+
+    def test_show_limit_counts_current_detail_rows(self) -> None:
+        """验证 limit 在历史和当前动态明细合并后生效。"""
+
+        fake_xray = self.write_fake_xray(
+            {
+                "127.0.0.1:18080": (5, 7),
+                "127.0.0.1:18081": (11, 13),
+            }
+        )
+        current_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+        history_hour = current_hour - timedelta(hours=1)
+        self.insert_records("hourly", int(history_hour.timestamp()), int(current_hour.timestamp()))
+
+        output = self.run_tool_with_global_options(
+            ["--xray-bin", str(fake_xray)],
+            "show",
+            "hourly",
+            "--instance",
+            "ALL",
+            "--scope",
+            "user",
+            "--name",
+            "frp200",
+            "--limit",
+            "1",
+        )
+
+        current_label = current_hour.strftime("%Y-%m-%d %H:00")
+        history_label = history_hour.strftime("%Y-%m-%d %H:00")
+        self.assertRegex(output, rf"{current_label}\s+usa1\s+user\s+frp200\s+5B\s+7B\s+12B")
+        self.assertNotRegex(output, rf"{current_label}\s+usa3\s+user\s+frp200")
+        self.assertRegex(output, rf"{current_label}\s+ALL\s+user\s+frp200\s+16B\s+20B\s+36B")
+        self.assertNotRegex(output, rf"{history_label}\s+usa1\s+user\s+frp200")
+
+    def test_show_explicit_past_periods_do_not_append_current(self) -> None:
+        """验证显式查询过去日期、月份和年份时不会读取 current。"""
+
+        fail_servers = {"127.0.0.1:18080", "127.0.0.1:18081"}
+        fake_xray = self.write_fake_xray({}, fail_servers=fail_servers)
+        now = datetime.now(timezone.utc)
+        current_hour = now.replace(minute=0, second=0, microsecond=0)
+        current_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        past_day = current_day - timedelta(days=1)
+        past_hour = past_day + timedelta(hours=8)
+        current_month = current_day.replace(day=1)
+        past_month = self.add_months(current_month, -1)
+        current_year = current_month.replace(month=1)
+        past_year = current_year.replace(year=current_year.year - 1)
+
+        self.insert_records("hourly", int(past_hour.timestamp()), int((past_hour + timedelta(hours=1)).timestamp()))
+        self.insert_records("daily", int(past_day.timestamp()), int((past_day + timedelta(days=1)).timestamp()))
+        self.insert_records("monthly", int(past_month.timestamp()), int(current_month.timestamp()))
+        january_end = self.add_months(past_year, 1)
+        self.insert_records("monthly", int(past_year.timestamp()), int(january_end.timestamp()))
+
+        hourly_output = self.run_tool_with_global_options(
+            ["--xray-bin", str(fake_xray)],
+            "show",
+            "hourly",
+            "--instance",
+            "ALL",
+            "--scope",
+            "user",
+            "--name",
+            "frp200",
+            "--date",
+            past_day.strftime("%Y-%m-%d"),
+        )
+        daily_output = self.run_tool_with_global_options(
+            ["--xray-bin", str(fake_xray)],
+            "show",
+            "daily",
+            "--instance",
+            "ALL",
+            "--scope",
+            "user",
+            "--name",
+            "frp200",
+            "--date",
+            past_day.strftime("%Y-%m-%d"),
+        )
+        monthly_output = self.run_tool_with_global_options(
+            ["--xray-bin", str(fake_xray)],
+            "show",
+            "monthly",
+            "--instance",
+            "ALL",
+            "--scope",
+            "user",
+            "--name",
+            "frp200",
+            "--month",
+            past_month.strftime("%Y-%m"),
+        )
+        yearly_output = self.run_tool_with_global_options(
+            ["--xray-bin", str(fake_xray)],
+            "show",
+            "yearly",
+            "--instance",
+            "ALL",
+            "--scope",
+            "user",
+            "--name",
+            "frp200",
+            "--year",
+            past_year.strftime("%Y"),
+        )
+
+        self.assertRegex(hourly_output, rf"{past_hour.strftime('%Y-%m-%d %H:00')}\s+ALL\s+user\s+frp200")
+        self.assertNotIn(current_hour.strftime("%Y-%m-%d %H:00"), hourly_output)
+        self.assertRegex(daily_output, rf"{past_day.strftime('%Y-%m-%d')}\s+ALL\s+user\s+frp200")
+        self.assertNotIn(current_day.strftime("%Y-%m-%d"), daily_output)
+        self.assertRegex(monthly_output, rf"{past_month.strftime('%Y-%m')}\s+ALL\s+user\s+frp200")
+        self.assertNotIn(current_month.strftime("%Y-%m"), monthly_output)
+        self.assertRegex(yearly_output, rf"{past_year.strftime('%Y')}\s+ALL\s+user\s+frp200")
+        self.assertNotIn(current_year.strftime("%Y"), yearly_output)
 
     def test_show_months_and_years_zero_are_errors(self) -> None:
         """验证 --months 0 和 --years 0 不会被静默替换为默认值。"""
