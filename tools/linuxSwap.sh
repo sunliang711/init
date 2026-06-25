@@ -5,6 +5,8 @@ set -euo pipefail
 SWAP=/var/swap.img
 SWAP_SIZE_MB=1000
 FSTAB=/etc/fstab
+SYSCTL_CONF=/etc/sysctl.d/99-swappiness.conf
+SWAPPINESS=10
 
 log() {
     echo "$*"
@@ -30,6 +32,8 @@ Defaults:
   Swap file:    $SWAP
   Swap size:    ${SWAP_SIZE_MB}MiB
   fstab file:   $FSTAB
+  sysctl file:  $SYSCTL_CONF
+  swappiness:   $SWAPPINESS
 
 Examples:
   sudo ${0##*/} --size 2G
@@ -38,6 +42,7 @@ Examples:
 Notes:
   This script must be run as root unless --help is used.
   It creates the swap file if missing, enables it, and appends an fstab entry if needed.
+  It writes vm.swappiness to the sysctl config file and applies it immediately.
   The size option is only used when the swap file does not already exist.
 EOF
 }
@@ -125,7 +130,7 @@ require_linux() {
 require_commands() {
     local cmd
 
-    for cmd in awk chmod cp date dd mkswap swapon;do
+    for cmd in awk chmod cp date dd mkswap swapon sysctl;do
         if ! command -v "$cmd" >/dev/null 2>&1;then
             die "Missing required command: $cmd"
         fi
@@ -134,6 +139,7 @@ require_commands() {
 
 validate_paths() {
     local swap_dir
+    local sysctl_dir
 
     # 写入系统文件前先校验路径，避免空路径、目录或符号链接导致误操作。
     validate_swap_path_value
@@ -153,6 +159,23 @@ validate_paths() {
 
     if [[ ! -f "$FSTAB" || ! -w "$FSTAB" ]];then
         die "Cannot write fstab: $FSTAB"
+    fi
+
+    sysctl_dir=${SYSCTL_CONF%/*}
+    if [[ ! -d "$sysctl_dir" || ! -w "$sysctl_dir" ]];then
+        die "Cannot write sysctl directory: $sysctl_dir"
+    fi
+
+    if [[ -L "$SYSCTL_CONF" ]];then
+        die "Sysctl config must not be a symbolic link: $SYSCTL_CONF"
+    fi
+
+    if [[ -e "$SYSCTL_CONF" && ! -f "$SYSCTL_CONF" ]];then
+        die "Sysctl config exists but is not a regular file: $SYSCTL_CONF"
+    fi
+
+    if [[ -e "$SYSCTL_CONF" && ! -w "$SYSCTL_CONF" ]];then
+        die "Cannot write sysctl config: $SYSCTL_CONF"
     fi
 }
 
@@ -194,6 +217,23 @@ ensure_fstab_entry() {
     log "Added swap entry to $FSTAB."
 }
 
+ensure_swappiness_sysctl() {
+    if [[ -f "$SYSCTL_CONF" ]] && awk -v value="$SWAPPINESS" '$0 == "vm.swappiness = " value { found=1 } END { exit found ? 0 : 1 }' "$SYSCTL_CONF";then
+        log "Sysctl swappiness config already exists."
+    else
+        # 覆盖 sysctl 专用配置前保留备份，便于手工回滚内核参数。
+        if [[ -f "$SYSCTL_CONF" ]];then
+            cp "$SYSCTL_CONF" "${SYSCTL_CONF}.bak.$(date +%Y%m%d%H%M%S)"
+        fi
+
+        printf 'vm.swappiness = %s\n' "$SWAPPINESS" > "$SYSCTL_CONF"
+        chmod 0644 "$SYSCTL_CONF"
+        log "Configured vm.swappiness=$SWAPPINESS in $SYSCTL_CONF."
+    fi
+
+    sysctl -p "$SYSCTL_CONF" >/dev/null
+}
+
 main() {
     parse_args "$@"
 
@@ -211,6 +251,7 @@ main() {
 
     enable_swap
     ensure_fstab_entry
+    ensure_swappiness_sysctl
 }
 
 main "$@"
