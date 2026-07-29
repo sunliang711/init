@@ -16,6 +16,7 @@
   - `enabled`：状态文件或运行时规则任一显示启用即为 `1`。
   - `state_enabled`：`state.env` 中记录的原始状态。
   - `runtime_backend`：检测到的运行时后端，可能为 `nft`、`iptables` 或 `none`。
+  - `scheduler_state`：检测调度器文件和启用状态，避免把 `scheduler=systemd` 误读成 timer 已安装。
 
 ## 影响范围
 

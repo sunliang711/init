@@ -1335,6 +1335,38 @@ detect_runtime_backend() {
     return 1
 }
 
+# 检测调度器文件和启用状态，避免把可用调度器误读成已安装调度器。
+scheduler_state() {
+    local scheduler="$1"
+
+    case "${scheduler}" in
+        systemd)
+            if [ ! -f "${SYSTEMD_TIMER}" ] && [ ! -f "${SYSTEMD_SERVICE}" ]; then
+                printf '%s\n' "missing"
+                return 0
+            fi
+            if command_exists systemctl && systemctl is-enabled --quiet domain-whitelist.timer >/dev/null 2>&1; then
+                printf '%s\n' "systemd-enabled"
+            else
+                printf '%s\n' "systemd-installed"
+            fi
+            ;;
+        cron)
+            if [ -f "${CRON_FILE}" ]; then
+                printf '%s\n' "cron-installed"
+            else
+                printf '%s\n' "missing"
+            fi
+            ;;
+        none)
+            printf '%s\n' "none"
+            ;;
+        *)
+            printf '%s\n' "unknown"
+            ;;
+    esac
+}
+
 # 统计文件行数，缺失文件按空集合处理。
 count_file_lines() {
     local file="$1"
@@ -1662,6 +1694,7 @@ status_command() {
     local scheduler
     local runtime_backend
     local effective_enabled
+    local scheduler_status
 
     ensure_default_config
     load_config
@@ -1669,6 +1702,7 @@ status_command() {
     backend="${STATE_BACKEND:-${CONFIG_BACKEND}}"
     entries="$(allowlist_count)"
     scheduler="$(detect_scheduler || true)"
+    scheduler_status="$(scheduler_state "${scheduler:-none}")"
     runtime_backend="$(detect_runtime_backend || true)"
     effective_enabled="${STATE_ENABLED}"
     if [ "${effective_enabled}" != "1" ] && [ -n "${runtime_backend}" ]; then
@@ -1684,6 +1718,7 @@ status_command() {
     printf 'refresh_interval=%s\n' "${REFRESH_INTERVAL}"
     printf 'set_timeout=%s\n' "${SET_TIMEOUT}"
     printf 'scheduler=%s\n' "${scheduler:-unknown}"
+    printf 'scheduler_state=%s\n' "${scheduler_status}"
     printf 'config_file=%s\n' "${CONFIG_FILE}"
     printf 'allowlist_file=%s\n' "${ALLOWLIST_FILE}"
     printf 'last_v4_file=%s\n' "${LAST_V4_FILE}"
