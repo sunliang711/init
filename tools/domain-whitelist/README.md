@@ -48,6 +48,15 @@ sudo domain-whitelist refresh
 查看日志：
 
 ```bash
+sudo domain-whitelist logs
+sudo domain-whitelist logs --lines 200
+sudo domain-whitelist logs --follow
+sudo domain-whitelist logs --cron
+```
+
+systemd 环境也可以直接使用：
+
+```bash
 sudo journalctl -u domain-whitelist.service -n 100 --no-pager
 ```
 

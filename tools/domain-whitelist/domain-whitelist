@@ -131,6 +131,9 @@ usage() {
   status
       查看配置、启用状态和后端状态。
 
+  logs [--lines N] [--follow] [--systemd|--cron|--all]
+      查看 domain-whitelist 的 systemd 或 cron 日志，默认显示最近 100 行。
+
   doctor
       检查 Linux、解析器、防火墙后端和调度器依赖。
 
@@ -156,6 +159,7 @@ usage() {
   sudo ${SCRIPT_NAME} config set --backend auto --interval 300
   sudo ${SCRIPT_NAME} enable
   sudo ${SCRIPT_NAME} status
+  sudo ${SCRIPT_NAME} logs
   sudo ${SCRIPT_NAME} edit
   sudo ${SCRIPT_NAME} disable
 
@@ -182,8 +186,12 @@ parse_global_args() {
         arg="$1"
         case "${arg}" in
             -h|--help)
-                usage
-                exit 0
+                if [ "${#POSITIONAL_ARGS[@]}" -eq 0 ]; then
+                    usage
+                    exit 0
+                fi
+                POSITIONAL_ARGS+=("${arg}")
+                shift
                 ;;
             --dry-run)
                 DRY_RUN=1
@@ -1763,6 +1771,177 @@ status_command() {
     printf 'last_v6_file=%s\n' "${LAST_V6_FILE}"
 }
 
+# 展示 logs 子命令帮助。
+logs_usage() {
+    cat <<EOF
+用法:
+  ${SCRIPT_NAME} logs [--lines N] [--follow] [--systemd|--cron|--all]
+
+参数:
+  --lines N
+      显示最近 N 行，默认 100。
+
+  --follow
+      持续跟随日志输出。systemd 使用 journalctl -f；cron 使用 tail -F。
+
+  --systemd
+      只查看 domain-whitelist.service 和 domain-whitelist.timer 的 journal。
+
+  --cron
+      只查看 cron 相关日志中的 domain-whitelist 记录。
+
+  --all
+      同时查看 systemd 和 cron 日志。
+EOF
+}
+
+# 校验 logs --lines 参数，避免把任意字符串传给 tail/journalctl。
+validate_log_lines() {
+    local value="$1"
+
+    if [[ ! "${value}" =~ ^[0-9]+$ ]] || [ "${value}" -lt 1 ]; then
+        die "Invalid log line count: ${value}"
+    fi
+}
+
+# 输出 systemd service/timer 日志。
+show_systemd_logs() {
+    local lines="$1"
+    local follow="$2"
+    local args
+
+    if ! command_exists journalctl; then
+        die "Missing required command: journalctl"
+    fi
+
+    args=(journalctl -u domain-whitelist.service -u domain-whitelist.timer -n "${lines}" --no-pager)
+    if [ "${follow}" -eq 1 ]; then
+        args+=(--follow)
+    fi
+
+    "${args[@]}"
+}
+
+# 输出 cron 日志中和 domain-whitelist 相关的记录。
+show_cron_logs() {
+    local lines="$1"
+    local follow="$2"
+    local file
+    local found=0
+    local printed=0
+    declare -a log_files=(
+        /var/log/syslog
+        /var/log/cron
+        /var/log/messages
+    )
+
+    for file in "${log_files[@]}"; do
+        [ -r "${file}" ] || continue
+        found=1
+        if [ "${follow}" -eq 1 ]; then
+            tail -n "${lines}" -F "${file}" | grep --line-buffered -F "domain-whitelist"
+            return 0
+        fi
+        if grep -F "domain-whitelist" "${file}" | tail -n "${lines}"; then
+            printed=1
+        fi
+    done
+
+    if [ "${found}" -eq 0 ] && command_exists journalctl; then
+        log_warn "No readable cron log file found; showing recent cron journal entries"
+        journalctl -u cron -u crond -n "${lines}" --no-pager | grep -F "domain-whitelist" || true
+        return 0
+    fi
+
+    if [ "${found}" -eq 0 ]; then
+        die "No readable cron log file found"
+    fi
+    if [ "${printed}" -eq 0 ]; then
+        log_warn "No domain-whitelist entries found in cron logs"
+    fi
+}
+
+# 根据当前调度器或用户指定来源展示日志。
+logs_command() {
+    local lines=100
+    local follow=0
+    local source="auto"
+    local scheduler
+    local scheduler_status
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --lines)
+                [ "$#" -ge 2 ] || die "Missing value for --lines"
+                lines="$2"
+                shift 2
+                ;;
+            --follow|-f)
+                follow=1
+                shift
+                ;;
+            --systemd)
+                source="systemd"
+                shift
+                ;;
+            --cron)
+                source="cron"
+                shift
+                ;;
+            --all)
+                source="all"
+                shift
+                ;;
+            -h|--help)
+                logs_usage
+                return 0
+                ;;
+            *)
+                die "Unknown logs option: $1"
+                ;;
+        esac
+    done
+
+    validate_log_lines "${lines}"
+    if [ "${source}" = "all" ] && [ "${follow}" -eq 1 ]; then
+        die "logs --all cannot be used with --follow"
+    fi
+
+    load_config
+    scheduler="$(detect_scheduler || true)"
+    scheduler_status="$(scheduler_state "${scheduler:-none}")"
+
+    case "${source}" in
+        systemd)
+            show_systemd_logs "${lines}" "${follow}"
+            ;;
+        cron)
+            show_cron_logs "${lines}" "${follow}"
+            ;;
+        all)
+            show_systemd_logs "${lines}" "${follow}"
+            show_cron_logs "${lines}" "${follow}"
+            ;;
+        auto)
+            case "${scheduler_status}" in
+                systemd-enabled|systemd-installed)
+                    show_systemd_logs "${lines}" "${follow}"
+                    ;;
+                cron-installed)
+                    show_cron_logs "${lines}" "${follow}"
+                    ;;
+                *)
+                    if command_exists journalctl; then
+                        show_systemd_logs "${lines}" "${follow}"
+                    else
+                        show_cron_logs "${lines}" "${follow}"
+                    fi
+                    ;;
+            esac
+            ;;
+    esac
+}
+
 # 打印依赖检查结果，不修改系统状态。
 doctor_command() {
     local candidate_backend="none"
@@ -1832,6 +2011,9 @@ main() {
             ;;
         status)
             status_command "${POSITIONAL_ARGS[@]:1}"
+            ;;
+        logs)
+            logs_command "${POSITIONAL_ARGS[@]:1}"
             ;;
         doctor)
             doctor_command "${POSITIONAL_ARGS[@]:1}"
