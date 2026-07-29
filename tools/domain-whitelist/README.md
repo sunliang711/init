@@ -31,6 +31,8 @@ sudo domain-whitelist enable
 sudo domain-whitelist status
 ```
 
+`status` 中的 `enabled` 会综合状态文件和运行时规则判断；`state_enabled` 是 `/etc/domain-whitelist/state.env` 的原始记录；`runtime_backend` 是当前检测到的防火墙运行时对象。
+
 编辑白名单：
 
 ```bash

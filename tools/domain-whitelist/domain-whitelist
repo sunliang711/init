@@ -1321,6 +1321,20 @@ update_firewall_sets() {
     esac
 }
 
+# 检测当前是否存在本工具创建的运行时防火墙对象。
+detect_runtime_backend() {
+    if command_exists nft && nft_table_exists && nft_chain_exists; then
+        printf '%s\n' "nft"
+        return 0
+    fi
+    if command_exists iptables && iptables_chain_exists iptables; then
+        printf '%s\n' "iptables"
+        return 0
+    fi
+
+    return 1
+}
+
 # 统计文件行数，缺失文件按空集合处理。
 count_file_lines() {
     local file="$1"
@@ -1604,8 +1618,8 @@ enable_command() {
 
     backend="$(detect_backend)"
     refresh_now "${backend}"
-    install_scheduler
     save_state "1" "${backend}"
+    install_scheduler
     log_info "Domain whitelist enabled with backend: ${backend}"
 }
 
@@ -1646,6 +1660,8 @@ status_command() {
     local backend
     local entries
     local scheduler
+    local runtime_backend
+    local effective_enabled
 
     ensure_default_config
     load_config
@@ -1653,8 +1669,15 @@ status_command() {
     backend="${STATE_BACKEND:-${CONFIG_BACKEND}}"
     entries="$(allowlist_count)"
     scheduler="$(detect_scheduler || true)"
+    runtime_backend="$(detect_runtime_backend || true)"
+    effective_enabled="${STATE_ENABLED}"
+    if [ "${effective_enabled}" != "1" ] && [ -n "${runtime_backend}" ]; then
+        effective_enabled="1"
+    fi
 
-    printf 'enabled=%s\n' "${STATE_ENABLED}"
+    printf 'enabled=%s\n' "${effective_enabled}"
+    printf 'state_enabled=%s\n' "${STATE_ENABLED}"
+    printf 'runtime_backend=%s\n' "${runtime_backend:-none}"
     printf 'backend=%s\n' "${backend}"
     printf 'configured_backend=%s\n' "${CONFIG_BACKEND}"
     printf 'allowlist_entries=%s\n' "${entries}"
