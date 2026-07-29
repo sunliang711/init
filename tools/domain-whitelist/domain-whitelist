@@ -1,0 +1,1641 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+# 文件用途:
+#   根据域名和静态 IP 维护 Linux 整机入站来源白名单。
+# 兼容说明:
+#   新系统优先使用 nftables；旧系统可使用 iptables + ipset。
+# 安全约束:
+#   本脚本只管理自有 table、chain、set 和调度任务，不修改用户已有规则文件。
+
+SCRIPT_NAME="$(basename "$0")"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="${SCRIPT_DIR}/${SCRIPT_NAME}"
+
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
+
+APP_DIR="${DWL_CONFIG_DIR:-/etc/domain-whitelist}"
+CONFIG_FILE="${DWL_CONFIG_FILE:-${APP_DIR}/config.env}"
+ALLOWLIST_FILE="${DWL_ALLOWLIST_FILE:-${DWL_DOMAINS_FILE:-${APP_DIR}/whitelist.allow}}"
+STATE_FILE="${DWL_STATE_FILE:-${APP_DIR}/state.env}"
+BACKUP_DIR="${DWL_BACKUP_DIR:-${APP_DIR}/backups}"
+LAST_V4_FILE="${DWL_LAST_V4_FILE:-${APP_DIR}/last.v4}"
+LAST_V6_FILE="${DWL_LAST_V6_FILE:-${APP_DIR}/last.v6}"
+INSTALL_PATH="${DWL_INSTALL_PATH:-/usr/local/sbin/domain-whitelist}"
+SYSTEMD_SERVICE="/etc/systemd/system/domain-whitelist.service"
+SYSTEMD_TIMER="/etc/systemd/system/domain-whitelist.timer"
+CRON_FILE="/etc/cron.d/domain-whitelist"
+
+NFT_FAMILY="inet"
+NFT_TABLE="domain_whitelist"
+NFT_CHAIN="input_gate"
+NFT_SET_V4="allow_v4"
+NFT_SET_V6="allow_v6"
+NFT_PRIORITY="-100"
+
+IPTABLES_CHAIN="DOMAIN_WHITELIST"
+IPSET_V4="domain_whitelist_v4"
+IPSET_V6="domain_whitelist_v6"
+
+CONFIG_BACKEND="auto"
+REFRESH_INTERVAL="300"
+SET_TIMEOUT="900"
+SCHEDULER="auto"
+LOG_MAX_ITEMS="${DWL_LOG_MAX_ITEMS:-50}"
+
+STATE_ENABLED="0"
+STATE_BACKEND=""
+
+DRY_RUN=0
+YES=0
+QUIET=0
+VERBOSE=0
+TMP_DIR=""
+
+declare -a POSITIONAL_ARGS=()
+
+# 输出普通日志，日志内容保持英文，便于脚本和系统日志检索。
+log_info() {
+    if [ "${QUIET}" -eq 0 ]; then
+        printf 'INFO %s\n' "$*" >&2
+    fi
+}
+
+# 输出重要变更日志，即使 --quiet 也保留，便于定时任务记录 IP 替换明细。
+log_change() {
+    printf 'INFO %s\n' "$*" >&2
+}
+
+# 输出警告日志，日志内容保持英文，便于脚本和系统日志检索。
+log_warn() {
+    if [ "${QUIET}" -eq 0 ]; then
+        printf 'WARN %s\n' "$*" >&2
+    fi
+}
+
+# 输出调试日志，仅在 --verbose 时启用。
+log_debug() {
+    if [ "${VERBOSE}" -eq 1 ] && [ "${QUIET}" -eq 0 ]; then
+        printf 'DEBUG %s\n' "$*" >&2
+    fi
+}
+
+# 输出错误并退出，所有失败路径统一通过该函数返回。
+die() {
+    printf 'ERROR %s\n' "$*" >&2
+    exit 1
+}
+
+# 展示管理脚本的命令和示例。
+usage() {
+    cat <<EOF
+用法:
+  ${SCRIPT_NAME} [global options] <command> [options]
+
+入站白名单:
+  init
+      初始化 ${APP_DIR}、默认配置和白名单文件。
+
+  list
+      列出当前启用的白名单条目。
+
+  add <domain|ip> [domain|ip...]
+      添加一个或多个域名、IPv4 或 IPv6。启用状态下会自动刷新防火墙 set。
+
+  remove <domain|ip> [domain|ip...]
+      移除一个或多个域名、IPv4 或 IPv6。启用状态下会自动刷新防火墙 set。
+
+  edit
+      使用 EDITOR 或 vi 编辑 ${ALLOWLIST_FILE}，保存后校验并刷新。
+
+配置:
+  config show
+      查看当前配置。
+
+  config set [--backend auto|nft|iptables] [--interval seconds]
+             [--timeout seconds] [--scheduler auto|systemd|cron|none]
+      修改配置。
+
+运行:
+  enable [options]
+      启用整机入站来源白名单，安装防火墙门禁规则和定时刷新任务。
+      支持与 config set 相同的 options。
+
+  disable
+      禁用整机入站来源白名单，移除本工具创建的防火墙规则和调度任务。
+
+  refresh
+      立即解析域名并刷新 nftables set 或 ipset。
+
+  status
+      查看配置、启用状态和后端状态。
+
+  doctor
+      检查 Linux、解析器、防火墙后端和调度器依赖。
+
+全局参数:
+  --dry-run
+      只打印将要执行的动作，不写文件、不改防火墙、不启停服务。
+
+  --yes
+      确认危险操作，例如空白名单启用或清空后刷新。
+
+  --quiet
+      减少日志输出。
+
+  --verbose
+      输出更多诊断日志。
+
+  -h, --help
+      显示帮助。
+
+示例:
+  sudo ${SCRIPT_NAME} init
+  sudo ${SCRIPT_NAME} add office.example.com home.example.net 203.0.113.10 2001:db8::10
+  sudo ${SCRIPT_NAME} config set --backend auto --interval 300
+  sudo ${SCRIPT_NAME} enable
+  sudo ${SCRIPT_NAME} status
+  sudo ${SCRIPT_NAME} edit
+  sudo ${SCRIPT_NAME} disable
+
+说明:
+  本工具是整机入站来源门禁：非白名单来源的新入站流量会被丢弃，lo 和 established/related 流量会放行。
+  因此它不会自动打开原本被系统防火墙阻断的服务。
+EOF
+}
+
+# 在退出时清理脚本创建的临时目录，避免残留解析结果或规则片段。
+cleanup_tmp_dir() {
+    if [ -n "${TMP_DIR}" ] && [ -d "${TMP_DIR}" ]; then
+        rm -rf "${TMP_DIR}"
+    fi
+}
+
+trap cleanup_tmp_dir EXIT
+
+# 解析全局参数，未知参数保留给具体子命令处理。
+parse_global_args() {
+    local arg
+
+    while [ "$#" -gt 0 ]; do
+        arg="$1"
+        case "${arg}" in
+            -h|--help)
+                usage
+                exit 0
+                ;;
+            --dry-run)
+                DRY_RUN=1
+                shift
+                ;;
+            --yes)
+                YES=1
+                shift
+                ;;
+            --quiet)
+                QUIET=1
+                shift
+                ;;
+            --verbose)
+                VERBOSE=1
+                shift
+                ;;
+            *)
+                POSITIONAL_ARGS+=("${arg}")
+                shift
+                ;;
+        esac
+    done
+}
+
+# 检查指定命令是否存在，用于依赖探测和后端选择。
+command_exists() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# 要求当前系统为 Linux，防止在 macOS 等环境误改网络配置。
+require_linux() {
+    if [ "$(uname)" != "Linux" ]; then
+        die "Only Linux is supported"
+    fi
+}
+
+# 要求当前用户为 root，实际写入防火墙和系统目录前统一检查。
+require_root() {
+    if [ "${EUID}" -ne 0 ]; then
+        die "This command must be run as root"
+    fi
+}
+
+# 要求必要命令存在，缺失时提前失败。
+require_command() {
+    command_exists "$1" || die "Missing required command: $1"
+}
+
+# 执行命令；dry-run 模式只打印完整参数，不产生副作用。
+run_cmd() {
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        printf 'DRY-RUN'
+        printf ' %q' "$@"
+        printf '\n'
+        return 0
+    fi
+
+    "$@"
+}
+
+# 生成时间戳，用于备份文件和临时 set 名称。
+timestamp() {
+    date '+%Y%m%d%H%M%S'
+}
+
+# 去掉字符串首尾空白，配置和域名解析时统一使用。
+trim() {
+    printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+# 创建并记录临时目录，供解析结果和原子写入中转使用。
+ensure_tmp_dir() {
+    if [ -z "${TMP_DIR}" ]; then
+        TMP_DIR="$(mktemp -d)"
+    fi
+}
+
+# 创建配置目录和备份目录，所有写入操作前先完成路径准备。
+ensure_app_dir() {
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would ensure config directories: ${APP_DIR}, ${BACKUP_DIR}"
+        return 0
+    fi
+
+    install -d -m 0755 "${APP_DIR}"
+    install -d -m 0700 "${BACKUP_DIR}"
+}
+
+# 原子写入指定文件，避免配置写到一半被中断。
+atomic_write_file() {
+    local target="$1"
+    local mode="$2"
+    local dir
+    local base
+    local tmp
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would write file: ${target}"
+        cat >/dev/null
+        return 0
+    fi
+
+    dir="$(dirname "${target}")"
+    base="$(basename "${target}")"
+    install -d -m 0755 "${dir}"
+    tmp="$(mktemp "${dir}/.${base}.XXXXXX")"
+    cat >"${tmp}"
+    chmod "${mode}" "${tmp}"
+    mv "${tmp}" "${target}"
+}
+
+# 初始化默认配置文件，不覆盖用户已有配置。
+ensure_default_config() {
+    local legacy_domains_file="${APP_DIR}/domains.allow"
+
+    ensure_app_dir
+
+    if [ ! -f "${CONFIG_FILE}" ]; then
+        log_info "Creating default config: ${CONFIG_FILE}"
+        atomic_write_file "${CONFIG_FILE}" 0644 <<EOF
+# Managed by domain-whitelist
+BACKEND=auto
+REFRESH_INTERVAL=300
+SET_TIMEOUT=900
+SCHEDULER=auto
+EOF
+    fi
+
+    if [ ! -f "${ALLOWLIST_FILE}" ] && [ -f "${legacy_domains_file}" ]; then
+        log_info "Migrating legacy allowlist: ${legacy_domains_file} -> ${ALLOWLIST_FILE}"
+        if [ "${DRY_RUN}" -eq 1 ]; then
+            log_info "Would migrate legacy allowlist"
+        else
+            cp "${legacy_domains_file}" "${ALLOWLIST_FILE}"
+            chmod 0644 "${ALLOWLIST_FILE}"
+        fi
+    fi
+
+    if [ ! -f "${ALLOWLIST_FILE}" ]; then
+        log_info "Creating allowlist: ${ALLOWLIST_FILE}"
+        atomic_write_file "${ALLOWLIST_FILE}" 0644 <<EOF
+# Managed by domain-whitelist
+# One domain, IPv4 or IPv6 per line. Examples:
+# office.example.com
+# 203.0.113.10
+# 2001:db8::10
+EOF
+    fi
+
+    if [ ! -f "${STATE_FILE}" ]; then
+        atomic_write_file "${STATE_FILE}" 0644 <<EOF
+# Managed by domain-whitelist
+ENABLED=0
+BACKEND=
+EOF
+    fi
+}
+
+# 读取配置文件，使用白名单 key 解析，避免 source 任意脚本内容。
+load_config() {
+    local line
+    local key
+    local value
+
+    if [ ! -f "${CONFIG_FILE}" ]; then
+        return 0
+    fi
+
+    while IFS= read -r line || [ -n "${line}" ]; do
+        line="${line%%#*}"
+        line="$(trim "${line}")"
+        [ -z "${line}" ] && continue
+        case "${line}" in
+            *=*)
+                key="$(trim "${line%%=*}")"
+                value="$(trim "${line#*=}")"
+                case "${key}" in
+                    BACKEND)
+                        CONFIG_BACKEND="${value}"
+                        ;;
+                    REFRESH_INTERVAL)
+                        REFRESH_INTERVAL="${value}"
+                        ;;
+                    SET_TIMEOUT)
+                        SET_TIMEOUT="${value}"
+                        ;;
+                    SCHEDULER)
+                        SCHEDULER="${value}"
+                        ;;
+                esac
+                ;;
+        esac
+    done <"${CONFIG_FILE}"
+
+    validate_config_values
+}
+
+# 读取状态文件，状态只记录是否启用和启用时实际使用的后端。
+load_state() {
+    local line
+    local key
+    local value
+
+    STATE_ENABLED="0"
+    STATE_BACKEND=""
+
+    if [ ! -f "${STATE_FILE}" ]; then
+        return 0
+    fi
+
+    while IFS= read -r line || [ -n "${line}" ]; do
+        line="${line%%#*}"
+        line="$(trim "${line}")"
+        [ -z "${line}" ] && continue
+        case "${line}" in
+            *=*)
+                key="$(trim "${line%%=*}")"
+                value="$(trim "${line#*=}")"
+                case "${key}" in
+                    ENABLED)
+                        STATE_ENABLED="${value}"
+                        ;;
+                    BACKEND)
+                        STATE_BACKEND="${value}"
+                        ;;
+                esac
+                ;;
+        esac
+    done <"${STATE_FILE}"
+}
+
+# 写入状态文件，用于 disable 和 refresh 识别当前后端。
+save_state() {
+    local enabled="$1"
+    local backend="$2"
+
+    ensure_app_dir
+    atomic_write_file "${STATE_FILE}" 0644 <<EOF
+# Managed by domain-whitelist
+ENABLED=${enabled}
+BACKEND=${backend}
+EOF
+}
+
+# 保存当前配置，config set 和 enable 参数覆盖后统一落盘。
+save_config() {
+    ensure_app_dir
+    atomic_write_file "${CONFIG_FILE}" 0644 <<EOF
+# Managed by domain-whitelist
+BACKEND=${CONFIG_BACKEND}
+REFRESH_INTERVAL=${REFRESH_INTERVAL}
+SET_TIMEOUT=${SET_TIMEOUT}
+SCHEDULER=${SCHEDULER}
+EOF
+}
+
+# 校验后端名称，防止高风险命令分支收到异常值。
+validate_backend() {
+    case "$1" in
+        auto|nft|iptables)
+            ;;
+        *)
+            die "Invalid backend: $1"
+            ;;
+    esac
+}
+
+# 校验调度器名称，防止写入未知系统位置。
+validate_scheduler() {
+    case "$1" in
+        auto|systemd|cron|none)
+            ;;
+        *)
+            die "Invalid scheduler: $1"
+            ;;
+    esac
+}
+
+# 校验秒数配置，确保刷新周期和 set 超时为正整数。
+validate_positive_integer() {
+    local name="$1"
+    local value="$2"
+
+    if [[ ! "${value}" =~ ^[0-9]+$ ]] || [ "${value}" -lt 1 ]; then
+        die "Invalid ${name}: ${value}"
+    fi
+}
+
+# 校验当前加载的配置，保证写入防火墙前所有值可控。
+validate_config_values() {
+    validate_backend "${CONFIG_BACKEND}"
+    validate_scheduler "${SCHEDULER}"
+    validate_positive_integer "REFRESH_INTERVAL" "${REFRESH_INTERVAL}"
+    validate_positive_integer "SET_TIMEOUT" "${SET_TIMEOUT}"
+    validate_positive_integer "LOG_MAX_ITEMS" "${LOG_MAX_ITEMS}"
+}
+
+# 规范化域名，要求至少两级标签，支持普通域名和 punycode。
+normalize_domain() {
+    local raw="$1"
+    local domain
+    local pattern
+
+    domain="$(trim "${raw}" | tr '[:upper:]' '[:lower:]')"
+    domain="${domain%.}"
+    pattern='^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$'
+
+    if [ -z "${domain}" ] || [ "${#domain}" -gt 253 ] || [[ ! "${domain}" =~ ${pattern} ]]; then
+        die "Invalid domain: ${raw}"
+    fi
+
+    printf '%s\n' "${domain}"
+}
+
+# 规范化白名单条目，支持域名、IPv4 和 IPv6。
+normalize_allowlist_entry() {
+    local raw="$1"
+    local entry
+
+    entry="$(trim "${raw}")"
+    if is_ipv4 "${entry}"; then
+        printf '%s\n' "${entry}"
+        return 0
+    fi
+    if is_ipv6 "${entry}"; then
+        printf '%s\n' "${entry}" | tr '[:upper:]' '[:lower:]'
+        return 0
+    fi
+
+    normalize_domain "${entry}"
+}
+
+# 读取白名单文件，忽略空行和注释，并对条目去重排序。
+read_allowlist_entries() {
+    local line
+    local active
+
+    [ -f "${ALLOWLIST_FILE}" ] || return 0
+
+    ensure_tmp_dir
+    : >"${TMP_DIR}/allowlist"
+
+    while IFS= read -r line || [ -n "${line}" ]; do
+        active="${line%%#*}"
+        active="$(trim "${active}")"
+        [ -z "${active}" ] && continue
+        normalize_allowlist_entry "${active}" >>"${TMP_DIR}/allowlist"
+    done <"${ALLOWLIST_FILE}"
+
+    sort -u "${TMP_DIR}/allowlist"
+}
+
+# 返回当前有效白名单条目数量，用于防止空白名单误启用。
+allowlist_count() {
+    read_allowlist_entries | wc -l | tr -d '[:space:]'
+}
+
+# 为白名单文件创建备份，编辑、添加、删除前调用。
+backup_allowlist_file() {
+    local ts
+    local target
+
+    [ -f "${ALLOWLIST_FILE}" ] || return 0
+    ensure_app_dir
+    ts="$(timestamp)"
+    target="${BACKUP_DIR}/whitelist.allow.${ts}.bak"
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would backup ${ALLOWLIST_FILE} to ${target}"
+        return 0
+    fi
+
+    cp "${ALLOWLIST_FILE}" "${target}"
+    chmod 0600 "${target}"
+    log_info "Created backup: ${target}"
+}
+
+# 检查白名单文件语法，编辑器保存后用它阻止无效配置进入刷新流程。
+validate_allowlist_file() {
+    read_allowlist_entries >/dev/null
+}
+
+# 打印当前白名单条目。
+list_command() {
+    ensure_default_config
+    load_config
+    read_allowlist_entries
+}
+
+# 添加白名单条目，保持已有注释和顺序，仅在末尾追加新条目。
+add_command() {
+    local entry
+    local normalized
+    local existing
+    local changed=0
+
+    [ "$#" -gt 0 ] || die "Missing allowlist entry"
+    ensure_default_config
+    load_config
+    backup_allowlist_file
+
+    for entry in "$@"; do
+        normalized="$(normalize_allowlist_entry "${entry}")"
+        existing="$(read_allowlist_entries | grep -Fx "${normalized}" || true)"
+        if [ -n "${existing}" ]; then
+            log_info "Allowlist entry already exists: ${normalized}"
+            continue
+        fi
+        changed=1
+        if [ "${DRY_RUN}" -eq 1 ]; then
+            log_info "Would add allowlist entry: ${normalized}"
+        else
+            printf '%s\n' "${normalized}" >>"${ALLOWLIST_FILE}"
+            log_info "Added allowlist entry: ${normalized}"
+        fi
+    done
+
+    if [ "${changed}" -eq 1 ]; then
+        refresh_after_change
+    fi
+}
+
+# 判断某一行是否匹配待删除白名单条目，保留注释和非目标行。
+line_matches_remove_entry() {
+    local line="$1"
+    local active
+    local normalized
+    local target
+    shift
+
+    active="${line%%#*}"
+    active="$(trim "${active}")"
+    [ -z "${active}" ] && return 1
+    normalized="$(normalize_allowlist_entry "${active}")"
+
+    for target in "$@"; do
+        [ "${normalized}" = "${target}" ] && return 0
+    done
+
+    return 1
+}
+
+# 删除白名单条目，使用临时文件重写白名单文件并保留无关内容。
+remove_command() {
+    local entry
+    local normalized
+    local line
+    local changed=0
+    local tmp
+    declare -a targets=()
+
+    [ "$#" -gt 0 ] || die "Missing allowlist entry"
+    ensure_default_config
+    load_config
+    backup_allowlist_file
+    ensure_tmp_dir
+    tmp="${TMP_DIR}/whitelist.allow.new"
+
+    for entry in "$@"; do
+        normalized="$(normalize_allowlist_entry "${entry}")"
+        targets+=("${normalized}")
+    done
+
+    : >"${tmp}"
+    while IFS= read -r line || [ -n "${line}" ]; do
+        if line_matches_remove_entry "${line}" "${targets[@]}"; then
+            changed=1
+            continue
+        fi
+        printf '%s\n' "${line}" >>"${tmp}"
+    done <"${ALLOWLIST_FILE}"
+
+    if [ "${changed}" -eq 0 ]; then
+        log_warn "No matching allowlist entry was removed"
+        return 0
+    fi
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would update allowlist: ${ALLOWLIST_FILE}"
+    else
+        cat "${tmp}" >"${ALLOWLIST_FILE}"
+        chmod 0644 "${ALLOWLIST_FILE}"
+        log_info "Updated allowlist"
+    fi
+
+    refresh_after_change
+}
+
+# 使用用户编辑器编辑白名单，并在保存后执行语法校验。
+edit_command() {
+    local editor
+
+    ensure_default_config
+    load_config
+    backup_allowlist_file
+    editor="${EDITOR:-vi}"
+    require_command "${editor%% *}"
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would open editor for ${ALLOWLIST_FILE}"
+        return 0
+    fi
+
+    "${editor}" "${ALLOWLIST_FILE}"
+    validate_allowlist_file
+    log_info "Allowlist is valid"
+    refresh_after_change
+}
+
+# 配置子命令帮助，避免误用 config。
+config_usage() {
+    cat <<EOF
+用法:
+  ${SCRIPT_NAME} config show
+  ${SCRIPT_NAME} config set [--backend auto|nft|iptables] [--interval seconds]
+                       [--timeout seconds] [--scheduler auto|systemd|cron|none]
+EOF
+}
+
+# 解析 config set 和 enable 共用的配置覆盖参数。
+parse_config_options() {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --backend)
+                [ "$#" -ge 2 ] || die "Missing value for --backend"
+                CONFIG_BACKEND="$2"
+                shift 2
+                ;;
+            --interval)
+                [ "$#" -ge 2 ] || die "Missing value for --interval"
+                REFRESH_INTERVAL="$2"
+                shift 2
+                ;;
+            --timeout)
+                [ "$#" -ge 2 ] || die "Missing value for --timeout"
+                SET_TIMEOUT="$2"
+                shift 2
+                ;;
+            --scheduler)
+                [ "$#" -ge 2 ] || die "Missing value for --scheduler"
+                SCHEDULER="$2"
+                shift 2
+                ;;
+            *)
+                die "Unknown option: $1"
+                ;;
+        esac
+    done
+
+    validate_config_values
+}
+
+# 展示当前配置文件中的有效配置。
+config_show() {
+    ensure_default_config
+    load_config
+    printf 'CONFIG_DIR=%s\n' "${APP_DIR}"
+    printf 'ALLOWLIST_FILE=%s\n' "${ALLOWLIST_FILE}"
+    printf 'BACKEND=%s\n' "${CONFIG_BACKEND}"
+    printf 'REFRESH_INTERVAL=%s\n' "${REFRESH_INTERVAL}"
+    printf 'SET_TIMEOUT=%s\n' "${SET_TIMEOUT}"
+    printf 'SCHEDULER=%s\n' "${SCHEDULER}"
+}
+
+# 修改配置；启用状态下同步重建规则、刷新 set 和调度任务。
+config_set() {
+    ensure_default_config
+    load_config
+    parse_config_options "$@"
+    save_config
+    log_info "Updated config"
+    refresh_runtime_after_config_change
+}
+
+# 分发 config 子命令。
+config_command() {
+    local action="${1:-}"
+
+    case "${action}" in
+        show)
+            shift
+            [ "$#" -eq 0 ] || die "Unexpected argument: $1"
+            config_show
+            ;;
+        set)
+            shift
+            config_set "$@"
+            ;;
+        -h|--help|"")
+            config_usage
+            ;;
+        *)
+            die "Unknown config action: ${action}"
+            ;;
+    esac
+}
+
+# 根据配置和系统命令选择实际防火墙后端。
+detect_backend() {
+    case "${CONFIG_BACKEND}" in
+        nft)
+            require_command nft
+            printf '%s\n' "nft"
+            ;;
+        iptables)
+            require_command iptables
+            require_command ipset
+            printf '%s\n' "iptables"
+            ;;
+        auto)
+            if command_exists nft; then
+                printf '%s\n' "nft"
+            elif command_exists iptables && command_exists ipset; then
+                printf '%s\n' "iptables"
+            else
+                die "No supported firewall backend found: need nft or iptables + ipset"
+            fi
+            ;;
+    esac
+}
+
+# 解析当前应使用的调度器，systemd 不可用时自动回退 cron。
+detect_scheduler() {
+    case "${SCHEDULER}" in
+        systemd)
+            command_exists systemctl || die "Missing required command: systemctl"
+            [ -d /run/systemd/system ] || die "systemd is not running"
+            printf '%s\n' "systemd"
+            ;;
+        cron)
+            [ -d /etc/cron.d ] || die "Missing cron directory: /etc/cron.d"
+            printf '%s\n' "cron"
+            ;;
+        none)
+            printf '%s\n' "none"
+            ;;
+        auto)
+            if command_exists systemctl && [ -d /run/systemd/system ]; then
+                printf '%s\n' "systemd"
+            elif [ -d /etc/cron.d ]; then
+                printf '%s\n' "cron"
+            else
+                printf '%s\n' "none"
+            fi
+            ;;
+    esac
+}
+
+# 返回运行时应调用的管理脚本路径，安装后优先使用 /usr/local/sbin。
+manager_exec_path() {
+    if [ -x "${INSTALL_PATH}" ]; then
+        printf '%s\n' "${INSTALL_PATH}"
+    else
+        printf '%s\n' "${SCRIPT_PATH}"
+    fi
+}
+
+# 检查 nftables table 是否存在。
+nft_table_exists() {
+    nft list table "${NFT_FAMILY}" "${NFT_TABLE}" >/dev/null 2>&1
+}
+
+# 检查 nftables set 是否存在。
+nft_set_exists() {
+    local set_name="$1"
+    nft list set "${NFT_FAMILY}" "${NFT_TABLE}" "${set_name}" >/dev/null 2>&1
+}
+
+# 检查 nftables chain 是否存在。
+nft_chain_exists() {
+    nft list chain "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_CHAIN}" >/dev/null 2>&1
+}
+
+# 确保 nftables table、set、chain 和整机入站来源门禁规则存在。
+nft_ensure_rules() {
+    require_command nft
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would ensure nftables rules for ${NFT_FAMILY} ${NFT_TABLE}"
+        return 0
+    fi
+
+    if ! nft_table_exists; then
+        run_cmd nft add table "${NFT_FAMILY}" "${NFT_TABLE}"
+    fi
+
+    if ! nft_set_exists "${NFT_SET_V4}"; then
+        run_cmd nft add set "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_SET_V4}" "{ type ipv4_addr; flags timeout; timeout ${SET_TIMEOUT}s; }"
+    fi
+    if ! nft_set_exists "${NFT_SET_V6}"; then
+        run_cmd nft add set "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_SET_V6}" "{ type ipv6_addr; flags timeout; timeout ${SET_TIMEOUT}s; }"
+    fi
+
+    if ! nft_chain_exists; then
+        run_cmd nft add chain "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_CHAIN}" "{ type filter hook input priority ${NFT_PRIORITY}; policy accept; }"
+    else
+        run_cmd nft flush chain "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_CHAIN}"
+    fi
+
+    run_cmd nft add rule "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_CHAIN}" iifname '"lo"' return
+    run_cmd nft add rule "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_CHAIN}" ct state established,related return
+    run_cmd nft add rule "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_CHAIN}" ip saddr @"${NFT_SET_V4}" return
+    run_cmd nft add rule "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_CHAIN}" ip6 saddr @"${NFT_SET_V6}" return
+    run_cmd nft add rule "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_CHAIN}" counter drop
+}
+
+# 删除 nftables 后端创建的 table，禁用时使用。
+nft_cleanup() {
+    command_exists nft || return 0
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would delete nftables table: ${NFT_FAMILY} ${NFT_TABLE}"
+        return 0
+    fi
+
+    if nft_table_exists; then
+        run_cmd nft delete table "${NFT_FAMILY}" "${NFT_TABLE}"
+    fi
+}
+
+# 将文件中的 IP 列表转换为 nftables 元素。
+nft_ip_elements_from_file() {
+    local file="$1"
+    local result=""
+    local ip
+
+    while IFS= read -r ip || [ -n "${ip}" ]; do
+        [ -z "${ip}" ] && continue
+        if [ -z "${result}" ]; then
+            result="${ip}"
+        else
+            result="${result}, ${ip}"
+        fi
+    done <"${file}"
+
+    printf '%s' "${result}"
+}
+
+# 刷新 nftables IP set，使其与最新域名解析结果一致。
+nft_update_sets() {
+    local v4_file="$1"
+    local v6_file="$2"
+    local elements
+
+    require_command nft
+    nft_ensure_rules
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would refresh nftables IP sets"
+        return 0
+    fi
+
+    run_cmd nft flush set "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_SET_V4}"
+    run_cmd nft flush set "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_SET_V6}"
+
+    elements="$(nft_ip_elements_from_file "${v4_file}")"
+    if [ -n "${elements}" ]; then
+        run_cmd nft add element "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_SET_V4}" "{ ${elements} }"
+    fi
+
+    elements="$(nft_ip_elements_from_file "${v6_file}")"
+    if [ -n "${elements}" ]; then
+        run_cmd nft add element "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_SET_V6}" "{ ${elements} }"
+    fi
+}
+
+# 检查指定 iptables 二进制中的自定义 chain 是否存在。
+iptables_chain_exists() {
+    local bin="$1"
+    "${bin}" -L "${IPTABLES_CHAIN}" -n >/dev/null 2>&1
+}
+
+# 移除 INPUT 中跳转到自定义 chain 的所有入口，确保重建后位置可控。
+iptables_remove_input_jumps() {
+    local bin="$1"
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would remove ${bin} INPUT jumps to ${IPTABLES_CHAIN}"
+        return 0
+    fi
+
+    while "${bin}" -C INPUT -j "${IPTABLES_CHAIN}" >/dev/null 2>&1; do
+        run_cmd "${bin}" -D INPUT -j "${IPTABLES_CHAIN}"
+    done
+}
+
+# 为 iptables 或 ip6tables 创建整机入站来源门禁 chain。
+iptables_ensure_family_rules() {
+    local bin="$1"
+    local set_name="$2"
+
+    if ! iptables_chain_exists "${bin}"; then
+        run_cmd "${bin}" -N "${IPTABLES_CHAIN}"
+    else
+        run_cmd "${bin}" -F "${IPTABLES_CHAIN}"
+    fi
+
+    iptables_remove_input_jumps "${bin}"
+    run_cmd "${bin}" -I INPUT 1 -j "${IPTABLES_CHAIN}"
+    run_cmd "${bin}" -A "${IPTABLES_CHAIN}" -i lo -j RETURN
+    run_cmd "${bin}" -A "${IPTABLES_CHAIN}" -m state --state ESTABLISHED,RELATED -j RETURN
+    run_cmd "${bin}" -A "${IPTABLES_CHAIN}" -m set --match-set "${set_name}" src -j RETURN
+    run_cmd "${bin}" -A "${IPTABLES_CHAIN}" -j DROP
+}
+
+# 确保 iptables + ipset 后端的 set、chain 和 INPUT 跳转存在。
+iptables_ensure_rules() {
+    require_command iptables
+    require_command ipset
+
+    run_cmd ipset create "${IPSET_V4}" hash:ip family inet timeout "${SET_TIMEOUT}" -exist
+    iptables_ensure_family_rules iptables "${IPSET_V4}"
+
+    if command_exists ip6tables; then
+        run_cmd ipset create "${IPSET_V6}" hash:ip family inet6 timeout "${SET_TIMEOUT}" -exist
+        iptables_ensure_family_rules ip6tables "${IPSET_V6}"
+    else
+        log_warn "ip6tables not found; IPv6 whitelist gate is skipped"
+    fi
+}
+
+# 清理指定 iptables 家族中的自定义 chain。
+iptables_cleanup_family() {
+    local bin="$1"
+
+    command_exists "${bin}" || return 0
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would cleanup ${bin} chain: ${IPTABLES_CHAIN}"
+        return 0
+    fi
+
+    iptables_remove_input_jumps "${bin}"
+    if iptables_chain_exists "${bin}"; then
+        run_cmd "${bin}" -F "${IPTABLES_CHAIN}"
+        run_cmd "${bin}" -X "${IPTABLES_CHAIN}"
+    fi
+}
+
+# 清理 iptables + ipset 后端创建的 chain 和 set。
+iptables_cleanup() {
+    iptables_cleanup_family iptables
+    iptables_cleanup_family ip6tables
+
+    if command_exists ipset; then
+        if [ "${DRY_RUN}" -eq 1 ]; then
+            log_info "Would destroy ipsets: ${IPSET_V4}, ${IPSET_V6}"
+        else
+            ipset destroy "${IPSET_V4}" >/dev/null 2>&1 || true
+            ipset destroy "${IPSET_V6}" >/dev/null 2>&1 || true
+        fi
+    fi
+}
+
+# 使用临时 ipset + swap 原子刷新单个 IP set。
+ipset_update_one() {
+    local set_name="$1"
+    local family="$2"
+    local file="$3"
+    local tmp_set
+    local ip
+
+    require_command ipset
+    tmp_set="${set_name}_tmp_$$"
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would refresh ipset: ${set_name}"
+        return 0
+    fi
+
+    ipset destroy "${tmp_set}" >/dev/null 2>&1 || true
+    run_cmd ipset create "${set_name}" hash:ip family "${family}" timeout "${SET_TIMEOUT}" -exist
+    run_cmd ipset create "${tmp_set}" hash:ip family "${family}" timeout "${SET_TIMEOUT}"
+
+    while IFS= read -r ip || [ -n "${ip}" ]; do
+        [ -z "${ip}" ] && continue
+        run_cmd ipset -exist add "${tmp_set}" "${ip}" timeout "${SET_TIMEOUT}"
+    done <"${file}"
+
+    if ! ipset swap "${tmp_set}" "${set_name}"; then
+        ipset destroy "${tmp_set}" >/dev/null 2>&1 || true
+        die "Failed to swap ipset: ${set_name}"
+    fi
+    run_cmd ipset destroy "${tmp_set}"
+}
+
+# 刷新 iptables + ipset 后端的 IPv4 和 IPv6 set。
+iptables_update_sets() {
+    local v4_file="$1"
+    local v6_file="$2"
+
+    require_command iptables
+    require_command ipset
+    iptables_ensure_rules
+    ipset_update_one "${IPSET_V4}" inet "${v4_file}"
+
+    if command_exists ip6tables; then
+        ipset_update_one "${IPSET_V6}" inet6 "${v6_file}"
+    fi
+}
+
+# 判断字符串是否是合法 IPv4，解析结果入 set 前做基本过滤。
+is_ipv4() {
+    local ip="$1"
+    local octet
+    declare -a octets
+
+    [[ "${ip}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || return 1
+    IFS='.' read -r -a octets <<<"${ip}"
+    for octet in "${octets[@]}"; do
+        [ "${octet}" -le 255 ] || return 1
+    done
+    [ "${ip}" != "0.0.0.0" ]
+}
+
+# 判断字符串是否看起来像 IPv6，最终合法性仍交给 nft/ipset 校验。
+is_ipv6() {
+    local ip="$1"
+
+    [[ "${ip}" == *:* ]] || return 1
+    [[ "${ip}" =~ ^[0-9A-Fa-f:.]+$ ]] || return 1
+    [ "${ip}" != "::" ]
+}
+
+# 解析单个域名，将 A 和 AAAA 记录分别写入结果文件。
+resolve_domain() {
+    local domain="$1"
+    local v4_file="$2"
+    local v6_file="$3"
+    local ip
+
+    if command_exists dig; then
+        while IFS= read -r ip || [ -n "${ip}" ]; do
+            ip="$(trim "${ip}")"
+            is_ipv4 "${ip}" && printf '%s\n' "${ip}" >>"${v4_file}"
+        done < <(dig +time=3 +tries=1 +short A "${domain}" 2>/dev/null || true)
+
+        while IFS= read -r ip || [ -n "${ip}" ]; do
+            ip="$(trim "${ip}")"
+            is_ipv6 "${ip}" && printf '%s\n' "${ip}" >>"${v6_file}"
+        done < <(dig +time=3 +tries=1 +short AAAA "${domain}" 2>/dev/null || true)
+    elif command_exists getent; then
+        while IFS= read -r ip _ || [ -n "${ip:-}" ]; do
+            ip="$(trim "${ip}")"
+            is_ipv4 "${ip}" && printf '%s\n' "${ip}" >>"${v4_file}"
+        done < <(getent ahostsv4 "${domain}" 2>/dev/null || true)
+
+        while IFS= read -r ip _ || [ -n "${ip:-}" ]; do
+            ip="$(trim "${ip}")"
+            is_ipv6 "${ip}" && printf '%s\n' "${ip}" >>"${v6_file}"
+        done < <(getent ahostsv6 "${domain}" 2>/dev/null || true)
+    else
+        die "Missing resolver command: install dnsutils/bind-utils for dig or provide getent"
+    fi
+}
+
+# 解析全部白名单条目，静态 IP 直接写入，域名解析后写入。
+resolve_allowlist_to_files() {
+    local v4_file="$1"
+    local v6_file="$2"
+    local entry
+    local count
+
+    : >"${v4_file}"
+    : >"${v6_file}"
+
+    while IFS= read -r entry || [ -n "${entry}" ]; do
+        [ -z "${entry}" ] && continue
+        if is_ipv4 "${entry}"; then
+            printf '%s\n' "${entry}" >>"${v4_file}"
+            continue
+        fi
+        if is_ipv6 "${entry}"; then
+            printf '%s\n' "${entry}" >>"${v6_file}"
+            continue
+        fi
+        log_debug "Resolving ${entry}"
+        resolve_domain "${entry}" "${v4_file}" "${v6_file}"
+    done < <(read_allowlist_entries)
+
+    sort -u "${v4_file}" -o "${v4_file}"
+    sort -u "${v6_file}" -o "${v6_file}"
+
+    count="$(wc -l <"${v4_file}" | tr -d '[:space:]')"
+    log_info "Collected IPv4 addresses: ${count}"
+    count="$(wc -l <"${v6_file}" | tr -d '[:space:]')"
+    log_info "Collected IPv6 addresses: ${count}"
+}
+
+# 按指定后端确保防火墙门禁规则存在。
+ensure_firewall_rules() {
+    local backend="$1"
+
+    case "${backend}" in
+        nft)
+            nft_ensure_rules
+            ;;
+        iptables)
+            iptables_ensure_rules
+            ;;
+        *)
+            die "Invalid active backend: ${backend}"
+            ;;
+    esac
+}
+
+# 按指定后端刷新 IP 集合。
+update_firewall_sets() {
+    local backend="$1"
+    local v4_file="$2"
+    local v6_file="$3"
+
+    case "${backend}" in
+        nft)
+            nft_update_sets "${v4_file}" "${v6_file}"
+            ;;
+        iptables)
+            iptables_update_sets "${v4_file}" "${v6_file}"
+            ;;
+        *)
+            die "Invalid active backend: ${backend}"
+            ;;
+    esac
+}
+
+# 统计文件行数，缺失文件按空集合处理。
+count_file_lines() {
+    local file="$1"
+
+    if [ ! -f "${file}" ]; then
+        printf '%s\n' "0"
+        return 0
+    fi
+
+    wc -l <"${file}" | tr -d '[:space:]'
+}
+
+# 输出新增或移除的 IP 明细，避免超大 CDN 结果刷爆日志。
+log_delta_items() {
+    local prefix="$1"
+    local file="$2"
+    local total
+    local count=0
+    local item
+
+    total="$(count_file_lines "${file}")"
+    [ "${total}" -eq 0 ] && return 0
+
+    while IFS= read -r item || [ -n "${item}" ]; do
+        [ -z "${item}" ] && continue
+        count=$((count + 1))
+        if [ "${count}" -le "${LOG_MAX_ITEMS}" ]; then
+            log_change "${prefix} ${item}"
+        fi
+    done <"${file}"
+
+    if [ "${total}" -gt "${LOG_MAX_ITEMS}" ]; then
+        log_change "${prefix} omitted $((total - LOG_MAX_ITEMS)) entries"
+    fi
+}
+
+# 对比某个 IP 家族的新旧解析结果，并记录新增和移除明细。
+log_ip_delta_one() {
+    local family="$1"
+    local previous_file="$2"
+    local current_file="$3"
+    local old_file
+    local added_file
+    local removed_file
+    local added_count
+    local removed_count
+
+    require_command comm
+    ensure_tmp_dir
+    old_file="${TMP_DIR}/${family}.old"
+    added_file="${TMP_DIR}/${family}.added"
+    removed_file="${TMP_DIR}/${family}.removed"
+
+    if [ -f "${previous_file}" ]; then
+        sort -u "${previous_file}" >"${old_file}"
+    else
+        : >"${old_file}"
+    fi
+
+    comm -13 "${old_file}" "${current_file}" >"${added_file}"
+    comm -23 "${old_file}" "${current_file}" >"${removed_file}"
+    added_count="$(count_file_lines "${added_file}")"
+    removed_count="$(count_file_lines "${removed_file}")"
+
+    if [ "${added_count}" -eq 0 ] && [ "${removed_count}" -eq 0 ]; then
+        log_debug "${family} whitelist has no IP changes"
+        return 0
+    fi
+
+    log_change "${family} whitelist changed: +${added_count} -${removed_count}"
+    log_delta_items "+ ${family}" "${added_file}"
+    log_delta_items "- ${family}" "${removed_file}"
+}
+
+# 对比 IPv4 和 IPv6 最新解析结果，输出域名解析变化导致的 set 替换日志。
+log_resolved_delta() {
+    local current_v4="$1"
+    local current_v6="$2"
+
+    log_ip_delta_one "IPv4" "${LAST_V4_FILE}" "${current_v4}"
+    log_ip_delta_one "IPv6" "${LAST_V6_FILE}" "${current_v6}"
+}
+
+# 成功刷新防火墙后保存本次解析结果，供下一次刷新生成差异日志。
+save_resolved_snapshot() {
+    local current_v4="$1"
+    local current_v6="$2"
+
+    ensure_app_dir
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would save resolved IP snapshot"
+        return 0
+    fi
+
+    cp "${current_v4}" "${LAST_V4_FILE}"
+    cp "${current_v6}" "${LAST_V6_FILE}"
+    chmod 0644 "${LAST_V4_FILE}" "${LAST_V6_FILE}"
+}
+
+# 执行一次完整刷新：解析白名单、确保规则、更新 set。
+refresh_now() {
+    local backend="$1"
+    local count
+    local v4_file
+    local v6_file
+
+    validate_config_values
+    count="$(allowlist_count)"
+    if [ "${count}" -eq 0 ] && [ "${YES}" -eq 0 ]; then
+        die "Allowlist is empty; add a domain/IP or use --yes to continue"
+    fi
+
+    ensure_tmp_dir
+    v4_file="${TMP_DIR}/resolved.v4"
+    v6_file="${TMP_DIR}/resolved.v6"
+    resolve_allowlist_to_files "${v4_file}" "${v6_file}"
+    ensure_firewall_rules "${backend}"
+    update_firewall_sets "${backend}" "${v4_file}" "${v6_file}"
+    log_resolved_delta "${v4_file}" "${v6_file}"
+    save_resolved_snapshot "${v4_file}" "${v6_file}"
+    log_info "Refresh completed with backend: ${backend}"
+}
+
+# 启用状态下配置变化后重建规则、刷新 set 并更新调度任务。
+refresh_runtime_after_config_change() {
+    local backend
+
+    load_state
+    [ "${STATE_ENABLED}" = "1" ] || return 0
+    require_linux
+    require_root
+    backend="$(detect_backend)"
+    case "${backend}" in
+        nft)
+            nft_cleanup
+            ;;
+        iptables)
+            iptables_cleanup
+            ;;
+    esac
+    refresh_now "${backend}"
+    install_scheduler
+    save_state "1" "${backend}"
+}
+
+# 白名单变化后，如果已经启用则立即刷新运行时 set。
+refresh_after_change() {
+    local backend
+
+    load_state
+    [ "${STATE_ENABLED}" = "1" ] || return 0
+    require_linux
+    require_root
+    backend="${STATE_BACKEND:-$(detect_backend)}"
+    refresh_now "${backend}"
+}
+
+# 安装 systemd service 和 timer，用于周期性刷新解析结果。
+install_systemd_scheduler() {
+    local exec_path
+
+    exec_path="$(manager_exec_path)"
+
+    atomic_write_file "${SYSTEMD_SERVICE}" 0644 <<EOF
+[Unit]
+Description=Refresh domain and IP based inbound whitelist
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${exec_path} --quiet refresh
+EOF
+
+    atomic_write_file "${SYSTEMD_TIMER}" 0644 <<EOF
+[Unit]
+Description=Refresh domain and IP based inbound whitelist periodically
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=${REFRESH_INTERVAL}s
+AccuracySec=30s
+Unit=domain-whitelist.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    run_cmd systemctl daemon-reload
+    run_cmd systemctl enable --now domain-whitelist.timer
+}
+
+# 安装 cron.d 任务，供无 systemd 的旧系统周期性刷新。
+install_cron_scheduler() {
+    local exec_path
+    local minutes
+
+    exec_path="$(manager_exec_path)"
+    minutes=$(((REFRESH_INTERVAL + 59) / 60))
+    if [ "${minutes}" -lt 1 ]; then
+        minutes=1
+    fi
+    if [ "${minutes}" -gt 59 ]; then
+        minutes=59
+        log_warn "Cron interval is capped at 59 minutes"
+    fi
+
+    atomic_write_file "${CRON_FILE}" 0644 <<EOF
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+*/${minutes} * * * * root ${exec_path} --quiet refresh
+EOF
+}
+
+# 按配置安装调度器；调度器不可用时只保留手工 refresh。
+install_scheduler() {
+    local scheduler
+
+    scheduler="$(detect_scheduler)"
+    case "${scheduler}" in
+        systemd)
+            install_systemd_scheduler
+            ;;
+        cron)
+            install_cron_scheduler
+            ;;
+        none)
+            log_warn "No scheduler installed; run refresh manually or set SCHEDULER"
+            ;;
+    esac
+}
+
+# 禁用并删除 systemd 调度文件，忽略不存在的旧状态。
+disable_systemd_scheduler() {
+    command_exists systemctl || return 0
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would disable systemd timer and remove unit files"
+        return 0
+    fi
+
+    systemctl disable --now domain-whitelist.timer >/dev/null 2>&1 || true
+    rm -f "${SYSTEMD_TIMER}" "${SYSTEMD_SERVICE}"
+    systemctl daemon-reload >/dev/null 2>&1 || true
+}
+
+# 删除 cron.d 调度文件，禁用旧系统定时刷新。
+disable_cron_scheduler() {
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would remove cron file: ${CRON_FILE}"
+        return 0
+    fi
+
+    rm -f "${CRON_FILE}"
+}
+
+# 禁用所有本工具可能创建过的调度器，避免切换模式后残留。
+disable_scheduler() {
+    disable_systemd_scheduler
+    disable_cron_scheduler
+}
+
+# 初始化配置目录和默认文件。
+init_command() {
+    require_linux
+    require_root
+    ensure_default_config
+    log_info "Initialized domain whitelist config"
+}
+
+# 启用白名单：落盘配置、创建规则、刷新 set、安装定时任务。
+enable_command() {
+    local backend
+
+    require_linux
+    require_root
+    ensure_default_config
+    load_config
+    parse_config_options "$@"
+    save_config
+
+    backend="$(detect_backend)"
+    refresh_now "${backend}"
+    install_scheduler
+    save_state "1" "${backend}"
+    log_info "Domain whitelist enabled with backend: ${backend}"
+}
+
+# 禁用白名单：删除本工具防火墙对象和调度任务，保留配置与域名文件。
+disable_command() {
+    require_linux
+    require_root
+    ensure_default_config
+    load_config
+    load_state
+    disable_scheduler
+    nft_cleanup
+    iptables_cleanup
+    save_state "0" ""
+    log_info "Domain whitelist disabled"
+}
+
+# 手工刷新白名单 set；服务和 cron 也调用该命令。
+refresh_command() {
+    local backend
+
+    require_linux
+    if [ "${DRY_RUN}" -eq 0 ]; then
+        require_root
+    fi
+    ensure_default_config
+    load_config
+    load_state
+    backend="${STATE_BACKEND:-}"
+    if [ -z "${backend}" ]; then
+        backend="$(detect_backend)"
+    fi
+    refresh_now "${backend}"
+}
+
+# 输出当前启用状态、配置和可观测的后端对象。
+status_command() {
+    local backend
+    local entries
+    local scheduler
+
+    ensure_default_config
+    load_config
+    load_state
+    backend="${STATE_BACKEND:-${CONFIG_BACKEND}}"
+    entries="$(allowlist_count)"
+    scheduler="$(detect_scheduler || true)"
+
+    printf 'enabled=%s\n' "${STATE_ENABLED}"
+    printf 'backend=%s\n' "${backend}"
+    printf 'configured_backend=%s\n' "${CONFIG_BACKEND}"
+    printf 'allowlist_entries=%s\n' "${entries}"
+    printf 'refresh_interval=%s\n' "${REFRESH_INTERVAL}"
+    printf 'set_timeout=%s\n' "${SET_TIMEOUT}"
+    printf 'scheduler=%s\n' "${scheduler:-unknown}"
+    printf 'config_file=%s\n' "${CONFIG_FILE}"
+    printf 'allowlist_file=%s\n' "${ALLOWLIST_FILE}"
+    printf 'last_v4_file=%s\n' "${LAST_V4_FILE}"
+    printf 'last_v6_file=%s\n' "${LAST_V6_FILE}"
+}
+
+# 打印依赖检查结果，不修改系统状态。
+doctor_command() {
+    local candidate_backend="none"
+    local candidate_scheduler="none"
+
+    if command_exists nft; then
+        candidate_backend="nft"
+    elif command_exists iptables && command_exists ipset; then
+        candidate_backend="iptables"
+    fi
+
+    if command_exists systemctl && [ -d /run/systemd/system ]; then
+        candidate_scheduler="systemd"
+    elif [ -d /etc/cron.d ]; then
+        candidate_scheduler="cron"
+    fi
+
+    printf 'linux=%s\n' "$([ "$(uname)" = "Linux" ] && printf yes || printf no)"
+    printf 'resolver_dig=%s\n' "$(command_exists dig && printf yes || printf no)"
+    printf 'resolver_getent=%s\n' "$(command_exists getent && printf yes || printf no)"
+    printf 'nft=%s\n' "$(command_exists nft && printf yes || printf no)"
+    printf 'iptables=%s\n' "$(command_exists iptables && printf yes || printf no)"
+    printf 'ip6tables=%s\n' "$(command_exists ip6tables && printf yes || printf no)"
+    printf 'ipset=%s\n' "$(command_exists ipset && printf yes || printf no)"
+    printf 'backend_candidate=%s\n' "${candidate_backend}"
+    printf 'scheduler_candidate=%s\n' "${candidate_scheduler}"
+    printf 'config_exists=%s\n' "$([ -f "${CONFIG_FILE}" ] && printf yes || printf no)"
+    printf 'allowlist_exists=%s\n' "$([ -f "${ALLOWLIST_FILE}" ] && printf yes || printf no)"
+    printf 'last_v4_exists=%s\n' "$([ -f "${LAST_V4_FILE}" ] && printf yes || printf no)"
+    printf 'last_v6_exists=%s\n' "$([ -f "${LAST_V6_FILE}" ] && printf yes || printf no)"
+}
+
+# 主入口，根据第一个位置参数分发到具体子命令。
+main() {
+    local command
+
+    parse_global_args "$@"
+    command="${POSITIONAL_ARGS[0]:-}"
+
+    case "${command}" in
+        init)
+            init_command "${POSITIONAL_ARGS[@]:1}"
+            ;;
+        list)
+            list_command "${POSITIONAL_ARGS[@]:1}"
+            ;;
+        add)
+            add_command "${POSITIONAL_ARGS[@]:1}"
+            ;;
+        remove|rm|delete)
+            remove_command "${POSITIONAL_ARGS[@]:1}"
+            ;;
+        edit)
+            edit_command "${POSITIONAL_ARGS[@]:1}"
+            ;;
+        config)
+            config_command "${POSITIONAL_ARGS[@]:1}"
+            ;;
+        enable)
+            enable_command "${POSITIONAL_ARGS[@]:1}"
+            ;;
+        disable)
+            disable_command "${POSITIONAL_ARGS[@]:1}"
+            ;;
+        refresh)
+            refresh_command "${POSITIONAL_ARGS[@]:1}"
+            ;;
+        status)
+            status_command "${POSITIONAL_ARGS[@]:1}"
+            ;;
+        doctor)
+            doctor_command "${POSITIONAL_ARGS[@]:1}"
+            ;;
+        -h|--help|"")
+            usage
+            ;;
+        *)
+            die "Unknown command: ${command}"
+            ;;
+    esac
+}
+
+main "$@"
