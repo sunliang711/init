@@ -1218,29 +1218,67 @@ resolve_domain() {
     local v4_file="$2"
     local v6_file="$3"
     local ip
+    local records
+    local found=0
 
     if command_exists dig; then
+        if ! records="$(dig +time=3 +tries=1 +short A "${domain}" 2>/dev/null)"; then
+            log_warn "DNS A query failed for ${domain}"
+            records=""
+        fi
         while IFS= read -r ip || [ -n "${ip}" ]; do
             ip="$(trim "${ip}")"
-            is_ipv4 "${ip}" && printf '%s\n' "${ip}" >>"${v4_file}"
-        done < <(dig +time=3 +tries=1 +short A "${domain}" 2>/dev/null || true)
+            [ -z "${ip}" ] && continue
+            if is_ipv4 "${ip}"; then
+                printf '%s\n' "${ip}" >>"${v4_file}"
+                found=$((found + 1))
+            fi
+        done <<<"${records}"
 
+        if ! records="$(dig +time=3 +tries=1 +short AAAA "${domain}" 2>/dev/null)"; then
+            log_warn "DNS AAAA query failed for ${domain}"
+            records=""
+        fi
         while IFS= read -r ip || [ -n "${ip}" ]; do
             ip="$(trim "${ip}")"
-            is_ipv6 "${ip}" && printf '%s\n' "${ip}" >>"${v6_file}"
-        done < <(dig +time=3 +tries=1 +short AAAA "${domain}" 2>/dev/null || true)
+            [ -z "${ip}" ] && continue
+            if is_ipv6 "${ip}"; then
+                printf '%s\n' "${ip}" >>"${v6_file}"
+                found=$((found + 1))
+            fi
+        done <<<"${records}"
     elif command_exists getent; then
+        if ! records="$(getent ahostsv4 "${domain}" 2>/dev/null)"; then
+            log_warn "getent ahostsv4 query failed for ${domain}"
+            records=""
+        fi
         while IFS= read -r ip _ || [ -n "${ip:-}" ]; do
             ip="$(trim "${ip}")"
-            is_ipv4 "${ip}" && printf '%s\n' "${ip}" >>"${v4_file}"
-        done < <(getent ahostsv4 "${domain}" 2>/dev/null || true)
+            [ -z "${ip}" ] && continue
+            if is_ipv4 "${ip}"; then
+                printf '%s\n' "${ip}" >>"${v4_file}"
+                found=$((found + 1))
+            fi
+        done <<<"${records}"
 
+        if ! records="$(getent ahostsv6 "${domain}" 2>/dev/null)"; then
+            log_warn "getent ahostsv6 query failed for ${domain}"
+            records=""
+        fi
         while IFS= read -r ip _ || [ -n "${ip:-}" ]; do
             ip="$(trim "${ip}")"
-            is_ipv6 "${ip}" && printf '%s\n' "${ip}" >>"${v6_file}"
-        done < <(getent ahostsv6 "${domain}" 2>/dev/null || true)
+            [ -z "${ip}" ] && continue
+            if is_ipv6 "${ip}"; then
+                printf '%s\n' "${ip}" >>"${v6_file}"
+                found=$((found + 1))
+            fi
+        done <<<"${records}"
     else
         die "Missing resolver command: install dnsutils/bind-utils for dig or provide getent"
+    fi
+
+    if [ "${found}" -eq 0 ]; then
+        log_warn "No usable DNS records found for ${domain}"
     fi
 }
 
