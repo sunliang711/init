@@ -1734,6 +1734,28 @@ refresh_command() {
 }
 
 # 输出当前启用状态、配置和可观测的后端对象。
+# 按固定顺序输出枚举候选值，当前值用中括号标记；集合外的兜底值追加在末尾。
+format_enum() {
+    local current="$1"
+    shift
+    local candidate
+    local result=""
+    local matched=0
+
+    for candidate in "$@"; do
+        if [ "${candidate}" = "${current}" ]; then
+            result="${result}/[${candidate}]"
+            matched=1
+        else
+            result="${result}/${candidate}"
+        fi
+    done
+    if [ "${matched}" -eq 0 ]; then
+        result="${result}/[${current}]"
+    fi
+    printf '%s\n' "${result#/}"
+}
+
 status_command() {
     local backend
     local entries
@@ -1757,13 +1779,13 @@ status_command() {
 
     printf 'enabled=%s\n' "${effective_enabled}"
     printf 'state_enabled=%s\n' "${STATE_ENABLED}"
-    printf 'runtime_backend=%s\n' "${runtime_backend:-none}"
-    printf 'backend=%s\n' "${backend}"
-    printf 'configured_backend=%s\n' "${CONFIG_BACKEND}"
+    printf 'runtime_backend=%s\n' "$(format_enum "${runtime_backend:-none}" nft iptables none)"
+    printf 'backend=%s\n' "$(format_enum "${backend}" auto nft iptables)"
+    printf 'configured_backend=%s\n' "$(format_enum "${CONFIG_BACKEND}" auto nft iptables)"
     printf 'allowlist_entries=%s\n' "${entries}"
     printf 'refresh_interval=%s\n' "${REFRESH_INTERVAL}"
     printf 'set_timeout=%s\n' "${SET_TIMEOUT}"
-    printf 'scheduler=%s\n' "${scheduler:-unknown}"
+    printf 'scheduler=%s\n' "$(format_enum "${scheduler:-unknown}" systemd cron none)"
     printf 'scheduler_state=%s\n' "${scheduler_status}"
     printf 'config_file=%s\n' "${CONFIG_FILE}"
     printf 'allowlist_file=%s\n' "${ALLOWLIST_FILE}"

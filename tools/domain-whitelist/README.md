@@ -31,7 +31,7 @@ sudo domain-whitelist enable
 sudo domain-whitelist status
 ```
 
-`status` 中的 `enabled` 会综合状态文件和运行时规则判断；`state_enabled` 是 `/etc/domain-whitelist/state.env` 的原始记录；`runtime_backend` 是当前检测到的防火墙运行时对象。
+`status` 中的 `enabled` 会综合状态文件和运行时规则判断；`state_enabled` 是 `/etc/domain-whitelist/state.env` 的原始记录；`runtime_backend` 是当前检测到的防火墙运行时对象。枚举型字段（`runtime_backend`、`backend`、`configured_backend`、`scheduler`）会列出全部候选值，当前值用中括号标记，例如 `scheduler=[systemd]/cron/none`。
 
 编辑白名单：
 
