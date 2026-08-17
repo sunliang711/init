@@ -13,6 +13,9 @@ SCRIPT_NAME="$(basename "$0")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="${SCRIPT_DIR}/${SCRIPT_NAME}"
 
+# 版本号；status 会对比已安装副本与当前运行副本，多机部署时用于确认实际生效的版本。
+DWL_VERSION="2.0.0"
+
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
 APP_DIR="${DWL_CONFIG_DIR:-/etc/domain-whitelist}"
@@ -22,6 +25,8 @@ STATE_FILE="${DWL_STATE_FILE:-${APP_DIR}/state.env}"
 BACKUP_DIR="${DWL_BACKUP_DIR:-${APP_DIR}/backups}"
 LAST_V4_FILE="${DWL_LAST_V4_FILE:-${APP_DIR}/last.v4}"
 LAST_V6_FILE="${DWL_LAST_V6_FILE:-${APP_DIR}/last.v6}"
+# 按域名存储上次成功解析的结果，单个域名解析失败时只回退该域名自己的地址。
+RESOLVE_CACHE_FILE="${DWL_RESOLVE_CACHE_FILE:-${APP_DIR}/resolve.cache}"
 INSTALL_PATH="${DWL_INSTALL_PATH:-/usr/local/sbin/domain-whitelist}"
 SYSTEMD_SERVICE="/etc/systemd/system/domain-whitelist.service"
 SYSTEMD_TIMER="/etc/systemd/system/domain-whitelist.timer"
@@ -32,23 +37,52 @@ NFT_TABLE="domain_whitelist"
 NFT_CHAIN="input_gate"
 NFT_SET_V4="allow_v4"
 NFT_SET_V6="allow_v6"
+NFT_SET_PUB_TCP="public_tcp"
+NFT_SET_PUB_UDP="public_udp"
 NFT_PRIORITY="-100"
 
 IPTABLES_CHAIN="DOMAIN_WHITELIST"
 IPSET_V4="domain_whitelist_v4"
 IPSET_V6="domain_whitelist_v6"
+IPSET_V4_PORT="domain_whitelist_v4p"
+IPSET_V6_PORT="domain_whitelist_v6p"
 
 CONFIG_BACKEND="auto"
 REFRESH_INTERVAL="300"
+# 已废弃：set 元素不再带超时，刷新时整表原子替换。仍解析该键以兼容旧配置文件。
 SET_TIMEOUT="900"
 SCHEDULER="auto"
 LOG_MAX_ITEMS="${DWL_LOG_MAX_ITEMS:-50}"
 
+# IPv6 处理方式。on 表示按下面的 ICMPV6_* 开关放行；off 表示直接丢弃全部入站 IPv6。
+# 注意：关闭主机 IPv6 的正确手段是内核 sysctl（disable_ipv6/accept_ra），
+# 本开关只是防火墙层的兜底，避免出现「有地址但邻居发现不通」的半死状态。
+IPV6_MODE="on"
+# 邻居发现的 RS/RA。SLAAC 自动配置依赖它；静态 IPv6 地址的主机可以设为 0。
+ICMPV6_ACCEPT_RA="1"
+# 组播监听发现。MLD snooping 交换机后面必须放行，否则组播被剪掉、RA 根本到不了网卡。
+ICMPV6_ACCEPT_MLD="1"
+# ICMPv6 echo-request（ping6）。仅监控需要，默认不放行。
+ICMPV6_ACCEPT_ECHO="0"
+# ICMPv6 重定向。放行等于允许同链路上的主机改本机路由，默认不放行。
+ICMPV6_ACCEPT_REDIRECT="0"
+
 STATE_ENABLED="0"
 STATE_BACKEND=""
 
+# 本次解析是否出现降级（有域名解析失败并回退到缓存）。仅用于日志汇总，不再影响提交。
+RESOLVE_DEGRADED=0
+# resolve_domain 的每次调用结果：找到的记录条数，以及 A/AAAA 查询本身是否失败。
+# 用全局变量而不是返回值，避免命令替换子 shell 把状态吞掉。
+RESOLVE_FOUND=0
+RESOLVE_V4_FAILED=0
+RESOLVE_V6_FAILED=0
+# ip6tables 是否支持 hl 匹配，用于邻居发现的 hoplimit 255 校验。
+IPT_HL_MATCH=""
+
 DRY_RUN=0
 YES=0
+FORCE=0
 QUIET=0
 VERBOSE=0
 TMP_DIR=""
@@ -100,22 +134,29 @@ usage() {
   list
       列出当前启用的白名单条目。
 
-  add <domain|ip|cidr> [domain|ip|cidr...]
+  add <domain|ip|cidr> [domain|ip|cidr...] [--proto tcp|udp --port <spec>]
       添加一个或多个域名、IPv4、IPv6 或 CIDR 网段。启用状态下会自动刷新防火墙 set。
+      同时给出 --proto 和 --port 时，这些来源只放行指定端口。
 
   remove <domain|ip|cidr> [domain|ip|cidr...]
-      移除一个或多个域名、IPv4、IPv6 或 CIDR 网段。启用状态下会自动刷新防火墙 set。
+      按来源移除白名单条目，该来源的全部端口规则一并删除。启用状态下会自动刷新防火墙 set。
 
   edit
       使用 EDITOR 或 vi 编辑 ${ALLOWLIST_FILE}，保存后校验并刷新。
+      文件头部注释里列有全部可用语法示例。
 
 配置:
   config show
       查看当前配置。
 
   config set [--backend auto|nft|iptables] [--interval seconds]
-             [--timeout seconds] [--scheduler auto|systemd|cron|none]
+             [--scheduler auto|systemd|cron|none] [--ipv6-mode on|off]
+             [--icmpv6-ra 0|1] [--icmpv6-mld 0|1]
+             [--icmpv6-echo 0|1] [--icmpv6-redirect 0|1]
       修改配置。
+
+  version
+      输出当前脚本版本，以及已安装副本的版本。
 
 运行:
   enable [options]
@@ -144,6 +185,10 @@ usage() {
   --yes
       确认危险操作，例如空白名单启用或清空后刷新。
 
+  --force
+      在未启用状态下强制执行 refresh。与 --yes 分开，避免为绕过启用检查
+      而顺带确认掉「应用空白名单」这类会导致失联的危险操作。
+
   --quiet
       减少日志输出。
 
@@ -156,6 +201,7 @@ usage() {
 示例:
   sudo ${SCRIPT_NAME} init
   sudo ${SCRIPT_NAME} add office.example.com 203.0.113.10 192.168.1.0/24 2001:db8::/32
+  sudo ${SCRIPT_NAME} add office.example.com --proto tcp --port 22,443
   sudo ${SCRIPT_NAME} config set --backend auto --interval 300
   sudo ${SCRIPT_NAME} enable
   sudo ${SCRIPT_NAME} status
@@ -166,6 +212,7 @@ usage() {
 说明:
   本工具是整机入站来源门禁：非白名单来源的新入站流量会被丢弃，lo 和 established/related 流量会放行。
   因此它不会自动打开原本被系统防火墙阻断的服务。
+  白名单文件中没有 src= 的端口条目表示该端口对所有来源开放，可用于 WireGuard 等公开服务。
 EOF
 }
 
@@ -199,6 +246,10 @@ parse_global_args() {
                 ;;
             --yes)
                 YES=1
+                shift
+                ;;
+            --force)
+                FORCE=1
                 shift
                 ;;
             --quiet)
@@ -263,6 +314,28 @@ trim() {
     printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
 }
 
+# 对配置目录加互斥锁，让改动防火墙的命令串行执行。
+# iptables 后端的 -F 加逐条 -A 不是原子的，与另一个进程交错时
+# 可能留下一条没有 DROP 的链（放行）或重复规则。
+acquire_lock() {
+    local lock_file="${APP_DIR}/.lock"
+
+    command_exists flock || return 0
+    # 目录还不存在说明是首次初始化，此时没有并发对象可争。
+    [ -d "${APP_DIR}" ] || return 0
+    # 不可写就跳过加锁，而不是让 exec 失败。
+    [ -w "${APP_DIR}" ] || return 0
+
+    # 注意这里不能写成 exec 9>"${lock_file}" 2>/dev/null：
+    # exec 不带命令时重定向会永久作用于当前 shell，2>/dev/null 会把整个脚本
+    # 后续的全部日志和错误信息都丢掉，故障时什么都看不到。
+    exec 9>"${lock_file}"
+
+    if ! flock -w 120 9; then
+        die "Another ${SCRIPT_NAME} run is holding the lock; timed out after 120s"
+    fi
+}
+
 # 创建并记录临时目录，供解析结果和原子写入中转使用。
 ensure_tmp_dir() {
     if [ -z "${TMP_DIR}" ]; then
@@ -304,6 +377,75 @@ atomic_write_file() {
     mv "${tmp}" "${target}"
 }
 
+# 白名单文件头部注释，列出全部可用语法，edit 打开即可参照配置。
+allowlist_file_header() {
+    cat <<'EOF'
+# Managed by domain-whitelist
+#
+# 每行一条放行规则。# 之后是注释，空行忽略。
+# 支持两种写法，可以混用：
+#   1) 裸来源      —— 整行就是一个来源，该来源全部端口放行
+#   2) key=value   —— 空格分隔的字段，可附加端口维度
+#
+# ── 可用字段 ────────────────────────────────────────────────
+#   src=<域名|IPv4|IPv6|CIDR>   来源。省略表示「任意来源」
+#   proto=<tcp|udp>            协议。必须与 port 同时出现
+#   port=<端口规格>             端口。必须与 proto 同时出现
+#
+# 端口规格支持单个端口、逗号列表、连字符区间，可混写：
+#   port=22            port=22,443            port=8000-8100
+#   port=22,8000-8100
+#
+# ── 示例 ────────────────────────────────────────────────────
+#
+# 放行来源的全部端口（裸来源写法，与旧版本格式完全兼容）：
+# office.example.com
+# 203.0.113.10
+# 2001:db8::10
+# 192.168.1.0/24
+# 2001:db8::/32
+#
+# 同上，key=value 写法，效果一致：
+# src=office.example.com
+#
+# 只放行来源的指定端口：
+# src=office.example.com  proto=tcp  port=22
+# src=203.0.113.0/24      proto=tcp  port=22,443
+# src=2001:db8:1::/64     proto=udp  port=51820
+# src=10.0.0.5            proto=tcp  port=8000-8100
+#
+# 同一个来源可以写多行，分别限定不同协议：
+# src=10.0.0.5  proto=tcp  port=5432
+# src=10.0.0.5  proto=udp  port=53
+#
+# 省略 src 表示该端口对所有来源开放，用于 WireGuard、公网 HTTPS 等公开服务：
+# proto=udp  port=51820      # wireguard
+# proto=tcp  port=443
+#
+# 注意：同一个来源如果既写了裸来源、又写了带端口的行，
+# 裸来源优先（全端口放行），端口限定会失效，校验时会给出警告。
+#
+# 修改后执行 domain-whitelist refresh 生效；用 edit 子命令修改会自动刷新。
+EOF
+}
+
+# 补齐配置文件中缺失的键。旧配置文件不会被整体重写，只在末尾追加缺失项。
+config_ensure_key() {
+    local key="$1"
+    local default="$2"
+
+    [ -f "${CONFIG_FILE}" ] || return 0
+    grep -qE "^[[:space:]]*${key}[[:space:]]*=" "${CONFIG_FILE}" && return 0
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would add config key: ${key}=${default}"
+        return 0
+    fi
+
+    printf '%s=%s\n' "${key}" "${default}" >>"${CONFIG_FILE}"
+    log_info "Added new config key: ${key}=${default}"
+}
+
 # 初始化默认配置文件，不覆盖用户已有配置。
 ensure_default_config() {
     local legacy_domains_file="${APP_DIR}/domains.allow"
@@ -316,10 +458,22 @@ ensure_default_config() {
 # Managed by domain-whitelist
 BACKEND=auto
 REFRESH_INTERVAL=300
-SET_TIMEOUT=900
 SCHEDULER=auto
+IPV6_MODE=on
+ICMPV6_ACCEPT_RA=1
+ICMPV6_ACCEPT_MLD=1
+ICMPV6_ACCEPT_ECHO=0
+ICMPV6_ACCEPT_REDIRECT=0
 EOF
     fi
+
+    # 为已存在的旧配置文件补齐新增键，缺失键按脚本内默认值处理，
+    # 这里显式写入只是让 config.env 自解释，不改变行为。
+    config_ensure_key IPV6_MODE "${IPV6_MODE}"
+    config_ensure_key ICMPV6_ACCEPT_RA "${ICMPV6_ACCEPT_RA}"
+    config_ensure_key ICMPV6_ACCEPT_MLD "${ICMPV6_ACCEPT_MLD}"
+    config_ensure_key ICMPV6_ACCEPT_ECHO "${ICMPV6_ACCEPT_ECHO}"
+    config_ensure_key ICMPV6_ACCEPT_REDIRECT "${ICMPV6_ACCEPT_REDIRECT}"
 
     if [ ! -f "${ALLOWLIST_FILE}" ] && [ -f "${legacy_domains_file}" ]; then
         log_info "Migrating legacy allowlist: ${legacy_domains_file} -> ${ALLOWLIST_FILE}"
@@ -333,15 +487,7 @@ EOF
 
     if [ ! -f "${ALLOWLIST_FILE}" ]; then
         log_info "Creating allowlist: ${ALLOWLIST_FILE}"
-        atomic_write_file "${ALLOWLIST_FILE}" 0644 <<EOF
-# Managed by domain-whitelist
-# One domain, IPv4, IPv6 or CIDR per line. Examples:
-# office.example.com
-# 203.0.113.10
-# 2001:db8::10
-# 192.168.1.0/24
-# 2001:db8::/32
-EOF
+        allowlist_file_header | atomic_write_file "${ALLOWLIST_FILE}" 0644
     fi
 
     if [ ! -f "${STATE_FILE}" ]; then
@@ -379,10 +525,26 @@ load_config() {
                         REFRESH_INTERVAL="${value}"
                         ;;
                     SET_TIMEOUT)
+                        # 已废弃：保留解析只为兼容旧配置文件，不再影响任何行为。
                         SET_TIMEOUT="${value}"
                         ;;
                     SCHEDULER)
                         SCHEDULER="${value}"
+                        ;;
+                    IPV6_MODE)
+                        IPV6_MODE="${value}"
+                        ;;
+                    ICMPV6_ACCEPT_RA)
+                        ICMPV6_ACCEPT_RA="${value}"
+                        ;;
+                    ICMPV6_ACCEPT_MLD)
+                        ICMPV6_ACCEPT_MLD="${value}"
+                        ;;
+                    ICMPV6_ACCEPT_ECHO)
+                        ICMPV6_ACCEPT_ECHO="${value}"
+                        ;;
+                    ICMPV6_ACCEPT_REDIRECT)
+                        ICMPV6_ACCEPT_REDIRECT="${value}"
                         ;;
                 esac
                 ;;
@@ -446,8 +608,12 @@ save_config() {
 # Managed by domain-whitelist
 BACKEND=${CONFIG_BACKEND}
 REFRESH_INTERVAL=${REFRESH_INTERVAL}
-SET_TIMEOUT=${SET_TIMEOUT}
 SCHEDULER=${SCHEDULER}
+IPV6_MODE=${IPV6_MODE}
+ICMPV6_ACCEPT_RA=${ICMPV6_ACCEPT_RA}
+ICMPV6_ACCEPT_MLD=${ICMPV6_ACCEPT_MLD}
+ICMPV6_ACCEPT_ECHO=${ICMPV6_ACCEPT_ECHO}
+ICMPV6_ACCEPT_REDIRECT=${ICMPV6_ACCEPT_REDIRECT}
 EOF
 }
 
@@ -473,14 +639,41 @@ validate_scheduler() {
     esac
 }
 
-# 校验秒数配置，确保刷新周期和 set 超时为正整数。
+# 校验秒数配置，确保刷新周期为正整数。
+# 拒绝前导零：test 按十进制解析，但 $(( )) 会按八进制解析（0800 直接致命报错），
+# 放进来的值必须在两种解析下含义一致。
 validate_positive_integer() {
     local name="$1"
     local value="$2"
 
-    if [[ ! "${value}" =~ ^[0-9]+$ ]] || [ "${value}" -lt 1 ]; then
-        die "Invalid ${name}: ${value}"
+    if [[ ! "${value}" =~ ^[1-9][0-9]*$ ]]; then
+        die "Invalid ${name}: ${value} (expected a positive integer without leading zeros)"
     fi
+}
+
+# 校验布尔配置，只接受 0 和 1，避免拼写错误被当成关闭。
+validate_boolean() {
+    local name="$1"
+    local value="$2"
+
+    case "${value}" in
+        0|1)
+            ;;
+        *)
+            die "Invalid ${name}: ${value} (expected 0 or 1)"
+            ;;
+    esac
+}
+
+# 校验 IPv6 处理方式。
+validate_ipv6_mode() {
+    case "$1" in
+        on|off)
+            ;;
+        *)
+            die "Invalid IPV6_MODE: $1 (expected on or off)"
+            ;;
+    esac
 }
 
 # 校验当前加载的配置，保证写入防火墙前所有值可控。
@@ -488,8 +681,12 @@ validate_config_values() {
     validate_backend "${CONFIG_BACKEND}"
     validate_scheduler "${SCHEDULER}"
     validate_positive_integer "REFRESH_INTERVAL" "${REFRESH_INTERVAL}"
-    validate_positive_integer "SET_TIMEOUT" "${SET_TIMEOUT}"
     validate_positive_integer "LOG_MAX_ITEMS" "${LOG_MAX_ITEMS}"
+    validate_ipv6_mode "${IPV6_MODE}"
+    validate_boolean "ICMPV6_ACCEPT_RA" "${ICMPV6_ACCEPT_RA}"
+    validate_boolean "ICMPV6_ACCEPT_MLD" "${ICMPV6_ACCEPT_MLD}"
+    validate_boolean "ICMPV6_ACCEPT_ECHO" "${ICMPV6_ACCEPT_ECHO}"
+    validate_boolean "ICMPV6_ACCEPT_REDIRECT" "${ICMPV6_ACCEPT_REDIRECT}"
 }
 
 # 规范化域名，要求至少两级标签，支持普通域名和 punycode。
@@ -562,8 +759,22 @@ is_ipv6_cidr() {
 normalize_allowlist_entry() {
     local raw="$1"
     local entry
+    local prefix
 
     entry="$(trim "${raw}")"
+    if is_ipv4_cidr "${entry}" || is_ipv6_cidr "${entry}"; then
+        # 前缀按十进制转数值再比较：字符串比较会被 /00、/000 这类写法绕过，
+        # 而 $(( )) 不加 10# 又会把前导零当八进制。
+        prefix="$((10#${entry#*/}))"
+        # 前缀长度为 0 就是「放行整个互联网」，门禁形同虚设。
+        # 而且两个后端表现相反：nft 会照单全收（静默失效），
+        # ipset 会拒绝该元素并连带中止刷新，因此这里直接拦掉。
+        if [ "${prefix}" -eq 0 ]; then
+            die "Refusing catch-all CIDR: ${raw} (this would allow every source; remove the entry or use a real prefix)"
+        fi
+        # 顺带把前缀写回规范形式，去掉前导零，避免下游把 /024 交给后端各自解释。
+        entry="${entry%/*}/${prefix}"
+    fi
     if is_ipv4_cidr "${entry}"; then
         printf '%s\n' "${entry}"
         return 0
@@ -587,6 +798,226 @@ normalize_allowlist_entry() {
     normalize_domain "${entry}"
 }
 
+# 规范化协议名，只接受 tcp 和 udp，避免未知协议静默变成全放行。
+normalize_proto() {
+    local proto
+
+    proto="$(trim "$1" | tr '[:upper:]' '[:lower:]')"
+    case "${proto}" in
+        tcp|udp)
+            printf '%s\n' "${proto}"
+            ;;
+        *)
+            die "Invalid proto: $1 (expected tcp or udp)"
+            ;;
+    esac
+}
+
+# 规范化端口规格，支持单端口、逗号列表和连字符区间，并按起始端口排序。
+# 排序是为了让同一组端口的不同书写顺序生成相同文本，去重和比较才可靠。
+normalize_port_spec() {
+    local raw="$1"
+    local item
+    local start
+    local end
+    local sorted
+    local result=""
+    local cur_start=""
+    local cur_end=""
+    declare -a items=()
+    declare -a normalized=()
+
+    raw="$(trim "${raw}")"
+    [ -n "${raw}" ] || die "Empty port spec"
+
+    IFS=',' read -r -a items <<<"${raw}"
+    for item in "${items[@]}"; do
+        item="$(trim "${item}")"
+        [ -n "${item}" ] || die "Empty port in spec: ${raw}"
+        # 立即用 10# 转成规范十进制：后续所有 $(( )) 都会把前导零当八进制，
+        # 08 这类值甚至会直接触发致命的 "value too great for base"。
+        if [[ "${item}" =~ ^([0-9]{1,5})-([0-9]{1,5})$ ]]; then
+            start="$((10#${BASH_REMATCH[1]}))"
+            end="$((10#${BASH_REMATCH[2]}))"
+        elif [[ "${item}" =~ ^([0-9]{1,5})$ ]]; then
+            start="$((10#${item}))"
+            end="${start}"
+        else
+            die "Invalid port: ${item}"
+        fi
+        { [ "${start}" -ge 1 ] && [ "${start}" -le 65535 ]; } || die "Port out of range: ${item}"
+        { [ "${end}" -ge 1 ] && [ "${end}" -le 65535 ]; } || die "Port out of range: ${item}"
+        [ "${start}" -le "${end}" ] || die "Invalid port range: ${item}"
+        normalized+=("${start}|${end}")
+    done
+
+    [ "${#normalized[@]}" -gt 0 ] || die "Empty port spec"
+
+    # 排序后合并重叠和相邻的区间。
+    # 这里不能用 sort -u 配合 -k：带 key 时 -u 只比较 key 字段，
+    # 443 和 443-8443 的 key 都是 443，会被当成重复项静默丢掉一个。
+    sorted="$(printf '%s\n' "${normalized[@]}" | sort -t'|' -k1,1n -k2,2n)"
+    while IFS='|' read -r start end || [ -n "${start}" ]; do
+        [ -z "${start}" ] && continue
+        if [ -n "${cur_start}" ] && [ "${start}" -le $((cur_end + 1)) ]; then
+            if [ "${end}" -gt "${cur_end}" ]; then
+                cur_end="${end}"
+            fi
+            continue
+        fi
+        if [ -n "${cur_start}" ]; then
+            result="$(append_port_range "${result}" "${cur_start}" "${cur_end}")"
+        fi
+        cur_start="${start}"
+        cur_end="${end}"
+    done <<<"${sorted}"
+
+    if [ -n "${cur_start}" ]; then
+        result="$(append_port_range "${result}" "${cur_start}" "${cur_end}")"
+    fi
+
+    printf '%s\n' "${result}"
+}
+
+# 把一个区间追加进逗号分隔的端口规格，单端口区间折叠成单值。
+append_port_range() {
+    local result="$1"
+    local start="$2"
+    local end="$3"
+    local item
+
+    if [ "${start}" = "${end}" ]; then
+        item="${start}"
+    else
+        item="${start}-${end}"
+    fi
+
+    if [ -z "${result}" ]; then
+        printf '%s\n' "${item}"
+    else
+        printf '%s,%s\n' "${result}" "${item}"
+    fi
+}
+
+# 解析单行白名单，输出字段顺序固定的规范形式。
+# 不含 = 的行按旧格式当成裸来源，保证历史白名单文件继续可用。
+parse_allowlist_line() {
+    local raw="$1"
+    local token
+    local key
+    local value
+    local src=""
+    local proto=""
+    local port=""
+    declare -a tokens=()
+
+    raw="$(trim "${raw}")"
+    [ -n "${raw}" ] || return 0
+
+    if [[ "${raw}" != *=* ]]; then
+        # 不能写成 printf "$(normalize...)"：作为参数的命令替换失败不影响 printf
+        # 的退出码，非法条目会静默产出 "src=" 且整体返回 0。先赋值让 set -e 能拦住。
+        src="$(normalize_allowlist_entry "${raw}")"
+        printf 'src=%s\n' "${src}"
+        return 0
+    fi
+
+    # 用 read -a 而不是 for ... in ${raw}，避免行内出现通配符时被文件名展开。
+    read -r -a tokens <<<"${raw}"
+    for token in "${tokens[@]}"; do
+        [[ "${token}" == *=* ]] || die "Invalid allowlist token (expected key=value): ${token}"
+        key="$(trim "${token%%=*}")"
+        value="$(trim "${token#*=}")"
+        [ -n "${value}" ] || die "Empty value for key '${key}' in line: ${raw}"
+        case "${key}" in
+            src)
+                [ -z "${src}" ] || die "Duplicate key 'src' in line: ${raw}"
+                src="$(normalize_allowlist_entry "${value}")"
+                ;;
+            proto)
+                [ -z "${proto}" ] || die "Duplicate key 'proto' in line: ${raw}"
+                proto="$(normalize_proto "${value}")"
+                ;;
+            port)
+                [ -z "${port}" ] || die "Duplicate key 'port' in line: ${raw}"
+                port="$(normalize_port_spec "${value}")"
+                ;;
+            *)
+                die "Unknown allowlist key '${key}' in line: ${raw}"
+                ;;
+        esac
+    done
+
+    # proto 和 port 必须成对出现，否则语义不明确，宁可让用户显式写清楚。
+    if [ -n "${proto}" ] && [ -z "${port}" ]; then
+        die "Key 'proto' requires 'port' in line: ${raw}"
+    fi
+    if [ -n "${port}" ] && [ -z "${proto}" ]; then
+        die "Key 'port' requires 'proto' in line: ${raw}"
+    fi
+    if [ -z "${src}" ] && [ -z "${port}" ]; then
+        die "Allowlist line has neither 'src' nor 'port': ${raw}"
+    fi
+
+    if [ -n "${src}" ] && [ -n "${port}" ]; then
+        printf 'src=%s proto=%s port=%s\n' "${src}" "${proto}" "${port}"
+    elif [ -n "${src}" ]; then
+        printf 'src=%s\n' "${src}"
+    else
+        printf 'proto=%s port=%s\n' "${proto}" "${port}"
+    fi
+}
+
+# 取出规范化条目中的来源，供 remove 和遮蔽检查按来源匹配。
+entry_src_field() {
+    local entry="$1"
+
+    case "${entry}" in
+        src=*)
+            entry="${entry#src=}"
+            printf '%s\n' "${entry%% *}"
+            ;;
+        *)
+            printf '\n'
+            ;;
+    esac
+}
+
+# 同一来源既有全端口条目又有端口限定条目时，后者不起作用，这里给出警告。
+warn_shadowed_port_entries() {
+    local file="$1"
+    local line
+    local src
+    local bare_file
+
+    ensure_tmp_dir
+    bare_file="${TMP_DIR}/bare.src"
+    : >"${bare_file}"
+
+    while IFS= read -r line || [ -n "${line}" ]; do
+        case "${line}" in
+            src=*\ proto=*)
+                ;;
+            src=*)
+                printf '%s\n' "${line#src=}" >>"${bare_file}"
+                ;;
+        esac
+    done <"${file}"
+
+    [ -s "${bare_file}" ] || return 0
+
+    while IFS= read -r line || [ -n "${line}" ]; do
+        case "${line}" in
+            src=*\ proto=*)
+                src="$(entry_src_field "${line}")"
+                if grep -Fxq "${src}" "${bare_file}"; then
+                    log_warn "Port entry is shadowed by a full-access entry for ${src}: ${line}"
+                fi
+                ;;
+        esac
+    done <"${file}"
+}
+
 # 读取白名单文件，忽略空行和注释，并对条目去重排序。
 read_allowlist_entries() {
     local line
@@ -601,7 +1032,7 @@ read_allowlist_entries() {
         active="${line%%#*}"
         active="$(trim "${active}")"
         [ -z "${active}" ] && continue
-        normalize_allowlist_entry "${active}" >>"${TMP_DIR}/allowlist"
+        parse_allowlist_line "${active}" >>"${TMP_DIR}/allowlist"
     done <"${ALLOWLIST_FILE}"
 
     sort -u "${TMP_DIR}/allowlist"
@@ -634,7 +1065,12 @@ backup_allowlist_file() {
 
 # 检查白名单文件语法，编辑器保存后用它阻止无效配置进入刷新流程。
 validate_allowlist_file() {
-    read_allowlist_entries >/dev/null
+    local entries_file
+
+    ensure_tmp_dir
+    entries_file="${TMP_DIR}/validate.entries"
+    read_allowlist_entries >"${entries_file}"
+    warn_shadowed_port_entries "${entries_file}"
 }
 
 # 打印当前白名单条目。
@@ -650,14 +1086,48 @@ add_command() {
     local normalized
     local existing
     local changed=0
+    local proto=""
+    local port=""
+    declare -a sources=()
 
-    [ "$#" -gt 0 ] || die "Missing allowlist entry"
     ensure_default_config
     load_config
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --proto)
+                [ "$#" -ge 2 ] || die "Missing value for --proto"
+                proto="$2"
+                shift 2
+                ;;
+            --port)
+                [ "$#" -ge 2 ] || die "Missing value for --port"
+                port="$2"
+                shift 2
+                ;;
+            *)
+                sources+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    [ "${#sources[@]}" -gt 0 ] || die "Missing allowlist entry"
+    if [ -n "${proto}" ] && [ -z "${port}" ]; then
+        die "--proto requires --port"
+    fi
+    if [ -n "${port}" ] && [ -z "${proto}" ]; then
+        die "--port requires --proto"
+    fi
+
     backup_allowlist_file
 
-    for entry in "$@"; do
-        normalized="$(normalize_allowlist_entry "${entry}")"
+    for entry in "${sources[@]}"; do
+        if [ -n "${proto}" ]; then
+            normalized="$(parse_allowlist_line "src=${entry} proto=${proto} port=${port}")"
+        else
+            normalized="$(parse_allowlist_line "${entry}")"
+        fi
         existing="$(read_allowlist_entries | grep -Fx "${normalized}" || true)"
         if [ -n "${existing}" ]; then
             log_info "Allowlist entry already exists: ${normalized}"
@@ -677,21 +1147,26 @@ add_command() {
     fi
 }
 
-# 判断某一行是否匹配待删除白名单条目，保留注释和非目标行。
+# 判断某一行是否匹配待删除来源，保留注释和非目标行。
+# 按 src 字段匹配：同一个来源可能有多行（不同协议或端口），remove 会一并删除。
+# 没有 src 的公开端口条目不会被匹配，需要用 edit 手工删除。
 line_matches_remove_entry() {
     local line="$1"
     local active
-    local normalized
+    local parsed
+    local src
     local target
     shift
 
     active="${line%%#*}"
     active="$(trim "${active}")"
     [ -z "${active}" ] && return 1
-    normalized="$(normalize_allowlist_entry "${active}")"
+    parsed="$(parse_allowlist_line "${active}")"
+    src="$(entry_src_field "${parsed}")"
+    [ -n "${src}" ] || return 1
 
     for target in "$@"; do
-        [ "${normalized}" = "${target}" ] && return 0
+        [ "${src}" = "${target}" ] && return 0
     done
 
     return 1
@@ -709,6 +1184,10 @@ remove_command() {
     [ "$#" -gt 0 ] || die "Missing allowlist entry"
     ensure_default_config
     load_config
+    # 先整体校验：line_matches_remove_entry 在 if 条件上下文里运行，
+    # 里面的解析 die 会被 set -e 豁免规则吞掉。带非法行的文件必须在改写之前失败，
+    # 而不是打印一条 ERROR 后照常重写文件。
+    validate_allowlist_file
     backup_allowlist_file
     ensure_tmp_dir
     tmp="${TMP_DIR}/whitelist.allow.new"
@@ -730,6 +1209,21 @@ remove_command() {
     if [ "${changed}" -eq 0 ]; then
         log_warn "No matching allowlist entry was removed"
         return 0
+    fi
+
+    # 删空最后一条前先拦住：否则文件已改、随后的刷新在空白名单闸门上 die，
+    # 被撤销的来源仍留在运行时集合里，且此后每次定时刷新都失败。
+    if [ "${YES}" -eq 0 ]; then
+        local remaining=0
+        local active
+        while IFS= read -r line || [ -n "${line}" ]; do
+            active="${line%%#*}"
+            active="$(trim "${active}")"
+            [ -n "${active}" ] && remaining=$((remaining + 1))
+        done <"${tmp}"
+        if [ "${remaining}" -eq 0 ]; then
+            die "Removing these entries would leave the allowlist empty and drop all new inbound traffic; use --yes to confirm, or edit the file instead"
+        fi
     fi
 
     if [ "${DRY_RUN}" -eq 1 ]; then
@@ -759,6 +1253,10 @@ edit_command() {
     fi
 
     "${editor}" "${ALLOWLIST_FILE}"
+    # 锁在编辑器退出后才拿：交互式编辑可能持续很久，编辑期间持锁会让所有
+    # 定时刷新阻塞 120 秒然后失败；后台型编辑器（code/subl）还会继承 fd 9，
+    # 在脚本退出后继续占着锁。
+    acquire_lock
     validate_allowlist_file
     log_info "Allowlist is valid"
     refresh_after_change
@@ -770,7 +1268,17 @@ config_usage() {
 用法:
   ${SCRIPT_NAME} config show
   ${SCRIPT_NAME} config set [--backend auto|nft|iptables] [--interval seconds]
-                       [--timeout seconds] [--scheduler auto|systemd|cron|none]
+                       [--scheduler auto|systemd|cron|none]
+                       [--ipv6-mode on|off] [--icmpv6-ra 0|1] [--icmpv6-mld 0|1]
+                       [--icmpv6-echo 0|1] [--icmpv6-redirect 0|1]
+
+说明:
+  --ipv6-mode off      在防火墙层丢弃全部入站 IPv6。关闭主机 IPv6 的正确手段是
+                       内核 sysctl（disable_ipv6 / accept_ra），本开关只是兜底。
+  --icmpv6-ra 0        不放行路由通告，SLAAC 自动配置会失效，静态 IPv6 主机可用。
+  --icmpv6-mld 0       不放行组播监听发现。MLD snooping 交换机后面关掉会导致
+                       组播被剪除，RA 根本到不了网卡，IPv6 随之失效。
+  --timeout seconds    已废弃，接受但不再生效。集合内容改为每次刷新整表替换。
 EOF
 }
 
@@ -790,12 +1298,41 @@ parse_config_options() {
                 ;;
             --timeout)
                 [ "$#" -ge 2 ] || die "Missing value for --timeout"
+                # 已废弃：集合内容改为每次刷新整表替换，元素不再带超时。
+                # 仍然接受该参数，避免旧的安装脚本和调用方直接失败。
+                log_warn "--timeout is deprecated and has no effect"
+                # shellcheck disable=SC2034  # 保留赋值仅为兼容，值不再参与任何行为
                 SET_TIMEOUT="$2"
                 shift 2
                 ;;
             --scheduler)
                 [ "$#" -ge 2 ] || die "Missing value for --scheduler"
                 SCHEDULER="$2"
+                shift 2
+                ;;
+            --ipv6-mode)
+                [ "$#" -ge 2 ] || die "Missing value for --ipv6-mode"
+                IPV6_MODE="$2"
+                shift 2
+                ;;
+            --icmpv6-ra)
+                [ "$#" -ge 2 ] || die "Missing value for --icmpv6-ra"
+                ICMPV6_ACCEPT_RA="$2"
+                shift 2
+                ;;
+            --icmpv6-mld)
+                [ "$#" -ge 2 ] || die "Missing value for --icmpv6-mld"
+                ICMPV6_ACCEPT_MLD="$2"
+                shift 2
+                ;;
+            --icmpv6-echo)
+                [ "$#" -ge 2 ] || die "Missing value for --icmpv6-echo"
+                ICMPV6_ACCEPT_ECHO="$2"
+                shift 2
+                ;;
+            --icmpv6-redirect)
+                [ "$#" -ge 2 ] || die "Missing value for --icmpv6-redirect"
+                ICMPV6_ACCEPT_REDIRECT="$2"
                 shift 2
                 ;;
             *)
@@ -815,8 +1352,12 @@ config_show() {
     printf 'ALLOWLIST_FILE=%s\n' "${ALLOWLIST_FILE}"
     printf 'BACKEND=%s\n' "${CONFIG_BACKEND}"
     printf 'REFRESH_INTERVAL=%s\n' "${REFRESH_INTERVAL}"
-    printf 'SET_TIMEOUT=%s\n' "${SET_TIMEOUT}"
     printf 'SCHEDULER=%s\n' "${SCHEDULER}"
+    printf 'IPV6_MODE=%s\n' "${IPV6_MODE}"
+    printf 'ICMPV6_ACCEPT_RA=%s\n' "${ICMPV6_ACCEPT_RA}"
+    printf 'ICMPV6_ACCEPT_MLD=%s\n' "${ICMPV6_ACCEPT_MLD}"
+    printf 'ICMPV6_ACCEPT_ECHO=%s\n' "${ICMPV6_ACCEPT_ECHO}"
+    printf 'ICMPV6_ACCEPT_REDIRECT=%s\n' "${ICMPV6_ACCEPT_REDIRECT}"
 }
 
 # 修改配置；启用状态下同步重建规则、刷新 set 和调度任务。
@@ -903,6 +1444,63 @@ detect_scheduler() {
     esac
 }
 
+# 读取指定脚本文件里的版本号。只做文本提取，不执行目标文件。
+read_script_version() {
+    local path="$1"
+    local line
+
+    [ -r "${path}" ] || { printf '%s\n' "unknown"; return 0; }
+    line="$(grep -m1 '^DWL_VERSION=' "${path}" 2>/dev/null || true)"
+    [ -n "${line}" ] || { printf '%s\n' "unknown"; return 0; }
+    line="${line#DWL_VERSION=}"
+    line="${line#\"}"
+    line="${line%\"}"
+    printf '%s\n' "${line}"
+}
+
+# 返回已安装副本的版本号，未安装时返回 not-installed。
+installed_version() {
+    if [ ! -f "${INSTALL_PATH}" ]; then
+        printf '%s\n' "not-installed"
+        return 0
+    fi
+    read_script_version "${INSTALL_PATH}"
+}
+
+# 返回文件距今的秒数，文件不存在时返回 -1。
+file_age_seconds() {
+    local file="$1"
+    local mtime
+    local now
+
+    [ -f "${file}" ] || { printf '%s\n' "-1"; return 0; }
+    mtime="$(stat -c %Y "${file}" 2>/dev/null || printf '0')"
+    if [ "${mtime}" = "0" ]; then
+        printf '%s\n' "-1"
+        return 0
+    fi
+    now="$(date +%s)"
+    printf '%s\n' "$((now - mtime))"
+}
+
+# 输出当前脚本与已安装副本的版本。仓库更新不会自动安装，
+# 两者不一致说明实际生效的仍是旧版本，需要重新执行 install.sh。
+version_command() {
+    local installed
+
+    installed="$(installed_version)"
+
+    printf 'version=%s\n' "${DWL_VERSION}"
+    printf 'script_path=%s\n' "${SCRIPT_PATH}"
+    printf 'install_path=%s\n' "${INSTALL_PATH}"
+    printf 'installed_version=%s\n' "${installed}"
+    printf 'scheduler_exec_path=%s\n' "$(manager_exec_path)"
+
+    if [ "${installed}" != "not-installed" ] && [ "${installed}" != "${DWL_VERSION}" ]; then
+        log_warn "Installed copy is ${installed} but this script is ${DWL_VERSION}; run install.sh to deploy it"
+    fi
+}
+
 # 返回运行时应调用的管理脚本路径，安装后优先使用 /usr/local/sbin。
 manager_exec_path() {
     if [ -x "${INSTALL_PATH}" ]; then
@@ -917,72 +1515,151 @@ nft_table_exists() {
     nft list table "${NFT_FAMILY}" "${NFT_TABLE}" >/dev/null 2>&1
 }
 
-# 检查 nftables set 是否存在。
-nft_set_exists() {
-    local set_name="$1"
-    nft list set "${NFT_FAMILY}" "${NFT_TABLE}" "${set_name}" >/dev/null 2>&1
-}
-
-# 检查 nftables set 是否支持 interval，CIDR 网段依赖该能力。
-nft_set_has_interval() {
-    local set_name="$1"
-
-    nft list set "${NFT_FAMILY}" "${NFT_TABLE}" "${set_name}" 2>/dev/null | grep -Eq 'flags.*interval'
-}
-
-# 检查旧版 nftables set schema 是否需要重建以支持 CIDR。
-nft_schema_needs_recreate() {
-    if nft_set_exists "${NFT_SET_V4}" && ! nft_set_has_interval "${NFT_SET_V4}"; then
-        return 0
-    fi
-    if nft_set_exists "${NFT_SET_V6}" && ! nft_set_has_interval "${NFT_SET_V6}"; then
-        return 0
-    fi
-
-    return 1
-}
-
 # 检查 nftables chain 是否存在。
 nft_chain_exists() {
     nft list chain "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_CHAIN}" >/dev/null 2>&1
 }
 
-# 确保 nftables table、set、chain 和整机入站来源门禁规则存在。
-nft_ensure_rules() {
+# 输出一个 set 定义。元素为空时省略 elements 行，避免部分 nft 版本拒绝空集合。
+# 这些 set 不再带 timeout：刷新时整表原子替换，靠超时续命会在刷新任务停摆后
+# 自动清空集合并把整机关在门外，方向正好反了。
+# 不依赖 auto-merge：写入前已用 prune_covered_sources / merge_public_ports
+# 自行消除重叠元素，老版本 nft 一样可用。
+nft_emit_set() {
+    local name="$1"
+    local type="$2"
+    local file="$3"
+    local elements
+
+    printf '    set %s {\n' "${name}"
+    printf '        type %s\n' "${type}"
+    printf '        flags interval\n'
+    elements="$(nft_elements_from_file "${file}")"
+    if [ -n "${elements}" ]; then
+        printf '        elements = { %s }\n' "${elements}"
+    fi
+    printf '    }\n'
+}
+
+# 把「来源 + 端口」元素逐条输出成独立规则，而不是 concat interval 集合。
+# concat 集合不支持 auto-merge，来源互相重叠（CIDR + 解析进该网段的域名）时
+# 整个事务会提交失败且每轮刷新都复现；独立规则之间天然允许重叠，
+# 也不再依赖内核 5.6 的 pipapo 后端。
+nft_emit_port_rules() {
+    local family_keyword="$1"
+    local file="$2"
+    local line
+    local rest
+    local ip
+    local proto
+    local range
+
+    [ -f "${file}" ] || return 0
+
+    while IFS= read -r line || [ -n "${line}" ]; do
+        [ -z "${line}" ] && continue
+        ip="${line%% . *}"
+        rest="${line#* . }"
+        proto="${rest%% . *}"
+        range="${rest##* . }"
+        printf '        %s saddr %s %s dport %s return\n' \
+            "${family_keyword}" "${ip}" "${proto}" "${range}"
+    done <"${file}"
+}
+
+# 输出 ICMPv6 放行规则。
+nft_emit_icmpv6_rules() {
+    # ICMPv6 差错报文。packet-too-big 是 IPv6 路径 MTU 发现的唯一手段，
+    # 丢掉会造成大包静默卡死（连得上但传不动），因此不提供开关。
+    printf '        icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem } accept\n'
+    # 邻居发现的 NS/NA 相当于 IPv6 的 ARP，丢掉整个 IPv6 不通，同样不提供开关。
+    # hoplimit 255 是 RFC 4861 要求的在链路证明，可挡掉跨网段伪造。
+    printf '        icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert } ip6 hoplimit 255 accept\n'
+
+    if [ "${ICMPV6_ACCEPT_RA}" = "1" ]; then
+        printf '        icmpv6 type { nd-router-solicit, nd-router-advert } ip6 hoplimit 255 accept\n'
+    fi
+    if [ "${ICMPV6_ACCEPT_MLD}" = "1" ]; then
+        # 用数字类型而不是符号名：MLD 的符号名在不同 nft 版本上支持不一致，数字始终可解析。
+        # 130 query / 131 report / 132 done / 143 MLDv2 report。MLD 报文 hoplimit 是 1，不加 255 检查。
+        printf '        icmpv6 type { 130, 131, 132, 143 } accept\n'
+    fi
+    if [ "${ICMPV6_ACCEPT_ECHO}" = "1" ]; then
+        printf '        icmpv6 type echo-request accept\n'
+    fi
+    if [ "${ICMPV6_ACCEPT_REDIRECT}" = "1" ]; then
+        printf '        icmpv6 type nd-redirect ip6 hoplimit 255 accept\n'
+    fi
+}
+
+# 生成完整的 nftables table 文档，供单次 nft -f 原子提交。
+nft_build_ruleset() {
+    local v4_file="$1"
+    local v6_file="$2"
+    local v4_port_file="$3"
+    local v6_port_file="$4"
+    local pub_tcp_file="$5"
+    local pub_udp_file="$6"
+
+    # 「声明 + 删除 + 重建」是 nftables 的原子替换惯用法：第一行保证 table 存在，
+    # 否则 delete 会失败；三步在同一个事务里提交，中途任何错误都不会落地，
+    # 旧规则原样保留，不会出现「集合已清空但新元素没加进去」的失联窗口。
+    printf 'table %s %s\n' "${NFT_FAMILY}" "${NFT_TABLE}"
+    printf 'delete table %s %s\n' "${NFT_FAMILY}" "${NFT_TABLE}"
+    printf 'table %s %s {\n' "${NFT_FAMILY}" "${NFT_TABLE}"
+
+    nft_emit_set "${NFT_SET_V4}" "ipv4_addr" "${v4_file}"
+    nft_emit_set "${NFT_SET_V6}" "ipv6_addr" "${v6_file}"
+    nft_emit_set "${NFT_SET_PUB_TCP}" "inet_service" "${pub_tcp_file}"
+    nft_emit_set "${NFT_SET_PUB_UDP}" "inet_service" "${pub_udp_file}"
+
+    printf '    chain %s {\n' "${NFT_CHAIN}"
+    printf '        type filter hook input priority %s; policy accept;\n' "${NFT_PRIORITY}"
+    printf '        iifname "lo" return\n'
+    printf '        ct state established,related return\n'
+
+    if [ "${IPV6_MODE}" = "off" ]; then
+        # 显式丢弃全部入站 IPv6。用「不放行 NDP」来间接关闭 IPv6 会留下
+        # 有地址但邻居发现不通的半死状态，应用会卡到超时而不是快速失败。
+        printf '        meta nfproto ipv6 counter drop\n'
+    else
+        nft_emit_icmpv6_rules
+    fi
+
+    # 公开端口：不看来源，用于 WireGuard、公网 HTTPS 等对所有人开放的服务。
+    printf '        tcp dport @%s return\n' "${NFT_SET_PUB_TCP}"
+    printf '        udp dport @%s return\n' "${NFT_SET_PUB_UDP}"
+    # 来源全端口放行。
+    printf '        ip saddr @%s return\n' "${NFT_SET_V4}"
+    printf '        ip6 saddr @%s return\n' "${NFT_SET_V6}"
+    # 来源 + 端口，逐条规则。与上面的集合规则互斥，先后顺序不影响结果。
+    nft_emit_port_rules ip "${v4_port_file}"
+    nft_emit_port_rules ip6 "${v6_port_file}"
+
+    printf '        counter drop\n'
+    printf '    }\n'
+    printf '}\n'
+}
+
+# 构造并原子提交 nftables 规则。提交失败时旧规则保持不变。
+nft_apply() {
+    local ruleset_file
+
     require_command nft
+    ensure_tmp_dir
+    ruleset_file="${TMP_DIR}/ruleset.nft"
+
+    nft_build_ruleset "$@" >"${ruleset_file}"
 
     if [ "${DRY_RUN}" -eq 1 ]; then
-        log_info "Would ensure nftables rules for ${NFT_FAMILY} ${NFT_TABLE}"
+        log_info "Would apply nftables ruleset:"
+        cat "${ruleset_file}" >&2
         return 0
     fi
 
-    if nft_table_exists && nft_schema_needs_recreate; then
-        log_warn "Recreating nftables table to support CIDR allowlist entries"
-        nft_cleanup
+    if ! nft -f "${ruleset_file}"; then
+        die "Failed to apply nftables ruleset; previous rules are left untouched"
     fi
-
-    if ! nft_table_exists; then
-        run_cmd nft add table "${NFT_FAMILY}" "${NFT_TABLE}"
-    fi
-
-    if ! nft_set_exists "${NFT_SET_V4}"; then
-        run_cmd nft add set "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_SET_V4}" "{ type ipv4_addr; flags interval,timeout; timeout ${SET_TIMEOUT}s; }"
-    fi
-    if ! nft_set_exists "${NFT_SET_V6}"; then
-        run_cmd nft add set "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_SET_V6}" "{ type ipv6_addr; flags interval,timeout; timeout ${SET_TIMEOUT}s; }"
-    fi
-
-    if ! nft_chain_exists; then
-        run_cmd nft add chain "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_CHAIN}" "{ type filter hook input priority ${NFT_PRIORITY}; policy accept; }"
-    else
-        run_cmd nft flush chain "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_CHAIN}"
-    fi
-
-    run_cmd nft add rule "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_CHAIN}" iifname '"lo"' return
-    run_cmd nft add rule "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_CHAIN}" ct state established,related return
-    run_cmd nft add rule "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_CHAIN}" ip saddr @"${NFT_SET_V4}" return
-    run_cmd nft add rule "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_CHAIN}" ip6 saddr @"${NFT_SET_V6}" return
-    run_cmd nft add rule "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_CHAIN}" counter drop
 }
 
 # 删除 nftables 后端创建的 table，禁用时使用。
@@ -1000,49 +1677,23 @@ nft_cleanup() {
 }
 
 # 将文件中的来源列表转换为 nftables 元素，支持单 IP 和 CIDR。
-nft_ip_elements_from_file() {
+nft_elements_from_file() {
     local file="$1"
     local result=""
-    local ip
+    local item
 
-    while IFS= read -r ip || [ -n "${ip}" ]; do
-        [ -z "${ip}" ] && continue
+    [ -f "${file}" ] || { printf '%s' ""; return 0; }
+
+    while IFS= read -r item || [ -n "${item}" ]; do
+        [ -z "${item}" ] && continue
         if [ -z "${result}" ]; then
-            result="${ip}"
+            result="${item}"
         else
-            result="${result}, ${ip}"
+            result="${result}, ${item}"
         fi
     done <"${file}"
 
     printf '%s' "${result}"
-}
-
-# 刷新 nftables IP set，使其与最新域名解析结果一致。
-nft_update_sets() {
-    local v4_file="$1"
-    local v6_file="$2"
-    local elements
-
-    require_command nft
-    nft_ensure_rules
-
-    if [ "${DRY_RUN}" -eq 1 ]; then
-        log_info "Would refresh nftables IP sets"
-        return 0
-    fi
-
-    run_cmd nft flush set "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_SET_V4}"
-    run_cmd nft flush set "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_SET_V6}"
-
-    elements="$(nft_ip_elements_from_file "${v4_file}")"
-    if [ -n "${elements}" ]; then
-        run_cmd nft add element "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_SET_V4}" "{ ${elements} }"
-    fi
-
-    elements="$(nft_ip_elements_from_file "${v6_file}")"
-    if [ -n "${elements}" ]; then
-        run_cmd nft add element "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_SET_V6}" "{ ${elements} }"
-    fi
 }
 
 # 检查指定 iptables 二进制中的自定义 chain 是否存在。
@@ -1061,43 +1712,299 @@ iptables_remove_input_jumps() {
     fi
 
     while "${bin}" -C INPUT -j "${IPTABLES_CHAIN}" >/dev/null 2>&1; do
-        run_cmd "${bin}" -D INPUT -j "${IPTABLES_CHAIN}"
+        run_cmd "${bin}" -w 5 -D INPUT -j "${IPTABLES_CHAIN}"
     done
 }
 
-# 为 iptables 或 ip6tables 创建整机入站来源门禁 chain。
-iptables_ensure_family_rules() {
-    local bin="$1"
-    local set_name="$2"
+# 探测 ip6tables 是否支持 hl 匹配，用于给邻居发现加 hoplimit 255 的在链路证明。
+ip6tables_hl_supported() {
+    local probe_chain="DWLPROBE$$"
 
-    if ! iptables_chain_exists "${bin}"; then
-        run_cmd "${bin}" -N "${IPTABLES_CHAIN}"
-    else
-        run_cmd "${bin}" -F "${IPTABLES_CHAIN}"
+    if [ -n "${IPT_HL_MATCH}" ]; then
+        [ "${IPT_HL_MATCH}" = "1" ] && return 0
+        return 1
     fi
 
-    iptables_remove_input_jumps "${bin}"
-    run_cmd "${bin}" -I INPUT 1 -j "${IPTABLES_CHAIN}"
-    run_cmd "${bin}" -A "${IPTABLES_CHAIN}" -i lo -j RETURN
-    run_cmd "${bin}" -A "${IPTABLES_CHAIN}" -m state --state ESTABLISHED,RELATED -j RETURN
-    run_cmd "${bin}" -A "${IPTABLES_CHAIN}" -m set --match-set "${set_name}" src -j RETURN
-    run_cmd "${bin}" -A "${IPTABLES_CHAIN}" -j DROP
+    IPT_HL_MATCH="0"
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        IPT_HL_MATCH="1"
+    elif ip6tables -w 5 -N "${probe_chain}" >/dev/null 2>&1; then
+        if ip6tables -w 5 -A "${probe_chain}" -p icmpv6 --icmpv6-type neighbour-solicitation \
+            -m hl --hl-eq 255 -j RETURN >/dev/null 2>&1; then
+            IPT_HL_MATCH="1"
+        else
+            log_warn "ip6tables hl match unavailable; NDP rules will skip the hoplimit 255 check"
+        fi
+        ip6tables -w 5 -F "${probe_chain}" >/dev/null 2>&1 || true
+        ip6tables -w 5 -X "${probe_chain}" >/dev/null 2>&1 || true
+    fi
+
+    [ "${IPT_HL_MATCH}" = "1" ] && return 0
+    return 1
 }
 
-# 确保 iptables + ipset 后端的 set、chain 和 INPUT 跳转存在。
-iptables_ensure_rules() {
-    require_command iptables
-    require_command ipset
+# 把端口规格转换成 multiport 语法，并按每条规则最多 7 项切分。
+# multiport 上限是 15 项，一个区间算两项，7 项区间最多 14 项，始终安全。
+iptables_multiport_chunks() {
+    local spec="$1"
+    local item
+    local chunk=""
+    local count=0
+    declare -a items=()
 
-    ipset_ensure_net_set "${IPSET_V4}" inet iptables
-    iptables_ensure_family_rules iptables "${IPSET_V4}"
+    IFS=',' read -r -a items <<<"${spec}"
+    for item in "${items[@]}"; do
+        [ -n "${item}" ] || continue
+        item="${item//-/:}"
+        if [ -z "${chunk}" ]; then
+            chunk="${item}"
+        else
+            chunk="${chunk},${item}"
+        fi
+        count=$((count + 1))
+        if [ "${count}" -ge 7 ]; then
+            printf '%s\n' "${chunk}"
+            chunk=""
+            count=0
+        fi
+    done
 
-    if command_exists ip6tables; then
-        ipset_ensure_net_set "${IPSET_V6}" inet6 ip6tables
-        iptables_ensure_family_rules ip6tables "${IPSET_V6}"
-    else
-        log_warn "ip6tables not found; IPv6 whitelist gate is skipped"
+    [ -n "${chunk}" ] && printf '%s\n' "${chunk}"
+    return 0
+}
+
+# 输出 ip6tables 的 ICMPv6 放行规则，每种类型一条。
+# ip6tables 不支持一条规则匹配一组类型，类型名也与 nft 不同（router-solicitation
+# 而非 nd-router-solicit，且是 neighbour 的英式拼写），因此不能与 IPv4 共用规则体。
+iptables_icmpv6_rule_lines() {
+    local hl=""
+
+    if ip6tables_hl_supported; then
+        hl=" -m hl --hl-eq 255"
     fi
+
+    printf -- '-p icmpv6 --icmpv6-type destination-unreachable -j RETURN\n'
+    printf -- '-p icmpv6 --icmpv6-type packet-too-big -j RETURN\n'
+    printf -- '-p icmpv6 --icmpv6-type time-exceeded -j RETURN\n'
+    printf -- '-p icmpv6 --icmpv6-type parameter-problem -j RETURN\n'
+    printf -- '-p icmpv6 --icmpv6-type neighbour-solicitation%s -j RETURN\n' "${hl}"
+    printf -- '-p icmpv6 --icmpv6-type neighbour-advertisement%s -j RETURN\n' "${hl}"
+
+    if [ "${ICMPV6_ACCEPT_RA}" = "1" ]; then
+        printf -- '-p icmpv6 --icmpv6-type router-solicitation%s -j RETURN\n' "${hl}"
+        printf -- '-p icmpv6 --icmpv6-type router-advertisement%s -j RETURN\n' "${hl}"
+    fi
+    if [ "${ICMPV6_ACCEPT_MLD}" = "1" ]; then
+        # MLD 在 ip6tables 没有符号名，只能用数字类型。
+        printf -- '-p icmpv6 --icmpv6-type 130 -j RETURN\n'
+        printf -- '-p icmpv6 --icmpv6-type 131 -j RETURN\n'
+        printf -- '-p icmpv6 --icmpv6-type 132 -j RETURN\n'
+        printf -- '-p icmpv6 --icmpv6-type 143 -j RETURN\n'
+    fi
+    if [ "${ICMPV6_ACCEPT_ECHO}" = "1" ]; then
+        printf -- '-p icmpv6 --icmpv6-type echo-request -j RETURN\n'
+    fi
+    if [ "${ICMPV6_ACCEPT_REDIRECT}" = "1" ]; then
+        printf -- '-p icmpv6 --icmpv6-type redirect%s -j RETURN\n' "${hl}"
+    fi
+}
+
+# 生成指定家族的完整规则列表，一行一条规则（不含 -A CHAIN 前缀）。
+iptables_family_rule_lines() {
+    local family="$1"
+    local src_set="$2"
+    local port_set="$3"
+    local pub_tcp="$4"
+    local pub_udp="$5"
+    local chunk
+
+    printf -- '-i lo -j RETURN\n'
+    printf -- '-m state --state ESTABLISHED,RELATED -j RETURN\n'
+
+    if [ "${family}" = "inet6" ]; then
+        if [ "${IPV6_MODE}" = "off" ]; then
+            # 显式丢弃，而不是靠「不放行 NDP」间接实现，避免 IPv6 处于半死状态。
+            printf -- '-j DROP\n'
+            return 0
+        fi
+        iptables_icmpv6_rule_lines
+    fi
+
+    if [ -n "${pub_tcp}" ]; then
+        while IFS= read -r chunk || [ -n "${chunk}" ]; do
+            [ -z "${chunk}" ] && continue
+            printf -- '-p tcp -m multiport --dports %s -j RETURN\n' "${chunk}"
+        done < <(iptables_multiport_chunks "${pub_tcp}")
+    fi
+    if [ -n "${pub_udp}" ]; then
+        while IFS= read -r chunk || [ -n "${chunk}" ]; do
+            [ -z "${chunk}" ] && continue
+            printf -- '-p udp -m multiport --dports %s -j RETURN\n' "${chunk}"
+        done < <(iptables_multiport_chunks "${pub_udp}")
+    fi
+
+    printf -- '-m set --match-set %s src -j RETURN\n' "${src_set}"
+    printf -- '-m set --match-set %s src,dst -j RETURN\n' "${port_set}"
+    printf -- '-j DROP\n'
+}
+
+# 读取 chain 上记录的规则指纹，用于判断是否需要重建。
+# chain 不存在时 iptables -S 返回非零，配合 pipefail 会中止整次刷新，
+# 因此先判断存在性，再整体取回输出用纯 bash 解析。
+iptables_chain_fingerprint() {
+    local bin="$1"
+    local output
+    local line
+
+    iptables_chain_exists "${bin}" || return 0
+    output="$("${bin}" -S "${IPTABLES_CHAIN}" 2>/dev/null || true)"
+
+    while IFS= read -r line || [ -n "${line}" ]; do
+        case "${line}" in
+            *--comment*dwl:*)
+                line="${line#*dwl:}"
+                line="${line%%\"*}"
+                line="${line%% *}"
+                printf '%s\n' "${line}"
+                return 0
+                ;;
+        esac
+    done <<<"${output}"
+
+    return 0
+}
+
+# 统计本工具 chain 上的规则条数，用于判断链是否被外部改动过。
+iptables_chain_rule_count() {
+    local bin="$1"
+    local output
+    local line
+    local count=0
+
+    iptables_chain_exists "${bin}" || { printf '%s\n' "0"; return 0; }
+    output="$("${bin}" -S "${IPTABLES_CHAIN}" 2>/dev/null || true)"
+
+    while IFS= read -r line || [ -n "${line}" ]; do
+        case "${line}" in
+            "-A ${IPTABLES_CHAIN} "*)
+                count=$((count + 1))
+                ;;
+        esac
+    done <<<"${output}"
+
+    printf '%s\n' "${count}"
+}
+
+# 确保 INPUT 链第一条就是指向本工具 chain 的跳转。
+# 只检查存在性是不够的：别人在 INPUT 前面插一条 ACCEPT 就能绕过整个门禁，
+# 而跳转仍然「存在」，跳过重建的分支永远不会纠正它。
+# 调整时先把新跳转插到第 1 位、再按行号从后往前删旧跳转：任一时刻都至少有
+# 一条跳转在位，不会出现「先删后插」之间的 fail-open 空档。
+iptables_ensure_input_jump() {
+    local bin="$1"
+    local output
+    local line
+    local pos=0
+    local i
+    declare -a jump_positions=()
+
+    output="$("${bin}" -S INPUT 2>/dev/null || true)"
+    while IFS= read -r line || [ -n "${line}" ]; do
+        case "${line}" in
+            -P\ *)
+                continue
+                ;;
+            "-A INPUT -j ${IPTABLES_CHAIN}")
+                pos=$((pos + 1))
+                jump_positions+=("${pos}")
+                ;;
+            -A\ INPUT*)
+                pos=$((pos + 1))
+                ;;
+        esac
+    done <<<"${output}"
+
+    if [ "${#jump_positions[@]}" -eq 1 ] && [ "${jump_positions[0]}" -eq 1 ]; then
+        return 0
+    fi
+
+    run_cmd "${bin}" -w 5 -I INPUT 1 -j "${IPTABLES_CHAIN}"
+    for ((i = ${#jump_positions[@]} - 1; i >= 0; i--)); do
+        run_cmd "${bin}" -w 5 -D INPUT "$((jump_positions[i] + 1))"
+    done
+}
+
+# 按需重建指定家族的 chain。规则内容未变时直接跳过，
+# 避免每次刷新都 -F 再逐条 -A，那样每个刷新周期都会出现一段无规则的放行窗口。
+iptables_apply_family() {
+    local bin="$1"
+    local family="$2"
+    local src_set="$3"
+    local port_set="$4"
+    local pub_tcp="$5"
+    local pub_udp="$6"
+    local spec
+    local fingerprint
+    local current
+    local expected
+    local actual
+    local line
+    local payload
+
+    # 先在子 shell 外做一次探测，让 IPT_HL_MATCH 的缓存真正生效。
+    # 否则探测发生在下面的命令替换里，结果传不回来，每次刷新都要建删一次探测链。
+    if [ "${family}" = "inet6" ]; then
+        ip6tables_hl_supported || true
+    fi
+
+    spec="$(iptables_family_rule_lines "${family}" "${src_set}" "${port_set}" "${pub_tcp}" "${pub_udp}")"
+    fingerprint="$(printf '%s' "${spec}" | cksum)"
+    fingerprint="${fingerprint%% *}"
+    current="$(iptables_chain_fingerprint "${bin}")"
+
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would rebuild ${bin} chain ${IPTABLES_CHAIN} (fingerprint ${fingerprint})"
+        return 0
+    fi
+
+    # 除了比指纹，还要比规则条数。指纹写在最后那条 DROP 上，
+    # 只比指纹的话，外部删掉链中间几条规则后指纹依然匹配，
+    # 会被判定「已是最新」而永不自愈，白名单来源被一路丢弃。
+    expected="$(printf '%s\n' "${spec}" | grep -c '^-' || true)"
+    actual="$(iptables_chain_rule_count "${bin}")"
+
+    if iptables_chain_exists "${bin}" && [ "${current}" = "${fingerprint}" ] &&
+        [ "${actual}" = "${expected}" ]; then
+        log_debug "${bin} chain ${IPTABLES_CHAIN} is already up to date"
+        iptables_ensure_input_jump "${bin}"
+        return 0
+    fi
+
+    if ! iptables_chain_exists "${bin}"; then
+        run_cmd "${bin}" -w 5 -N "${IPTABLES_CHAIN}"
+    fi
+
+    # 用 iptables-restore --noflush 一次性提交「清空 + 重填」。
+    # 旧写法先 -F 再逐条 -A，期间 INPUT 跳转还挂着，任何一条失败
+    # （xtables 锁竞争、match 模块缺失）都会留下没有末尾 DROP 的半空链——fail-open。
+    # restore 的单个 COMMIT 是原子的：要么整链换成新内容，要么保持旧内容。
+    payload="*filter"$'\n'"-F ${IPTABLES_CHAIN}"$'\n'
+    while IFS= read -r line || [ -n "${line}" ]; do
+        [ -z "${line}" ] && continue
+        if [ "${line}" = "-j DROP" ]; then
+            # 指纹写在最后的 DROP 规则上，重建后即可被下次刷新读回比对。
+            payload+="-A ${IPTABLES_CHAIN} -m comment --comment \"dwl:${fingerprint}\" -j DROP"$'\n'
+            continue
+        fi
+        payload+="-A ${IPTABLES_CHAIN} ${line}"$'\n'
+    done <<<"${spec}"
+    payload+="COMMIT"$'\n'
+
+    if ! printf '%s' "${payload}" | "${bin}-restore" --noflush -w 5; then
+        die "Failed to apply ${bin} chain ${IPTABLES_CHAIN}; previous rules are left unchanged"
+    fi
+
+    iptables_ensure_input_jump "${bin}"
 }
 
 # 清理指定 iptables 家族中的自定义 chain。
@@ -1113,8 +2020,8 @@ iptables_cleanup_family() {
 
     iptables_remove_input_jumps "${bin}"
     if iptables_chain_exists "${bin}"; then
-        run_cmd "${bin}" -F "${IPTABLES_CHAIN}"
-        run_cmd "${bin}" -X "${IPTABLES_CHAIN}"
+        run_cmd "${bin}" -w 5 -F "${IPTABLES_CHAIN}"
+        run_cmd "${bin}" -w 5 -X "${IPTABLES_CHAIN}"
     fi
 }
 
@@ -1125,10 +2032,12 @@ iptables_cleanup() {
 
     if command_exists ipset; then
         if [ "${DRY_RUN}" -eq 1 ]; then
-            log_info "Would destroy ipsets: ${IPSET_V4}, ${IPSET_V6}"
+            log_info "Would destroy ipsets: ${IPSET_V4}, ${IPSET_V6}, ${IPSET_V4_PORT}, ${IPSET_V6_PORT}"
         else
             ipset destroy "${IPSET_V4}" >/dev/null 2>&1 || true
             ipset destroy "${IPSET_V6}" >/dev/null 2>&1 || true
+            ipset destroy "${IPSET_V4_PORT}" >/dev/null 2>&1 || true
+            ipset destroy "${IPSET_V6_PORT}" >/dev/null 2>&1 || true
         fi
     fi
 }
@@ -1136,37 +2045,70 @@ iptables_cleanup() {
 # 读取现有 ipset 类型，用于识别旧版 hash:ip set。
 ipset_current_type() {
     local set_name="$1"
+    local output
+    local line
 
-    ipset list "${set_name}" 2>/dev/null | awk '/^Type:/ { print $2; exit }'
+    # ipset list 在集合不存在时返回非零。脚本开了 pipefail，
+    # 直接用管道会让调用处的赋值失败并中止整次刷新，所以先整体取回再解析。
+    output="$(ipset list "${set_name}" 2>/dev/null || true)"
+
+    while IFS= read -r line || [ -n "${line}" ]; do
+        case "${line}" in
+            Type:*)
+                trim "${line#Type:}"
+                printf '\n'
+                return 0
+                ;;
+        esac
+    done <<<"${output}"
+
+    return 0
 }
 
-# 确保 ipset 使用 hash:net 类型，CIDR 网段依赖该类型。
-ipset_ensure_net_set() {
+# 确保 ipset 使用期望的类型，类型不符时连同引用它的 chain 一起重建。
+# 不再设置 timeout：元素靠刷新续命会在刷新任务停摆后自动清空集合，把整机关在门外。
+ipset_ensure_typed_set() {
     local set_name="$1"
-    local family="$2"
-    local iptables_bin="$3"
+    local set_type="$2"
+    local family="$3"
+    local iptables_bin="$4"
     local current_type
 
     current_type="$(ipset_current_type "${set_name}")"
-    if [ -n "${current_type}" ] && [ "${current_type}" != "hash:net" ]; then
-        log_warn "Recreating ${set_name} from ${current_type} to hash:net for CIDR support"
+    if [ -n "${current_type}" ] && [ "${current_type}" != "${set_type}" ]; then
+        log_warn "Recreating ${set_name} from ${current_type} to ${set_type}"
         iptables_cleanup_family "${iptables_bin}"
         run_cmd ipset destroy "${set_name}"
     fi
 
-    run_cmd ipset create "${set_name}" hash:net family "${family}" timeout "${SET_TIMEOUT}" -exist
+    run_cmd ipset create "${set_name}" "${set_type}" family "${family}" -exist
 }
 
-# 使用临时 ipset + swap 原子刷新单个来源 set。
+# 把 nft 风格的 "IP . proto . port" 元素转换成 ipset 的 "IP,proto:port" 写法。
+ipset_port_element() {
+    local element="$1"
+    local ip
+    local proto
+    local port
+
+    ip="${element%% . *}"
+    element="${element#* . }"
+    proto="${element%% . *}"
+    port="${element##* . }"
+    printf '%s,%s:%s\n' "${ip}" "${proto}" "${port}"
+}
+
+# 使用临时 ipset + swap 原子刷新单个 set。
 ipset_update_one() {
     local set_name="$1"
-    local family="$2"
-    local file="$3"
+    local set_type="$2"
+    local family="$3"
+    local file="$4"
+    local item
     local tmp_set
-    local ip
 
     require_command ipset
-    tmp_set="${set_name}_tmp_$$"
+    tmp_set="${set_name}_t$$"
 
     if [ "${DRY_RUN}" -eq 1 ]; then
         log_info "Would refresh ipset: ${set_name}"
@@ -1174,12 +2116,15 @@ ipset_update_one() {
     fi
 
     ipset destroy "${tmp_set}" >/dev/null 2>&1 || true
-    run_cmd ipset create "${set_name}" hash:net family "${family}" timeout "${SET_TIMEOUT}" -exist
-    run_cmd ipset create "${tmp_set}" hash:net family "${family}" timeout "${SET_TIMEOUT}"
+    run_cmd ipset create "${set_name}" "${set_type}" family "${family}" -exist
+    run_cmd ipset create "${tmp_set}" "${set_type}" family "${family}"
 
-    while IFS= read -r ip || [ -n "${ip}" ]; do
-        [ -z "${ip}" ] && continue
-        run_cmd ipset -exist add "${tmp_set}" "${ip}" timeout "${SET_TIMEOUT}"
+    while IFS= read -r item || [ -n "${item}" ]; do
+        [ -z "${item}" ] && continue
+        if [ "${set_type}" = "hash:net,port" ]; then
+            item="$(ipset_port_element "${item}")"
+        fi
+        run_cmd ipset -exist add "${tmp_set}" "${item}"
     done <"${file}"
 
     if ! ipset swap "${tmp_set}" "${set_name}"; then
@@ -1189,18 +2134,67 @@ ipset_update_one() {
     run_cmd ipset destroy "${tmp_set}"
 }
 
-# 刷新 iptables + ipset 后端的 IPv4 和 IPv6 set。
-iptables_update_sets() {
+# 读取公开端口文件，拼成逗号分隔的端口规格。
+public_port_spec_from_file() {
+    local file="$1"
+    local result=""
+    local item
+
+    [ -f "${file}" ] || { printf '%s' ""; return 0; }
+
+    while IFS= read -r item || [ -n "${item}" ]; do
+        [ -z "${item}" ] && continue
+        if [ -z "${result}" ]; then
+            result="${item}"
+        else
+            result="${result},${item}"
+        fi
+    done <"${file}"
+
+    printf '%s' "${result}"
+}
+
+# 刷新 iptables + ipset 后端：先建 set，再按需重建 chain，最后原子替换 set 内容。
+iptables_apply() {
     local v4_file="$1"
     local v6_file="$2"
+    local v4_port_file="$3"
+    local v6_port_file="$4"
+    local pub_tcp_file="$5"
+    local pub_udp_file="$6"
+    local pub_tcp
+    local pub_udp
 
     require_command iptables
     require_command ipset
-    iptables_ensure_rules
-    ipset_update_one "${IPSET_V4}" inet "${v4_file}"
+    # IPV6_MODE=off 的语义是「丢弃全部入站 IPv6」。没有 ip6tables 时根本做不到，
+    # 静默跳过会让 IPv6 完全敞开、与配置语义相反，必须显式失败。
+    if [ "${IPV6_MODE}" = "off" ] && ! command_exists ip6tables; then
+        die "IPV6_MODE=off requires ip6tables to drop inbound IPv6, but ip6tables is missing; install it or switch the backend"
+    fi
+
+    pub_tcp="$(public_port_spec_from_file "${pub_tcp_file}")"
+    pub_udp="$(public_port_spec_from_file "${pub_udp_file}")"
+
+    # 顺序很重要：必须先把集合内容填满，再挂 chain 和 INPUT 跳转。
+    # 反过来的话，任何一条 ipset add 失败都会让 set -e 中止脚本，
+    # 而此时 DROP 链已经生效、集合还是空的，机器立刻失联。
+    # 首次 enable 和后端切换时旧集合不存在，正是这个顺序最要命的场景。
+    ipset_ensure_typed_set "${IPSET_V4}" hash:net inet iptables
+    ipset_ensure_typed_set "${IPSET_V4_PORT}" hash:net,port inet iptables
+    ipset_update_one "${IPSET_V4}" hash:net inet "${v4_file}"
+    ipset_update_one "${IPSET_V4_PORT}" hash:net,port inet "${v4_port_file}"
+    iptables_apply_family iptables inet "${IPSET_V4}" "${IPSET_V4_PORT}" "${pub_tcp}" "${pub_udp}"
 
     if command_exists ip6tables; then
-        ipset_update_one "${IPSET_V6}" inet6 "${v6_file}"
+        ipset_ensure_typed_set "${IPSET_V6}" hash:net inet6 ip6tables
+        ipset_ensure_typed_set "${IPSET_V6_PORT}" hash:net,port inet6 ip6tables
+        ipset_update_one "${IPSET_V6}" hash:net inet6 "${v6_file}"
+        ipset_update_one "${IPSET_V6_PORT}" hash:net,port inet6 "${v6_port_file}"
+        iptables_apply_family ip6tables inet6 "${IPSET_V6}" "${IPSET_V6_PORT}" "${pub_tcp}" "${pub_udp}"
+    else
+        # 用 log_change 而不是 log_warn：--quiet 的定时刷新里这是必须可见的安全缺口。
+        log_change "ip6tables not found; inbound IPv6 is NOT filtered by the whitelist gate"
     fi
 }
 
@@ -1221,6 +2215,8 @@ is_ipv6() {
 }
 
 # 解析单个域名，将 A 和 AAAA 记录分别写入结果文件。
+# 结果通过 RESOLVE_FOUND / RESOLVE_V4_FAILED / RESOLVE_V6_FAILED 全局变量报告，
+# 缓存回退的决策由 resolve_domain_cached 统一处理。
 resolve_domain() {
     local domain="$1"
     local v4_file="$2"
@@ -1229,9 +2225,14 @@ resolve_domain() {
     local records
     local found=0
 
+    RESOLVE_FOUND=0
+    RESOLVE_V4_FAILED=0
+    RESOLVE_V6_FAILED=0
+
     if command_exists dig; then
         if ! records="$(dig +time=3 +tries=1 +short A "${domain}" 2>/dev/null)"; then
             log_warn "DNS A query failed for ${domain}"
+            RESOLVE_V4_FAILED=1
             records=""
         fi
         while IFS= read -r ip || [ -n "${ip}" ]; do
@@ -1245,6 +2246,7 @@ resolve_domain() {
 
         if ! records="$(dig +time=3 +tries=1 +short AAAA "${domain}" 2>/dev/null)"; then
             log_warn "DNS AAAA query failed for ${domain}"
+            RESOLVE_V6_FAILED=1
             records=""
         fi
         while IFS= read -r ip || [ -n "${ip}" ]; do
@@ -1256,8 +2258,12 @@ resolve_domain() {
             fi
         done <<<"${records}"
     elif command_exists getent; then
+        # getent 用退出码 2 同时表示「没有该类记录」和「查不到」，
+        # 无法区分「域名只有 A 记录」和「DNS 挂了」。这里不据此判定降级，
+        # 否则任何 IPv4-only 域名都会让每次刷新都进降级分支、快照只增不减。
+        # 真正的解析失败由后面 found=0 的检查覆盖。
         if ! records="$(getent ahostsv4 "${domain}" 2>/dev/null)"; then
-            log_warn "getent ahostsv4 query failed for ${domain}"
+            log_debug "getent ahostsv4 returned no records for ${domain}"
             records=""
         fi
         while IFS= read -r ip _ || [ -n "${ip:-}" ]; do
@@ -1270,7 +2276,7 @@ resolve_domain() {
         done <<<"${records}"
 
         if ! records="$(getent ahostsv6 "${domain}" 2>/dev/null)"; then
-            log_warn "getent ahostsv6 query failed for ${domain}"
+            log_debug "getent ahostsv6 returned no records for ${domain}"
             records=""
         fi
         while IFS= read -r ip _ || [ -n "${ip:-}" ]; do
@@ -1285,62 +2291,465 @@ resolve_domain() {
         die "Missing resolver command: install dnsutils/bind-utils for dig or provide getent"
     fi
 
-    if [ "${found}" -eq 0 ]; then
-        log_warn "No usable DNS records found for ${domain}"
+    RESOLVE_FOUND="${found}"
+}
+
+# 从上次成功的解析缓存里取出指定域名、指定家族的地址。
+resolve_cache_lookup() {
+    local domain="$1"
+    local family="$2"
+
+    [ -f "${RESOLVE_CACHE_FILE}" ] || return 0
+    awk -F'|' -v d="${domain}" -v f="${family}" '$1 == d && $2 == f { print $3 }' \
+        "${RESOLVE_CACHE_FILE}"
+}
+
+# 把域名的最终解析结果（新鲜结果或回退后的缓存）写入本轮的新缓存文件。
+resolve_cache_append() {
+    local domain="$1"
+    local v4_file="$2"
+    local v6_file="$3"
+    local ip
+
+    while IFS= read -r ip || [ -n "${ip}" ]; do
+        [ -z "${ip}" ] && continue
+        printf '%s|4|%s\n' "${domain}" "${ip}" >>"${TMP_DIR}/resolve.cache.new"
+    done <"${v4_file}"
+    while IFS= read -r ip || [ -n "${ip}" ]; do
+        [ -z "${ip}" ] && continue
+        printf '%s|6|%s\n' "${domain}" "${ip}" >>"${TMP_DIR}/resolve.cache.new"
+    done <"${v6_file}"
+}
+
+# 解析域名并按域名粒度做缓存回退；同一域名在一次刷新内只解析一次。
+# 回退是按域名而不是全局的：一个永久解析失败的域名只影响它自己，
+# 其它域名照常拿到新鲜结果、照常从缓存里退出旧地址，remove 的撤销也立即生效。
+resolve_domain_cached() {
+    local domain="$1"
+    local out_v4="$2"
+    local out_v6="$3"
+    local memo_v4="${TMP_DIR}/dns/${domain}.v4"
+    local memo_v6="${TMP_DIR}/dns/${domain}.v6"
+    local cached
+
+    if [ ! -f "${memo_v4}" ]; then
+        : >"${memo_v4}"
+        : >"${memo_v6}"
+        log_debug "Resolving ${domain}"
+        resolve_domain "${domain}" "${memo_v4}" "${memo_v6}"
+
+        # 按家族回退：该家族查询失败、或整个域名一条记录都没有时才动用缓存；
+        # 「域名本来就没有 AAAA」属于正常情况，不触发回退。
+        if [ ! -s "${memo_v4}" ] &&
+            { [ "${RESOLVE_V4_FAILED}" -eq 1 ] || [ "${RESOLVE_FOUND}" -eq 0 ]; }; then
+            resolve_cache_lookup "${domain}" 4 >>"${memo_v4}"
+        fi
+        if [ ! -s "${memo_v6}" ] &&
+            { [ "${RESOLVE_V6_FAILED}" -eq 1 ] || [ "${RESOLVE_FOUND}" -eq 0 ]; }; then
+            resolve_cache_lookup "${domain}" 6 >>"${memo_v6}"
+        fi
+
+        # 这些日志走 log_change：定时刷新用 --quiet 运行，log_warn 会被静默，
+        # 而降级恰恰只发生在无人值守的场景里，必须落进日志。
+        if [ "${RESOLVE_FOUND}" -eq 0 ]; then
+            RESOLVE_DEGRADED=1
+            cached=$(($(count_file_lines "${memo_v4}") + $(count_file_lines "${memo_v6}")))
+            if [ "${cached}" -gt 0 ]; then
+                log_change "DNS resolution failed for ${domain}; keeping ${cached} cached address(es) from the last successful refresh"
+            else
+                log_change "DNS resolution failed for ${domain} and no cached addresses exist; the entry stays ineffective until DNS recovers"
+            fi
+        elif [ "${RESOLVE_V4_FAILED}" -eq 1 ] || [ "${RESOLVE_V6_FAILED}" -eq 1 ]; then
+            RESOLVE_DEGRADED=1
+            log_change "DNS resolution was partial for ${domain}; the failed family falls back to cached addresses"
+        fi
+
+        resolve_cache_append "${domain}" "${memo_v4}" "${memo_v6}"
+    fi
+
+    cat "${memo_v4}" >>"${out_v4}"
+    cat "${memo_v6}" >>"${out_v6}"
+}
+
+# 把单个来源展开成 IP 列表：静态地址和 CIDR 直接写入，域名走 DNS 解析。
+resolve_source_to_files() {
+    local src="$1"
+    local out_v4="$2"
+    local out_v6="$3"
+
+    : >"${out_v4}"
+    : >"${out_v6}"
+
+    if is_ipv4_cidr "${src}" || is_ipv4 "${src}"; then
+        printf '%s\n' "${src}" >>"${out_v4}"
+        return 0
+    fi
+    if is_ipv6_cidr "${src}" || is_ipv6 "${src}"; then
+        printf '%s\n' "${src}" >>"${out_v6}"
+        return 0
+    fi
+
+    resolve_domain_cached "${src}" "${out_v4}" "${out_v6}"
+}
+
+# 把 IP 列表和端口规格展开成 nft concat set 元素，一个 IP 一个区间一行。
+expand_port_elements() {
+    local ip_file="$1"
+    local proto="$2"
+    local port_spec="$3"
+    local out_file="$4"
+    local ip
+    local range
+    declare -a ranges=()
+
+    IFS=',' read -r -a ranges <<<"${port_spec}"
+    while IFS= read -r ip || [ -n "${ip}" ]; do
+        [ -z "${ip}" ] && continue
+        for range in "${ranges[@]}"; do
+            printf '%s . %s . %s\n' "${ip}" "${proto}" "${range}" >>"${out_file}"
+        done
+    done <"${ip_file}"
+}
+
+# 输出一条 concat set 元素，单端口区间折叠成单值。
+emit_port_element() {
+    local key="$1"
+    local start="$2"
+    local end="$3"
+
+    if [ "${start}" = "${end}" ]; then
+        printf '%s . %s\n' "${key}" "${start}"
+    else
+        printf '%s . %s-%s\n' "${key}" "${start}" "${end}"
     fi
 }
 
-# 解析全部白名单条目，静态 IP 和 CIDR 直接写入，域名解析后写入。
+# 按「来源 . 协议」分组合并端口区间。
+# nft 的 interval 集合拒绝重叠元素，一旦出现重叠整份规则提交失败、集合冻结在旧内容，
+# 动态 IP 就再也进不来。重叠既可能来自用户写了两行重叠区间，
+# 也可能来自降级时把旧快照并回来（旧快照 22 + 新配置 20-30）。
+merge_port_elements() {
+    local file="$1"
+    local sorted
+    local line
+    local key
+    local range
+    local start
+    local end
+    local cur_key=""
+    local cur_start=""
+    local cur_end=""
+
+    [ -s "${file}" ] || return 0
+    ensure_tmp_dir
+    sorted="${TMP_DIR}/merge.elements"
+
+    # 用 | 作分隔符：来源可能含 : 和 /，但不会含 |
+    while IFS= read -r line || [ -n "${line}" ]; do
+        [ -z "${line}" ] && continue
+        key="${line% . *}"
+        range="${line##* . }"
+        printf '%s|%s|%s\n' "${key}" "${range%%-*}" "${range##*-}"
+    done <"${file}" | sort -t'|' -k1,1 -k2,2n -k3,3n >"${sorted}"
+
+    : >"${file}"
+    while IFS='|' read -r key start end || [ -n "${key}" ]; do
+        [ -z "${key}" ] && continue
+        if [ "${key}" = "${cur_key}" ] && [ "${start}" -le $((cur_end + 1)) ]; then
+            if [ "${end}" -gt "${cur_end}" ]; then
+                cur_end="${end}"
+            fi
+            continue
+        fi
+        if [ -n "${cur_key}" ]; then
+            emit_port_element "${cur_key}" "${cur_start}" "${cur_end}" >>"${file}"
+        fi
+        cur_key="${key}"
+        cur_start="${start}"
+        cur_end="${end}"
+    done <"${sorted}"
+
+    if [ -n "${cur_key}" ]; then
+        emit_port_element "${cur_key}" "${cur_start}" "${cur_end}" >>"${file}"
+    fi
+}
+
+# 合并公开端口文件中的重叠区间，理由同 merge_port_elements。
+merge_public_ports() {
+    local file="$1"
+    local sorted
+    local range
+    local start
+    local end
+    local cur_start=""
+    local cur_end=""
+
+    [ -s "${file}" ] || return 0
+    ensure_tmp_dir
+    sorted="${TMP_DIR}/merge.public"
+
+    while IFS= read -r range || [ -n "${range}" ]; do
+        [ -z "${range}" ] && continue
+        printf '%s|%s\n' "${range%%-*}" "${range##*-}"
+    done <"${file}" | sort -t'|' -k1,1n -k2,2n >"${sorted}"
+
+    : >"${file}"
+    while IFS='|' read -r start end || [ -n "${start}" ]; do
+        [ -z "${start}" ] && continue
+        if [ -n "${cur_start}" ] && [ "${start}" -le $((cur_end + 1)) ]; then
+            if [ "${end}" -gt "${cur_end}" ]; then
+                cur_end="${end}"
+            fi
+            continue
+        fi
+        if [ -n "${cur_start}" ]; then
+            emit_public_port "${cur_start}" "${cur_end}" >>"${file}"
+        fi
+        cur_start="${start}"
+        cur_end="${end}"
+    done <"${sorted}"
+
+    if [ -n "${cur_start}" ]; then
+        emit_public_port "${cur_start}" "${cur_end}" >>"${file}"
+    fi
+}
+
+# 输出一条公开端口区间，单端口区间折叠成单值。
+emit_public_port() {
+    local start="$1"
+    local end="$2"
+
+    if [ "${start}" = "${end}" ]; then
+        printf '%s\n' "${start}"
+    else
+        printf '%s-%s\n' "${start}" "${end}"
+    fi
+}
+
+# 把 IPv4/IPv6 地址或 CIDR 转成二进制前缀串，用于判断网段包含关系。
+# 前缀之间只有「嵌套」和「不相交」两种关系，因此包含关系等价于字符串前缀关系；
+# 全程用字符串比较，避开 bash 算术无法表示 128 位整数的问题。
+addr_to_prefix_bits() {
+    local value="$1"
+    local addr
+    local prefix=""
+    local bits=""
+    local group
+    local i
+    local left_part
+    local right_part=""
+    local pad
+    local o1 o2 o3 o4
+    declare -a groups=()
+    declare -a lgroups=()
+    declare -a rgroups=()
+
+    addr="${value%%/*}"
+    if [[ "${value}" == */* ]]; then
+        prefix="$((10#${value#*/}))"
+    fi
+
+    if [[ "${addr}" != *:* ]]; then
+        [ -n "${prefix}" ] || prefix=32
+        IFS='.' read -r -a groups <<<"${addr}"
+        for group in "${groups[@]}"; do
+            for ((i = 7; i >= 0; i--)); do
+                bits+=$(((group >> i) & 1))
+            done
+        done
+    else
+        [ -n "${prefix}" ] || prefix=128
+        left_part="${addr%%::*}"
+        if [[ "${addr}" == *::* ]]; then
+            right_part="${addr#*::}"
+        else
+            right_part=""
+        fi
+        [ -n "${left_part}" ] && IFS=':' read -r -a lgroups <<<"${left_part}"
+        [ -n "${right_part}" ] && IFS=':' read -r -a rgroups <<<"${right_part}"
+
+        # 内嵌 IPv4 尾部（::ffff:1.2.3.4）换算成两个 16 位组。
+        if [ "${#rgroups[@]}" -gt 0 ] && [[ "${rgroups[${#rgroups[@]} - 1]}" == *.* ]]; then
+            IFS='.' read -r o1 o2 o3 o4 <<<"${rgroups[${#rgroups[@]} - 1]}"
+            unset 'rgroups[${#rgroups[@]}-1]'
+            rgroups+=("$(printf '%x' $((o1 * 256 + o2)))" "$(printf '%x' $((o3 * 256 + o4)))")
+        elif [ "${#lgroups[@]}" -gt 0 ] && [[ "${lgroups[${#lgroups[@]} - 1]}" == *.* ]]; then
+            IFS='.' read -r o1 o2 o3 o4 <<<"${lgroups[${#lgroups[@]} - 1]}"
+            unset 'lgroups[${#lgroups[@]}-1]'
+            lgroups+=("$(printf '%x' $((o1 * 256 + o2)))" "$(printf '%x' $((o3 * 256 + o4)))")
+        fi
+
+        groups=()
+        [ "${#lgroups[@]}" -gt 0 ] && groups+=("${lgroups[@]}")
+        pad=$((8 - ${#lgroups[@]} - ${#rgroups[@]}))
+        for ((i = 0; i < pad; i++)); do
+            groups+=("0")
+        done
+        [ "${#rgroups[@]}" -gt 0 ] && groups+=("${rgroups[@]}")
+
+        for group in "${groups[@]}"; do
+            group="$((16#${group}))"
+            for ((i = 15; i >= 0; i--)); do
+                bits+=$(((group >> i) & 1))
+            done
+        done
+    fi
+
+    printf '%s\n' "${bits:0:${prefix}}"
+}
+
+# 去掉被更宽网段覆盖的地址和网段。
+# nft 的 interval 集合会拒绝重叠元素（老版本没有 auto-merge 可救），
+# 域名解析出的 IP 落进已放行的 CIDR 就会造成这种重叠，每轮刷新都提交失败。
+# 按二进制前缀排序后（分隔符用空格，其码点小于 '0'/'1'，保证父前缀排在子网段前面）
+# 一次线性扫描即可完成裁剪。
+prune_covered_sources() {
+    local file="$1"
+    local keyed
+    local line
+    local bits
+    local cover=""
+
+    [ -s "${file}" ] || return 0
+    ensure_tmp_dir
+    keyed="${TMP_DIR}/prune.keyed"
+
+    while IFS= read -r line || [ -n "${line}" ]; do
+        [ -z "${line}" ] && continue
+        printf '%s %s\n' "$(addr_to_prefix_bits "${line}")" "${line}"
+    done <"${file}" | sort >"${keyed}"
+
+    : >"${file}"
+    while read -r bits line || [ -n "${bits:-}" ]; do
+        [ -z "${line:-}" ] && continue
+        if [ -n "${cover}" ] && [ "${bits:0:${#cover}}" = "${cover}" ]; then
+            log_debug "Pruning ${line}: covered by a broader allowlist entry"
+            continue
+        fi
+        printf '%s\n' "${line}" >>"${file}"
+        cover="${bits}"
+    done <"${keyed}"
+}
+
+# 把端口规格按区间逐行写入公开端口文件。
+expand_public_ports() {
+    local port_spec="$1"
+    local out_file="$2"
+    local range
+    declare -a ranges=()
+
+    IFS=',' read -r -a ranges <<<"${port_spec}"
+    for range in "${ranges[@]}"; do
+        printf '%s\n' "${range}" >>"${out_file}"
+    done
+}
+
+# 解析全部白名单条目，按「来源全端口」「来源+端口」「公开端口」三类分别落盘。
 resolve_allowlist_to_files() {
     local v4_file="$1"
     local v6_file="$2"
+    local v4_port_file="$3"
+    local v6_port_file="$4"
+    local pub_tcp_file="$5"
+    local pub_udp_file="$6"
+    local entries_file
     local entry
+    local src
+    local proto
+    local port
+    local tmp_v4
+    local tmp_v6
     local count
+
+    ensure_tmp_dir
+    entries_file="${TMP_DIR}/resolve.entries"
+    tmp_v4="${TMP_DIR}/entry.v4"
+    tmp_v6="${TMP_DIR}/entry.v6"
+    # 每个域名一次刷新只解析一次的备忘目录，以及本轮要写回的解析缓存。
+    mkdir -p "${TMP_DIR}/dns"
+    : >"${TMP_DIR}/resolve.cache.new"
 
     : >"${v4_file}"
     : >"${v6_file}"
+    : >"${v4_port_file}"
+    : >"${v6_port_file}"
+    : >"${pub_tcp_file}"
+    : >"${pub_udp_file}"
+    RESOLVE_DEGRADED=0
+
+    read_allowlist_entries >"${entries_file}"
+    warn_shadowed_port_entries "${entries_file}"
 
     while IFS= read -r entry || [ -n "${entry}" ]; do
         [ -z "${entry}" ] && continue
-        if is_ipv4_cidr "${entry}"; then
-            printf '%s\n' "${entry}" >>"${v4_file}"
+
+        src="$(entry_src_field "${entry}")"
+        proto=""
+        port=""
+        case "${entry}" in
+            *proto=*)
+                proto="${entry#*proto=}"
+                proto="${proto%% *}"
+                port="${entry#*port=}"
+                port="${port%% *}"
+                ;;
+        esac
+
+        # 没有 src 的条目是公开端口，对所有来源开放，不需要解析。
+        if [ -z "${src}" ]; then
+            case "${proto}" in
+                tcp)
+                    expand_public_ports "${port}" "${pub_tcp_file}"
+                    ;;
+                udp)
+                    expand_public_ports "${port}" "${pub_udp_file}"
+                    ;;
+            esac
             continue
         fi
-        if is_ipv6_cidr "${entry}"; then
-            printf '%s\n' "${entry}" >>"${v6_file}"
+
+        resolve_source_to_files "${src}" "${tmp_v4}" "${tmp_v6}"
+
+        if [ -z "${proto}" ]; then
+            cat "${tmp_v4}" >>"${v4_file}"
+            cat "${tmp_v6}" >>"${v6_file}"
             continue
         fi
-        if is_ipv4 "${entry}"; then
-            printf '%s\n' "${entry}" >>"${v4_file}"
-            continue
-        fi
-        if is_ipv6 "${entry}"; then
-            printf '%s\n' "${entry}" >>"${v6_file}"
-            continue
-        fi
-        log_debug "Resolving ${entry}"
-        resolve_domain "${entry}" "${v4_file}" "${v6_file}"
-    done < <(read_allowlist_entries)
+
+        expand_port_elements "${tmp_v4}" "${proto}" "${port}" "${v4_port_file}"
+        expand_port_elements "${tmp_v6}" "${proto}" "${port}" "${v6_port_file}"
+    done <"${entries_file}"
 
     sort -u "${v4_file}" -o "${v4_file}"
     sort -u "${v6_file}" -o "${v6_file}"
+    sort -u "${v4_port_file}" -o "${v4_port_file}"
+    sort -u "${v6_port_file}" -o "${v6_port_file}"
+    sort -u "${pub_tcp_file}" -o "${pub_tcp_file}"
+    sort -u "${pub_udp_file}" -o "${pub_udp_file}"
 
-    count="$(wc -l <"${v4_file}" | tr -d '[:space:]')"
+    count="$(count_file_lines "${v4_file}")"
     log_info "Collected IPv4 addresses: ${count}"
-    count="$(wc -l <"${v6_file}" | tr -d '[:space:]')"
+    count="$(count_file_lines "${v6_file}")"
     log_info "Collected IPv6 addresses: ${count}"
+    count="$(count_file_lines "${v4_port_file}")"
+    log_info "Collected IPv4 port elements: ${count}"
+    count="$(count_file_lines "${v6_port_file}")"
+    log_info "Collected IPv6 port elements: ${count}"
+    count=$(($(count_file_lines "${pub_tcp_file}") + $(count_file_lines "${pub_udp_file}")))
+    log_info "Collected public port ranges: ${count}"
 }
 
-# 按指定后端确保防火墙门禁规则存在。
-ensure_firewall_rules() {
+# 按指定后端一次性提交规则和集合内容。
+apply_firewall() {
     local backend="$1"
+    shift
 
     case "${backend}" in
         nft)
-            nft_ensure_rules
+            nft_apply "$@"
             ;;
         iptables)
-            iptables_ensure_rules
+            iptables_apply "$@"
             ;;
         *)
             die "Invalid active backend: ${backend}"
@@ -1348,23 +2757,56 @@ ensure_firewall_rules() {
     esac
 }
 
-# 按指定后端刷新 IP 集合。
-update_firewall_sets() {
+# 检查当前后端能否承载白名单里的端口条目，不支持时在改动规则之前就失败。
+require_port_support() {
     local backend="$1"
-    local v4_file="$2"
-    local v6_file="$3"
+    local v4_port_file="$2"
+    local v6_port_file="$3"
+
+    if [ "$(count_file_lines "${v4_port_file}")" -eq 0 ] &&
+        [ "$(count_file_lines "${v6_port_file}")" -eq 0 ]; then
+        return 0
+    fi
 
     case "${backend}" in
         nft)
-            nft_update_sets "${v4_file}" "${v6_file}"
+            # 端口条目按逐条规则生成，不依赖 concat 集合，任何 nft 版本都可用。
             ;;
         iptables)
-            iptables_update_sets "${v4_file}" "${v6_file}"
-            ;;
-        *)
-            die "Invalid active backend: ${backend}"
+            command_exists ipset || die "Allowlist contains port entries but ipset is missing"
+            # ipset 的 hash:net,port 会把端口区间展开成逐个端口存储，
+            # 大区间会迅速吃满 maxelem（默认 65536），因此提前拦住。
+            require_sane_port_ranges "${v4_port_file}"
+            require_sane_port_ranges "${v6_port_file}"
             ;;
     esac
+}
+
+# ipset 后端下拒绝跨度过大的端口区间，否则会撑爆集合。
+require_sane_port_ranges() {
+    local file="$1"
+    local line
+    local range
+    local start
+    local end
+    local span
+
+    [ -f "${file}" ] || return 0
+
+    while IFS= read -r line || [ -n "${line}" ]; do
+        [ -z "${line}" ] && continue
+        range="${line##* . }"
+        case "${range}" in
+            *-*)
+                start="${range%%-*}"
+                end="${range##*-}"
+                span=$((end - start + 1))
+                if [ "${span}" -gt 1024 ]; then
+                    die "Port range ${range} spans ${span} ports; the iptables backend stores each port individually and would exhaust the ipset. Narrow the range or switch to the nft backend."
+                fi
+                ;;
+        esac
+    done <"${file}"
 }
 
 # 检测当前是否存在本工具创建的运行时防火墙对象。
@@ -1497,6 +2939,8 @@ log_resolved_delta() {
 }
 
 # 成功刷新防火墙后保存本次解析结果，供下一次刷新生成差异日志。
+# 域名级别的 DNS 回退由 resolve.cache 承担，这两个文件只用于 delta 日志和
+# status 的刷新时效告警，因此每次成功提交后无条件更新。
 save_resolved_snapshot() {
     local current_v4="$1"
     local current_v6="$2"
@@ -1512,12 +2956,30 @@ save_resolved_snapshot() {
     chmod 0644 "${LAST_V4_FILE}" "${LAST_V6_FILE}"
 }
 
-# 执行一次完整刷新：解析白名单、确保规则、更新 set。
+# 落盘本轮的域名解析缓存。缓存按域名存储：
+# 解析成功的域名写入新鲜结果，失败的域名沿用旧缓存，已删除的域名自然被清出。
+save_resolve_cache() {
+    ensure_app_dir
+    if [ "${DRY_RUN}" -eq 1 ]; then
+        log_info "Would save DNS resolve cache"
+        return 0
+    fi
+
+    [ -f "${TMP_DIR}/resolve.cache.new" ] || return 0
+    atomic_write_file "${RESOLVE_CACHE_FILE}" 0644 <"${TMP_DIR}/resolve.cache.new"
+}
+
+# 执行一次完整刷新：解析白名单、生成规则、原子提交。
 refresh_now() {
     local backend="$1"
     local count
+    local total
     local v4_file
     local v6_file
+    local v4_port_file
+    local v6_port_file
+    local pub_tcp_file
+    local pub_udp_file
 
     validate_config_values
     count="$(allowlist_count)"
@@ -1528,24 +2990,56 @@ refresh_now() {
     ensure_tmp_dir
     v4_file="${TMP_DIR}/resolved.v4"
     v6_file="${TMP_DIR}/resolved.v6"
-    resolve_allowlist_to_files "${v4_file}" "${v6_file}"
-    ensure_firewall_rules "${backend}"
-    update_firewall_sets "${backend}" "${v4_file}" "${v6_file}"
+    v4_port_file="${TMP_DIR}/resolved.v4port"
+    v6_port_file="${TMP_DIR}/resolved.v6port"
+    pub_tcp_file="${TMP_DIR}/resolved.pubtcp"
+    pub_udp_file="${TMP_DIR}/resolved.pubudp"
+
+    resolve_allowlist_to_files "${v4_file}" "${v6_file}" \
+        "${v4_port_file}" "${v6_port_file}" "${pub_tcp_file}" "${pub_udp_file}"
+
+    if [ "${RESOLVE_DEGRADED}" -eq 1 ]; then
+        log_change "DNS resolution was degraded; affected domains fell back to cached addresses where available"
+    fi
+
+    # 同一来源的端口区间在写入前合并，减少生成的规则/元素数量；
+    # 公开端口集合是 interval 集合，重叠区间不合并的话 nft 提交会失败。
+    merge_port_elements "${v4_port_file}"
+    merge_port_elements "${v6_port_file}"
+    merge_public_ports "${pub_tcp_file}"
+    merge_public_ports "${pub_udp_file}"
+
+    # 裁掉被更宽网段覆盖的来源。nft 的 interval 集合拒绝重叠元素，
+    # 域名解析出的 IP 落进已放行的 CIDR 时，不裁剪就会每轮提交失败。
+    prune_covered_sources "${v4_file}"
+    prune_covered_sources "${v6_file}"
+
+    # 最后的兜底闸门：解析结果全空就拒绝提交。
+    # 只靠缓存回退是不够的——首次 enable 或缓存缺失时无处可退，
+    # 空集合配上末尾的 drop 就是整机失联，而且命令还会返回成功。
+    total=$(($(count_file_lines "${v4_file}") + $(count_file_lines "${v6_file}") +
+        $(count_file_lines "${v4_port_file}") + $(count_file_lines "${v6_port_file}") +
+        $(count_file_lines "${pub_tcp_file}") + $(count_file_lines "${pub_udp_file}")))
+    if [ "${total}" -eq 0 ]; then
+        if [ "${YES}" -eq 0 ]; then
+            die "Refusing to apply an empty allowlist: every entry failed to resolve and no cached addresses exist. This would drop all new inbound traffic. Fix DNS or use --yes to proceed anyway."
+        fi
+        log_warn "Applying an empty allowlist because --yes was given; all new inbound traffic will be dropped"
+    fi
+
+    require_port_support "${backend}" "${v4_port_file}" "${v6_port_file}"
+    apply_firewall "${backend}" "${v4_file}" "${v6_file}" \
+        "${v4_port_file}" "${v6_port_file}" "${pub_tcp_file}" "${pub_udp_file}"
     log_resolved_delta "${v4_file}" "${v6_file}"
     save_resolved_snapshot "${v4_file}" "${v6_file}"
+    save_resolve_cache
+
     log_info "Refresh completed with backend: ${backend}"
 }
 
-# 启用状态下配置变化后重建规则、刷新 set 并更新调度任务。
-refresh_runtime_after_config_change() {
-    local backend
-
-    load_state
-    [ "${STATE_ENABLED}" = "1" ] || return 0
-    require_linux
-    require_root
-    backend="$(detect_backend)"
-    case "${backend}" in
+# 清理指定后端创建的全部防火墙对象。
+cleanup_backend() {
+    case "$1" in
         nft)
             nft_cleanup
             ;;
@@ -1553,7 +3047,37 @@ refresh_runtime_after_config_change() {
             iptables_cleanup
             ;;
     esac
+}
+
+# 后端发生切换时，在「新后端已就绪」之后清理旧后端。
+# 顺序不能反：先拆旧后端会留出一段完全没有门禁的 fail-open 窗口，
+# 而且新后端一旦构建失败，机器就彻底没有防护了。两套门禁短暂共存是安全的
+# ——重叠期内流量需要同时通过两道闸，只会偏严不会偏松。
+cleanup_previous_backend() {
+    local previous="$1"
+    local backend="$2"
+
+    [ -n "${previous}" ] || return 0
+    [ "${previous}" != "${backend}" ] || return 0
+
+    log_info "Backend changed from ${previous} to ${backend}; cleaning up the previous backend"
+    cleanup_backend "${previous}"
+}
+
+# 启用状态下配置变化后重建规则、刷新 set 并更新调度任务。
+refresh_runtime_after_config_change() {
+    local backend
+    local previous
+
+    load_state
+    [ "${STATE_ENABLED}" = "1" ] || return 0
+    require_linux
+    require_root
+    backend="$(detect_backend)"
+    previous="${STATE_BACKEND:-}"
+
     refresh_now "${backend}"
+    cleanup_previous_backend "${previous}" "${backend}"
     install_scheduler
     save_state "1" "${backend}"
 }
@@ -1628,18 +3152,23 @@ EOF
 }
 
 # 按配置安装调度器；调度器不可用时只保留手工 refresh。
+# 先移除另一种调度器：否则从 systemd 切到 cron 后两套定时任务并行触发，
+# 切到 none 后旧任务仍按周期刷新，用户关闭调度的意图不生效。
 install_scheduler() {
     local scheduler
 
     scheduler="$(detect_scheduler)"
     case "${scheduler}" in
         systemd)
+            disable_cron_scheduler
             install_systemd_scheduler
             ;;
         cron)
+            disable_systemd_scheduler
             install_cron_scheduler
             ;;
         none)
+            disable_scheduler
             log_warn "No scheduler installed; run refresh manually or set SCHEDULER"
             ;;
     esac
@@ -1686,16 +3215,22 @@ init_command() {
 # 启用白名单：落盘配置、创建规则、刷新 set、安装定时任务。
 enable_command() {
     local backend
+    local previous
 
     require_linux
     require_root
     ensure_default_config
     load_config
+    load_state
     parse_config_options "$@"
     save_config
 
     backend="$(detect_backend)"
+    previous="${STATE_BACKEND:-}"
     refresh_now "${backend}"
+    # 与 config set 路径一致：换后端启用时清掉旧后端，
+    # 否则旧后端冻结的门禁会继续丢弃后来新增来源的流量。
+    cleanup_previous_backend "${previous}" "${backend}"
     save_state "1" "${backend}"
     install_scheduler
     log_info "Domain whitelist enabled with backend: ${backend}"
@@ -1718,6 +3253,7 @@ disable_command() {
 # 手工刷新白名单 set；服务和 cron 也调用该命令。
 refresh_command() {
     local backend
+    local runtime_backend
 
     require_linux
     if [ "${DRY_RUN}" -eq 0 ]; then
@@ -1726,6 +3262,25 @@ refresh_command() {
     ensure_default_config
     load_config
     load_state
+    # 未启用时拒绝刷新。否则管理员因为出问题而 disable 之后，
+    # 任何一次手工 refresh 或残留的旧 cron 都会把门禁悄悄装回去，
+    # 而 state.env 仍记录为未启用，状态自相矛盾。
+    # 三个例外：
+    #   --dry-run 只做预览，不改任何东西，放行；
+    #   运行时已存在本工具的门禁对象——说明 disable 并没有发生过，多半是
+    #     state.env 丢失后被重建成了 ENABLED=0，此时拒绝刷新只会让已装的
+    #     DROP 规则持续变陈旧，应该继续刷新并提示状态不一致；
+    #   --force 显式强制。用独立开关而不是复用 --yes：--yes 同时豁免着
+    #     「应用空白名单」这类会失联的闸门，不能被顺带确认掉。
+    if [ "${STATE_ENABLED}" != "1" ] && [ "${DRY_RUN}" -eq 0 ] && [ "${FORCE}" -eq 0 ]; then
+        runtime_backend="$(detect_runtime_backend || true)"
+        if [ -n "${runtime_backend}" ]; then
+            log_change "State file says disabled but the ${runtime_backend} gate is installed; refreshing it anyway (run '${SCRIPT_NAME} enable' to fix the state)"
+        else
+            die "Domain whitelist is not enabled; run '${SCRIPT_NAME} enable' first, or pass --force to refresh anyway"
+        fi
+    fi
+
     backend="${STATE_BACKEND:-}"
     if [ -z "${backend}" ]; then
         backend="$(detect_backend)"
@@ -1763,6 +3318,8 @@ status_command() {
     local runtime_backend
     local effective_enabled
     local scheduler_status
+    local installed
+    local snapshot_age
 
     ensure_default_config
     load_config
@@ -1777,6 +3334,12 @@ status_command() {
         effective_enabled="1"
     fi
 
+    installed="$(installed_version)"
+    snapshot_age="$(file_age_seconds "${LAST_V4_FILE}")"
+
+    printf 'version=%s\n' "${DWL_VERSION}"
+    printf 'installed_version=%s\n' "${installed}"
+    printf 'scheduler_exec_path=%s\n' "$(manager_exec_path)"
     printf 'enabled=%s\n' "${effective_enabled}"
     printf 'state_enabled=%s\n' "${STATE_ENABLED}"
     printf 'runtime_backend=%s\n' "$(format_enum "${runtime_backend:-none}" nft iptables none)"
@@ -1784,13 +3347,26 @@ status_command() {
     printf 'configured_backend=%s\n' "$(format_enum "${CONFIG_BACKEND}" auto nft iptables)"
     printf 'allowlist_entries=%s\n' "${entries}"
     printf 'refresh_interval=%s\n' "${REFRESH_INTERVAL}"
-    printf 'set_timeout=%s\n' "${SET_TIMEOUT}"
+    printf 'ipv6_mode=%s\n' "$(format_enum "${IPV6_MODE}" on off)"
+    printf 'icmpv6_accept_ra=%s\n' "${ICMPV6_ACCEPT_RA}"
+    printf 'icmpv6_accept_mld=%s\n' "${ICMPV6_ACCEPT_MLD}"
+    printf 'icmpv6_accept_echo=%s\n' "${ICMPV6_ACCEPT_ECHO}"
+    printf 'icmpv6_accept_redirect=%s\n' "${ICMPV6_ACCEPT_REDIRECT}"
     printf 'scheduler=%s\n' "$(format_enum "${scheduler:-unknown}" systemd cron none)"
     printf 'scheduler_state=%s\n' "${scheduler_status}"
+    printf 'last_refresh_age_seconds=%s\n' "${snapshot_age}"
     printf 'config_file=%s\n' "${CONFIG_FILE}"
     printf 'allowlist_file=%s\n' "${ALLOWLIST_FILE}"
     printf 'last_v4_file=%s\n' "${LAST_V4_FILE}"
     printf 'last_v6_file=%s\n' "${LAST_V6_FILE}"
+
+    if [ "${installed}" != "not-installed" ] && [ "${installed}" != "${DWL_VERSION}" ]; then
+        log_warn "Installed copy is ${installed} but this script is ${DWL_VERSION}; run install.sh to deploy it"
+    fi
+    # 刷新任务停摆不再会自动清空集合，但规则会逐渐过期，仍然需要及时发现。
+    if [ "${snapshot_age}" -gt 0 ] && [ "${snapshot_age}" -gt $((REFRESH_INTERVAL * 4)) ]; then
+        log_warn "Last successful refresh was ${snapshot_age}s ago, far beyond the ${REFRESH_INTERVAL}s interval; check the scheduler"
+    fi
 }
 
 # 展示 logs 子命令帮助。
@@ -1990,6 +3566,9 @@ doctor_command() {
     printf 'ipset=%s\n' "$(command_exists ipset && printf yes || printf no)"
     printf 'backend_candidate=%s\n' "${candidate_backend}"
     printf 'scheduler_candidate=%s\n' "${candidate_scheduler}"
+    printf 'version=%s\n' "${DWL_VERSION}"
+    printf 'installed_version=%s\n' "$(installed_version)"
+    printf 'cksum=%s\n' "$(command_exists cksum && printf yes || printf no)"
     printf 'config_exists=%s\n' "$([ -f "${CONFIG_FILE}" ] && printf yes || printf no)"
     printf 'allowlist_exists=%s\n' "$([ -f "${ALLOWLIST_FILE}" ] && printf yes || printf no)"
     printf 'last_v4_exists=%s\n' "$([ -f "${LAST_V4_FILE}" ] && printf yes || printf no)"
@@ -2002,6 +3581,19 @@ main() {
 
     parse_global_args "$@"
     command="${POSITIONAL_ARGS[0]:-}"
+
+    # 必须在任何命令替换之前建好临时目录。否则第一个触发 ensure_tmp_dir 的调用
+    # 发生在 $() 子 shell 里，TMP_DIR 传不回父进程，子 shell 里的 EXIT trap 也不清理，
+    # 于是每次运行都残留一个 /tmp/tmp.XXXX，按 300 秒刷新就是每天近 300 个。
+    ensure_tmp_dir
+
+    # 会改动防火墙或配置的命令串行执行，避免定时刷新和手工操作交错。
+    # edit 不在此列：它在编辑器退出后自行加锁，避免整个编辑会话都占着锁。
+    case "${command}" in
+        enable | disable | refresh | add | remove | rm | delete | config)
+            acquire_lock
+            ;;
+    esac
 
     case "${command}" in
         init)
@@ -2039,6 +3631,9 @@ main() {
             ;;
         doctor)
             doctor_command "${POSITIONAL_ARGS[@]:1}"
+            ;;
+        version|--version|-V)
+            version_command
             ;;
         -h|--help|"")
             usage
