@@ -119,18 +119,19 @@ office.example.com
 2001:db8::/32
 
 # key=value：可附加端口维度
-src=office.example.com  proto=tcp  port=22
-src=203.0.113.0/24      proto=tcp  port=22,443
-src=10.0.0.5            proto=tcp  port=8000-8100
+src=office.example.com  proto=tcp  dport=22
+src=203.0.113.0/24      proto=tcp  dport=22,443
+src=10.0.0.5            proto=tcp  dport=8000-8100
 
 # 省略 src 表示该端口对所有来源开放
-proto=udp  port=51820      # wireguard
-proto=tcp  port=443
+proto=udp  dport=51820      # wireguard
+proto=tcp  dport=443
 ```
 
-字段：`src`（域名 / IPv4 / IPv6 / CIDR）、`proto`（`tcp` 或 `udp`）、`port`
-（单端口、逗号列表、连字符区间，可混写）。`proto` 与 `port` 必须成对出现，
-未知字段会直接报错而不是被忽略。完整示例写在文件头部注释里，`edit` 打开即可参照。
+字段：`src`（域名 / IPv4 / IPv6 / CIDR）、`proto`（`tcp` 或 `udp`）、`dport`
+（目的端口，即本机被访问的服务端口；单端口、逗号列表、连字符区间，可混写）。
+`proto` 与 `dport` 必须成对出现，未知字段会直接报错而不是被忽略——包括 `port=`，
+避免被误读成源端口。完整示例写在文件头部注释里，`edit` 打开即可参照。
 
 同一来源如果既写了裸来源又写了端口限定，裸来源优先（全端口放行），
 端口限定不起作用，校验时会给出警告。

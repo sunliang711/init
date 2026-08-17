@@ -134,9 +134,9 @@ usage() {
   list
       列出当前启用的白名单条目。
 
-  add <domain|ip|cidr> [domain|ip|cidr...] [--proto tcp|udp --port <spec>]
+  add <domain|ip|cidr> [domain|ip|cidr...] [--proto tcp|udp --dport <spec>]
       添加一个或多个域名、IPv4、IPv6 或 CIDR 网段。启用状态下会自动刷新防火墙 set。
-      同时给出 --proto 和 --port 时，这些来源只放行指定端口。
+      同时给出 --proto 和 --dport 时，这些来源只放行指定的目的端口。
 
   remove <domain|ip|cidr> [domain|ip|cidr...]
       按来源移除白名单条目，该来源的全部端口规则一并删除。启用状态下会自动刷新防火墙 set。
@@ -201,7 +201,7 @@ usage() {
 示例:
   sudo ${SCRIPT_NAME} init
   sudo ${SCRIPT_NAME} add office.example.com 203.0.113.10 192.168.1.0/24 2001:db8::/32
-  sudo ${SCRIPT_NAME} add office.example.com --proto tcp --port 22,443
+  sudo ${SCRIPT_NAME} add office.example.com --proto tcp --dport 22,443
   sudo ${SCRIPT_NAME} config set --backend auto --interval 300
   sudo ${SCRIPT_NAME} enable
   sudo ${SCRIPT_NAME} status
@@ -389,12 +389,13 @@ allowlist_file_header() {
 #
 # ── 可用字段 ────────────────────────────────────────────────
 #   src=<域名|IPv4|IPv6|CIDR>   来源。省略表示「任意来源」
-#   proto=<tcp|udp>            协议。必须与 port 同时出现
-#   port=<端口规格>             端口。必须与 proto 同时出现
+#   proto=<tcp|udp>            协议。必须与 dport 同时出现
+#   dport=<端口规格>            目的端口（本机被访问的服务端口，不是来源端口）。
+#                              必须与 proto 同时出现
 #
 # 端口规格支持单个端口、逗号列表、连字符区间，可混写：
-#   port=22            port=22,443            port=8000-8100
-#   port=22,8000-8100
+#   dport=22           dport=22,443           dport=8000-8100
+#   dport=22,8000-8100
 #
 # ── 示例 ────────────────────────────────────────────────────
 #
@@ -408,19 +409,19 @@ allowlist_file_header() {
 # 同上，key=value 写法，效果一致：
 # src=office.example.com
 #
-# 只放行来源的指定端口：
-# src=office.example.com  proto=tcp  port=22
-# src=203.0.113.0/24      proto=tcp  port=22,443
-# src=2001:db8:1::/64     proto=udp  port=51820
-# src=10.0.0.5            proto=tcp  port=8000-8100
+# 只放行来源访问指定的目的端口：
+# src=office.example.com  proto=tcp  dport=22
+# src=203.0.113.0/24      proto=tcp  dport=22,443
+# src=2001:db8:1::/64     proto=udp  dport=51820
+# src=10.0.0.5            proto=tcp  dport=8000-8100
 #
 # 同一个来源可以写多行，分别限定不同协议：
-# src=10.0.0.5  proto=tcp  port=5432
-# src=10.0.0.5  proto=udp  port=53
+# src=10.0.0.5  proto=tcp  dport=5432
+# src=10.0.0.5  proto=udp  dport=53
 #
 # 省略 src 表示该端口对所有来源开放，用于 WireGuard、公网 HTTPS 等公开服务：
-# proto=udp  port=51820      # wireguard
-# proto=tcp  port=443
+# proto=udp  dport=51820      # wireguard
+# proto=tcp  dport=443
 #
 # 注意：同一个来源如果既写了裸来源、又写了带端口的行，
 # 裸来源优先（全端口放行），端口限定会失效，校验时会给出警告。
@@ -938,9 +939,13 @@ parse_allowlist_line() {
                 [ -z "${proto}" ] || die "Duplicate key 'proto' in line: ${raw}"
                 proto="$(normalize_proto "${value}")"
                 ;;
-            port)
-                [ -z "${port}" ] || die "Duplicate key 'port' in line: ${raw}"
+            dport)
+                [ -z "${port}" ] || die "Duplicate key 'dport' in line: ${raw}"
                 port="$(normalize_port_spec "${value}")"
+                ;;
+            port)
+                # 键名固定叫 dport：挨着 src 的 port 容易被误读成源端口。
+                die "Unknown allowlist key 'port' in line: ${raw} (destination ports use 'dport')"
                 ;;
             *)
                 die "Unknown allowlist key '${key}' in line: ${raw}"
@@ -948,23 +953,23 @@ parse_allowlist_line() {
         esac
     done
 
-    # proto 和 port 必须成对出现，否则语义不明确，宁可让用户显式写清楚。
+    # proto 和 dport 必须成对出现，否则语义不明确，宁可让用户显式写清楚。
     if [ -n "${proto}" ] && [ -z "${port}" ]; then
-        die "Key 'proto' requires 'port' in line: ${raw}"
+        die "Key 'proto' requires 'dport' in line: ${raw}"
     fi
     if [ -n "${port}" ] && [ -z "${proto}" ]; then
-        die "Key 'port' requires 'proto' in line: ${raw}"
+        die "Key 'dport' requires 'proto' in line: ${raw}"
     fi
     if [ -z "${src}" ] && [ -z "${port}" ]; then
-        die "Allowlist line has neither 'src' nor 'port': ${raw}"
+        die "Allowlist line has neither 'src' nor 'dport': ${raw}"
     fi
 
     if [ -n "${src}" ] && [ -n "${port}" ]; then
-        printf 'src=%s proto=%s port=%s\n' "${src}" "${proto}" "${port}"
+        printf 'src=%s proto=%s dport=%s\n' "${src}" "${proto}" "${port}"
     elif [ -n "${src}" ]; then
         printf 'src=%s\n' "${src}"
     else
-        printf 'proto=%s port=%s\n' "${proto}" "${port}"
+        printf 'proto=%s dport=%s\n' "${proto}" "${port}"
     fi
 }
 
@@ -1100,10 +1105,13 @@ add_command() {
                 proto="$2"
                 shift 2
                 ;;
-            --port)
-                [ "$#" -ge 2 ] || die "Missing value for --port"
+            --dport)
+                [ "$#" -ge 2 ] || die "Missing value for --dport"
                 port="$2"
                 shift 2
+                ;;
+            --port)
+                die "Unknown option: --port (destination ports use --dport)"
                 ;;
             *)
                 sources+=("$1")
@@ -1114,17 +1122,17 @@ add_command() {
 
     [ "${#sources[@]}" -gt 0 ] || die "Missing allowlist entry"
     if [ -n "${proto}" ] && [ -z "${port}" ]; then
-        die "--proto requires --port"
+        die "--proto requires --dport"
     fi
     if [ -n "${port}" ] && [ -z "${proto}" ]; then
-        die "--port requires --proto"
+        die "--dport requires --proto"
     fi
 
     backup_allowlist_file
 
     for entry in "${sources[@]}"; do
         if [ -n "${proto}" ]; then
-            normalized="$(parse_allowlist_line "src=${entry} proto=${proto} port=${port}")"
+            normalized="$(parse_allowlist_line "src=${entry} proto=${proto} dport=${port}")"
         else
             normalized="$(parse_allowlist_line "${entry}")"
         fi
@@ -2690,7 +2698,7 @@ resolve_allowlist_to_files() {
             *proto=*)
                 proto="${entry#*proto=}"
                 proto="${proto%% *}"
-                port="${entry#*port=}"
+                port="${entry#*dport=}"
                 port="${port%% *}"
                 ;;
         esac
