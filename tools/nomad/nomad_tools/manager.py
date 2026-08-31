@@ -527,6 +527,69 @@ def cmd_host_volume_add(args: argparse.Namespace) -> int:
     return 0
 
 
+def read_host_volume_path(name: str) -> Path | None:
+    config = host_volume_config_path(name)
+    if not is_managed_file(config):
+        return None
+    try:
+        content = config.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r'^\s*path\s*=\s*"([^"]*)"', content, re.MULTILINE)
+    if not match or not match.group(1).strip():
+        return None
+    return Path(match.group(1))
+
+
+def ensure_purgeable_host_volume_path(path: Path) -> None:
+    resolved = path.resolve(strict=False)
+    protected = [Path("/"), NOMAD_ROOT_DIR, HOST_VOLUME_DIR, CONFIG_DIR, DATA_DIR, BIN_DIR, TOOL_DIR, TOOL_STATE_DIR]
+    for item in protected:
+        target = item.resolve(strict=False)
+        if resolved == target or resolved in target.parents:
+            raise CLIError(f"Refuse to purge host volume path: {resolved}")
+
+
+def confirm_host_volume_purge(path: Path, assume_yes: bool) -> None:
+    if assume_yes:
+        return
+    try:
+        answer = input(f"Delete host volume data directory {path}? Type yes to continue: ")
+    except EOFError as exc:
+        raise CLIError("Host volume purge requires confirmation. Re-run with --yes for non-interactive use") from exc
+    if answer != "yes":
+        raise CLIError("Host volume purge cancelled")
+
+
+def cmd_host_volume_remove(args: argparse.Namespace) -> int:
+    validate_name(args.name, "host volume name")
+    path = read_host_volume_path(args.name)
+    assumed = path is None
+    if path is None:
+        path = resolve_host_volume_path(args.name, None)
+    if args.purge and path.exists():
+        ensure_purgeable_host_volume_path(path)
+        if assumed:
+            log_warn(f"Host volume path is missing from the config, assuming the default path: {path}")
+        confirm_host_volume_purge(path, args.yes)
+    remove_managed_file(host_volume_config_path(args.name))
+    if not path.exists():
+        if args.purge:
+            log_success(f"Host volume data already absent: {path}")
+        return 0
+    if args.purge:
+        log_info(f"Removing host volume data: {path}")
+        safe_remove_path(path)
+        log_success(f"Host volume data removed: {path}")
+        return 0
+    if assumed:
+        log_warn(f"Host volume data may still exist at the default path: {path}")
+    else:
+        log_warn(f"Host volume data preserved: {path}")
+    log_warn(f"Remove it with: {shell_command([NOMAD_MANAGER_CMD, 'host-volume', 'remove', args.name, '--purge'])}")
+    return 0
+
+
 def read_meta_pairs() -> dict[str, str]:
     if not META_CONFIG.is_file() or not is_managed_file(META_CONFIG):
         return {}
@@ -2417,6 +2480,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=f"""Examples:
   {NOMAD_MANAGER_CMD} host-volume add data --create
   nomad-job scaffold docker --job web --image nginx:1.27 --host-volume data:/opt/data:rw --out jobs/web.nomad.hcl
+  {NOMAD_MANAGER_CMD} host-volume remove data --purge
 """,
     )
     hv_sub = host_volume.add_subparsers(dest="host_volume_command")
@@ -2446,9 +2510,22 @@ Scaffold a job:
     hv_add.set_defaults(read_only=False)
     hv_add.add_argument("--create", action="store_true", help="Create the host path if it does not exist")
     hv_add.set_defaults(func=cmd_host_volume_add)
-    hv_remove = hv_sub.add_parser("remove", help="Remove a managed host volume config")
+    hv_remove = hv_sub.add_parser(
+        "remove",
+        help="Remove a managed host volume config",
+        description="Remove a managed Nomad client host volume config.",
+        epilog=f"""Examples:
+  {NOMAD_MANAGER_CMD} host-volume remove data
+  {NOMAD_MANAGER_CMD} host-volume remove data --purge
+  {NOMAD_MANAGER_CMD} host-volume remove data --purge --yes
+
+The host volume data directory is preserved unless --purge is given.
+""",
+    )
     hv_remove.add_argument("name", help="Host volume name")
-    hv_remove.set_defaults(func=lambda args: remove_managed_file(host_volume_config_path(args.name)) or 0)
+    hv_remove.add_argument("--purge", action="store_true", help="Also delete the host volume data directory")
+    hv_remove.add_argument("--yes", action="store_true", help="Skip the interactive confirmation for --purge")
+    hv_remove.set_defaults(func=cmd_host_volume_remove)
 
     meta = sub.add_parser("meta", help="Manage client meta")
     meta_sub = meta.add_subparsers(dest="meta_command")
