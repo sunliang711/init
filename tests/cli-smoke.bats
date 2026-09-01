@@ -113,3 +113,26 @@ setup() {
 
     [ "${status}" -eq 0 ]
 }
+
+@test "nomad-manager doctor reads managed config values" {
+    run python3 "${REPO_ROOT}/tests/test_nomad_manager_doctor.py"
+
+    [ "${status}" -eq 0 ]
+}
+
+@test "nomad-manager status shows the effective configuration" {
+    run "${REPO_ROOT}/tools/nomad/nomad-manager" status
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"Managed configuration:"* ]]
+    [[ "${output}" == *"Host volumes:"* ]]
+    [[ "${output}" == *"Client meta:"* ]]
+}
+
+@test "nomad-manager doctor reports node and host volume sections" {
+    run "${REPO_ROOT}/tools/nomad/nomad-manager" doctor
+
+    [[ "${output}" == *"Node runtime:"* ]]
+    [[ "${output}" == *"Node configuration:"* ]]
+    [[ "${output}" == *"Host volumes:"* ]]
+}

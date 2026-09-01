@@ -157,7 +157,8 @@ def is_managed_file(path: Path) -> bool:
     if not path.is_file():
         return False
     try:
-        first_line = path.open("r", encoding="utf-8").readline().rstrip("\n")
+        with path.open("r", encoding="utf-8") as handle:
+            first_line = handle.readline().rstrip("\n")
     except OSError:
         return False
     return first_line == MANAGED_MARKER
@@ -843,8 +844,9 @@ def install_cni_plugins(version: str) -> None:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def cni_client_config_content() -> str:
-    body = "\n".join(
+def cni_client_config_content(version: str = "") -> str:
+    lines = [f"# cni_plugin_version = {version}"] if version else []
+    lines.extend(
         [
             "client {",
             f"  cni_path       = {hcl_string(CNI_BIN_DIR)}",
@@ -852,7 +854,7 @@ def cni_client_config_content() -> str:
             "}",
         ]
     )
-    return managed_config(body)
+    return managed_config("\n".join(lines))
 
 
 def cni_sysctl_content() -> str:
@@ -895,12 +897,17 @@ def apply_cni_sysctl() -> None:
         run_root(["sysctl", "-p", str(CNI_SYSCTL_CONFIG)])
 
 
-def write_cni_client_config(*, restart: bool) -> None:
+def installed_cni_version() -> str:
+    match = re.search(r"(?m)^#\s*cni_plugin_version\s*=\s*(\S+)", read_config_text(CNI_CLIENT_CONFIG))
+    return match.group(1) if match else ""
+
+
+def write_cni_client_config(version: str = "", *, restart: bool) -> None:
     if restart:
-        commit_managed_file(CNI_CLIENT_CONFIG, cni_client_config_content())
+        commit_managed_file(CNI_CLIENT_CONFIG, cni_client_config_content(version))
         return
     ensure_managed_or_absent(CNI_CLIENT_CONFIG)
-    install_text(CNI_CLIENT_CONFIG, cni_client_config_content(), mode="0644")
+    install_text(CNI_CLIENT_CONFIG, cni_client_config_content(version), mode="0644")
 
 
 def enable_cni(version: str, *, restart: bool) -> None:
@@ -909,7 +916,7 @@ def enable_cni(version: str, *, restart: bool) -> None:
     install_cni_plugins(version)
     run_root(["install", "-d", "-m", "0755", str(CNI_CONFIG_DIR)])
     apply_cni_sysctl()
-    write_cni_client_config(restart=restart)
+    write_cni_client_config(version, restart=restart)
     if not restart:
         validate_nomad_config()
     log_success("Nomad CNI configuration enabled")
@@ -964,6 +971,7 @@ def read_proc_sysctl(path: Path) -> str:
 def cmd_cni_status(_: argparse.Namespace) -> int:
     plugins = ["bridge", "loopback", "host-local", "portmap", "firewall"]
     failures = 0
+    doctor_info(f"plugin version = {unset_label(installed_cni_version())}")
     for plugin in plugins:
         path = CNI_BIN_DIR / plugin
         status = "OK" if os.access(path, os.X_OK) else "FAIL"
@@ -989,9 +997,144 @@ def doctor_check(status: str, message: str) -> None:
         "OK": (terminal_status_prefix(), COLOR_GREEN),
         "WARN": ("WARN", COLOR_YELLOW),
         "FAIL": ("FAIL", COLOR_RED),
+        "INFO": ("INFO", ""),
     }
     label, color = labels.get(status, (status, ""))
-    print(f"{color_text(f'{label:<5}', color)} {message}")
+    prefix = f"{label:<5}"
+    print(f"{color_text(prefix, color) if color else prefix} {message}")
+
+
+def doctor_info(message: str) -> None:
+    """Report an effective setting. Informational only; never counted as a failure."""
+    doctor_check("INFO", message)
+
+
+def hcl_block_body(text: str, block: str) -> str:
+    """Return the body of a `<block> {` ... `}` section from a managed config."""
+    match = re.search(rf"(?m)^\s*{re.escape(block)}\s*\{{", text)
+    if not match:
+        return ""
+    start = text.index("{", match.start())
+    depth = 0
+    for index in range(start, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:index]
+    return ""
+
+
+def hcl_text_value(text: str, key: str) -> str:
+    match = re.search(rf'(?m)^\s*{re.escape(key)}\s*=\s*(".*?"|true|false|\[[^\]]*\]|\S+)', text)
+    return match.group(1).strip().strip('"') if match else ""
+
+
+def read_config_text(path: Path) -> str:
+    if not is_managed_file(path):
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def unset_label(value: str) -> str:
+    return value if value else "<unset>"
+
+
+def docker_config_values() -> dict[str, str]:
+    config = hcl_block_body(read_config_text(DOCKER_CONFIG), "config")
+    if not config:
+        return {}
+    gc = hcl_block_body(config, "gc")
+    return {
+        "allow_privileged": hcl_text_value(config, "allow_privileged"),
+        "volumes": hcl_text_value(hcl_block_body(config, "volumes"), "enabled"),
+        "image_gc": hcl_text_value(gc, "image"),
+        "image_delay": hcl_text_value(gc, "image_delay"),
+        "auth_config": hcl_text_value(hcl_block_body(config, "auth"), "config"),
+    }
+
+
+def tls_config_values() -> dict[str, str]:
+    text = read_config_text(TLS_CONFIG)
+    if not text:
+        return {}
+    return {key: hcl_text_value(text, key) for key in
+            ("http", "rpc", "ca_file", "cert_file", "key_file", "verify_server_hostname", "verify_https_client")}
+
+
+def ui_config_values() -> dict[str, str]:
+    text = read_config_text(UI_CONFIG)
+    if not text:
+        return {}
+    body = hcl_block_body(text, "ui")
+    return {
+        "enabled": hcl_text_value(body, "enabled"),
+        "show_cli_hints": hcl_text_value(body, "show_cli_hints"),
+        "consul_url": hcl_text_value(hcl_block_body(body, "consul"), "ui_url"),
+        "vault_url": hcl_text_value(hcl_block_body(body, "vault"), "ui_url"),
+        "label": hcl_text_value(hcl_block_body(body, "label"), "text"),
+    }
+
+
+def telemetry_config_values() -> dict[str, str]:
+    text = read_config_text(TELEMETRY_CONFIG)
+    if not text:
+        return {}
+    return {key: hcl_text_value(text, key) for key in
+            ("collection_interval", "disable_hostname", "prometheus_metrics",
+             "publish_allocation_metrics", "publish_node_metrics")}
+
+
+def vault_config_values() -> dict[str, str]:
+    text = read_config_text(VAULT_CONFIG)
+    if not text:
+        return {}
+    identity = hcl_block_body(text, "default_identity")
+    return {
+        "address": hcl_text_value(text, "address"),
+        "namespace": hcl_text_value(text, "namespace"),
+        "jwt_auth_backend_path": hcl_text_value(text, "jwt_auth_backend_path"),
+        "ca_file": hcl_text_value(text, "ca_file"),
+        "cert_file": hcl_text_value(text, "cert_file"),
+        "aud": hcl_text_value(identity, "aud"),
+        "ttl": hcl_text_value(identity, "ttl"),
+        "env": hcl_text_value(identity, "env"),
+        "file": hcl_text_value(identity, "file"),
+    }
+
+
+def consul_config_values() -> dict[str, str]:
+    text = read_config_text(CONSUL_CONFIG)
+    if not text:
+        return {}
+    service = hcl_block_body(text, "service_identity")
+    return {
+        "address": hcl_text_value(text, "address"),
+        "ssl": hcl_text_value(text, "ssl"),
+        "verify_ssl": hcl_text_value(text, "verify_ssl"),
+        "grpc_address": hcl_text_value(text, "grpc_address"),
+        "ca_file": hcl_text_value(text, "ca_file"),
+        "workload_identity": "true" if service else "false",
+        "aud": hcl_text_value(service, "aud"),
+        "ttl": hcl_text_value(service, "ttl"),
+    }
+
+
+def list_host_volumes() -> list[tuple[str, Path | None, str]]:
+    """Return (name, path, read_only) for every managed host volume config."""
+    volumes: list[tuple[str, Path | None, str]] = []
+    if not CONFIG_DIR.is_dir():
+        return volumes
+    for config in sorted(CONFIG_DIR.glob("70-host-volume-*.hcl")):
+        name = config.name[len("70-host-volume-"):-len(".hcl")]
+        volumes.append((name, read_host_volume_path(name), hcl_text_value(read_config_text(config), "read_only")))
+    return volumes
+
+
 
 
 def hcl_file_string_value(path: Path, key: str) -> str:
@@ -1075,8 +1218,21 @@ def doctor_nomad_config() -> int:
 
 def cmd_vault_doctor(args: argparse.Namespace) -> int:
     failures = 0
+    values = vault_config_values()
+    if values:
+        doctor_info(f"address   = {unset_label(values['address'])}")
+        doctor_info(f"auth path = {unset_label(values['jwt_auth_backend_path'])}")
+        doctor_info(f"namespace = {unset_label(values['namespace'])}")
+        doctor_info(f"ca_file   = {unset_label(values['ca_file'])}")
+        doctor_info(f"identity  = aud {unset_label(values['aud'])}, ttl {unset_label(values['ttl'])}, "
+                    f"env {values['env'] or 'false'}, file {values['file'] or 'false'}")
     if doctor_config_file(VAULT_CONFIG, "Vault") == 1:
         failures += 1
+    for key in ("ca_file", "cert_file"):
+        value = values.get(key, "")
+        if value and not Path(value).is_file():
+            doctor_check("FAIL", f"Vault {key} missing: {value}")
+            failures += 1
     address = args.address or hcl_file_string_value(VAULT_CONFIG, "address")
     namespace = args.namespace or hcl_file_string_value(VAULT_CONFIG, "namespace")
     failures += doctor_nomad_config()
@@ -1115,6 +1271,13 @@ def cmd_vault_doctor(args: argparse.Namespace) -> int:
 
 def cmd_consul_doctor(args: argparse.Namespace) -> int:
     failures = 0
+    values = consul_config_values()
+    if values:
+        doctor_info(f"address      = {unset_label(values['address'])}")
+        doctor_info(f"ssl          = {values['ssl'] or 'false'} (verify {values['verify_ssl'] or 'false'})")
+        doctor_info(f"grpc_address = {unset_label(values['grpc_address'])}")
+        doctor_info(f"workload id  = {values['workload_identity']}"
+                    + (f" (aud {values['aud']}, ttl {values['ttl']})" if values["workload_identity"] == "true" else ""))
     if doctor_config_file(CONSUL_CONFIG, "Consul") == 1:
         failures += 1
     metadata = consul_install_metadata()
@@ -1173,8 +1336,21 @@ def cmd_consul_doctor(args: argparse.Namespace) -> int:
 
 def cmd_docker_doctor(_: argparse.Namespace) -> int:
     failures = 0
+    values = docker_config_values()
+    if values:
+        doctor_info(f"allow_privileged = {values['allow_privileged']}")
+        doctor_info(f"volumes.enabled  = {values['volumes']}")
+        doctor_info(f"gc.image         = {values['image_gc']} (delay {unset_label(values['image_delay'])})")
+        doctor_info(f"auth.config      = {unset_label(values['auth_config'])}")
     if doctor_config_file(DOCKER_CONFIG, "Docker") == 1:
         failures += 1
+    if values.get("auth_config"):
+        auth_path = Path(values["auth_config"])
+        if auth_path.is_file():
+            doctor_check("OK", f"Docker auth config exists: {auth_path}")
+        else:
+            doctor_check("FAIL", f"Docker auth config missing: {auth_path}")
+            failures += 1
     failures += doctor_nomad_config()
     if "docker" in read_driver_denylist():
         doctor_check("FAIL", f"Docker driver is denied by {DRIVER_DENYLIST_CONFIG}")
@@ -1195,6 +1371,154 @@ def cmd_docker_doctor(_: argparse.Namespace) -> int:
         doctor_check("OK", "Docker socket exists: /var/run/docker.sock")
     else:
         doctor_check("WARN", "Docker socket not found at /var/run/docker.sock")
+    return failures
+
+
+def read_nomad_token() -> str:
+    token = os.environ.get("NOMAD_TOKEN", "")
+    if token:
+        return token
+    try:
+        content = target_token_file().read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    match = re.search(r"(?m)^\s*export\s+NOMAD_TOKEN=(\S+)\s*$", content)
+    return match.group(1) if match else ""
+
+
+def nomad_cli(command: list[str], *, token: str = "") -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["NOMAD_ADDR"] = NOMAD_ADDR
+    env["no_proxy"] = LOCAL_NO_PROXY
+    env["NO_PROXY"] = LOCAL_NO_PROXY
+    if token:
+        env["NOMAD_TOKEN"] = token
+    return run([str(BIN_PATH), *command], env=env, capture=True, check=False)
+
+
+def doctor_node_runtime() -> int:
+    """Version, ACL bootstrap state and whether this client can actually take work."""
+    failures = 0
+    recorded = read_installed_nomad_version()
+    doctor_info(f"recorded version = {recorded}")
+    if BIN_PATH.is_file():
+        result = nomad_cli(["version"])
+        actual = ""
+        match = re.search(r"Nomad v([0-9]+\.[0-9]+\.[0-9]+)", result.stdout or "")
+        if match:
+            actual = match.group(1)
+        if actual:
+            doctor_info(f"binary version   = {actual}")
+            if recorded not in {"unknown", actual}:
+                doctor_check("WARN", f"Binary version {actual} differs from recorded {recorded}; run tools update")
+    token_file = target_token_file()
+    token = read_nomad_token()
+    if token_file.is_file():
+        doctor_check("OK", f"ACL token file present: {token_file}")
+    elif token:
+        doctor_check("OK", "ACL token taken from NOMAD_TOKEN")
+    else:
+        doctor_check("WARN", f"No ACL token found; expected {token_file} or NOMAD_TOKEN")
+    if not BIN_PATH.is_file():
+        return failures
+    if token:
+        if nomad_cli(["acl", "token", "self"], token=token).returncode == 0:
+            doctor_check("OK", "ACL token is accepted by Nomad")
+        else:
+            doctor_check("FAIL", "ACL token is rejected by Nomad; re-bootstrap or update the token file")
+            failures += 1
+    result = nomad_cli(["node", "status", "-self", "-json"], token=token)
+    if result.returncode != 0:
+        doctor_check("WARN", "Cannot read node status; the client may not be enabled on this agent")
+        return failures
+    try:
+        node = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        doctor_check("WARN", "Node status returned unparsable JSON")
+        return failures
+    status = str(node.get("Status", "unknown"))
+    eligibility = str(node.get("SchedulingEligibility", "unknown"))
+    draining = bool(node.get("Drain", False))
+    doctor_check("OK" if status == "ready" else "FAIL", f"Node status: {status}")
+    if status != "ready":
+        failures += 1
+    doctor_check("OK" if eligibility == "eligible" else "FAIL", f"Scheduling eligibility: {eligibility}")
+    if eligibility != "eligible":
+        failures += 1
+    if draining:
+        doctor_check("FAIL", "Node is draining; no new allocations will be placed")
+        failures += 1
+    return failures
+
+
+def doctor_managed_toggle(path: Path, label: str, values: dict[str, str], keys: list[str]) -> int:
+    """Report a managed config that has no external dependency to verify."""
+    if not path.exists():
+        doctor_info(f"{label}: not configured")
+        return 0
+    if not is_managed_file(path):
+        doctor_check("FAIL", f"{label} config exists but is not managed: {path}")
+        return 1
+    doctor_info(f"{label}: " + ", ".join(f"{key} {unset_label(values.get(key, ''))}" for key in keys))
+    return 0
+
+
+def doctor_node_configuration() -> int:
+    failures = 0
+    failures += doctor_managed_toggle(UI_CONFIG, "UI", ui_config_values(),
+                                      ["enabled", "consul_url", "vault_url", "label"])
+    failures += doctor_managed_toggle(TELEMETRY_CONFIG, "Telemetry", telemetry_config_values(),
+                                      ["prometheus_metrics", "collection_interval"])
+    tls_values = tls_config_values()
+    failures += doctor_managed_toggle(TLS_CONFIG, "TLS", tls_values, ["http", "rpc", "verify_server_hostname"])
+    for key in ("ca_file", "cert_file", "key_file"):
+        value = tls_values.get(key, "")
+        if not value:
+            continue
+        if Path(value).is_file():
+            doctor_check("OK", f"TLS {key} exists: {value}")
+        else:
+            doctor_check("FAIL", f"TLS {key} missing: {value}; nomad.service will not start")
+            failures += 1
+    if RAW_EXEC_CONFIG.exists():
+        if is_managed_file(RAW_EXEC_CONFIG):
+            doctor_check("WARN", "raw_exec is enabled; tasks run on the host with no isolation")
+        else:
+            doctor_check("FAIL", f"raw_exec config exists but is not managed: {RAW_EXEC_CONFIG}")
+            failures += 1
+    else:
+        doctor_info("raw_exec: not configured")
+    denied = read_driver_denylist()
+    doctor_info(f"Denied drivers: {', '.join(denied) if denied else '<none>'}")
+    pairs = read_meta_pairs()
+    doctor_info(f"Client meta: {', '.join(f'{k}={v}' for k, v in sorted(pairs.items())) if pairs else '<none>'}")
+    return failures
+
+
+def doctor_host_volumes() -> int:
+    volumes = list_host_volumes()
+    if not volumes:
+        doctor_info("No managed host volumes")
+        return 0
+    failures = 0
+    for name, path, read_only in volumes:
+        mode = "read-only" if read_only == "true" else "read-write"
+        if path is None:
+            doctor_check("FAIL", f"{name}: config is unreadable or unmanaged: {host_volume_config_path(name)}")
+            failures += 1
+            continue
+        doctor_info(f"{name} -> {path} ({mode})")
+        if not path.exists():
+            doctor_check("FAIL", f"{name}: host path does not exist: {path}")
+            failures += 1
+        elif not path.is_dir():
+            doctor_check("FAIL", f"{name}: host path is not a directory: {path}")
+            failures += 1
+        elif not os.access(path, os.R_OK | os.X_OK):
+            doctor_check("FAIL", f"{name}: host path is not readable: {path}")
+            failures += 1
+        else:
+            doctor_check("OK", f"{name}: host path is usable")
     return failures
 
 
@@ -1234,6 +1558,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         doctor_check("FAIL", f"Nomad HTTP API not reachable: {NOMAD_ADDR} ({code})")
         failures += 1
+    print("\nNode runtime:")
+    failures += doctor_node_runtime()
+    print("\nNode configuration:")
+    failures += doctor_node_configuration()
+    print("\nHost volumes:")
+    failures += doctor_host_volumes()
     if args.integrations or DOCKER_CONFIG.is_file():
         print("\nDocker checks:")
         failures += cmd_docker_doctor(argparse.Namespace())
@@ -1249,6 +1579,70 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if failures == 0:
         print("\nAll checks passed.")
     return 0 if failures == 0 else 1
+
+
+def status_line(key: str, value: str) -> None:
+    print(f"  {key:<22} {value}")
+
+
+def cmd_status(_: argparse.Namespace) -> int:
+    """Show what is configured. doctor answers whether it is healthy."""
+    print("Install:")
+    status_line("recorded version", read_installed_nomad_version())
+    if BIN_PATH.is_file():
+        match = re.search(r"Nomad v([0-9]+\.[0-9]+\.[0-9]+)", nomad_cli(["version"]).stdout or "")
+        status_line("binary version", match.group(1) if match else "unknown")
+    status_line("binary", str(BIN_PATH) if BIN_PATH.is_file() else "<not installed>")
+    status_line("config dir", str(CONFIG_DIR))
+    status_line("data dir", str(DATA_DIR))
+    status_line("tool dir", str(TOOL_DIR) if TOOL_DIR.is_dir() else "<not installed>")
+    if command_exists("systemctl"):
+        active = run(["systemctl", "is-active", "nomad"], check=False, capture=True)
+        status_line("service", (active.stdout or "").strip() or "unknown")
+    status_line("api", f"{NOMAD_ADDR} ({http_status(f'{NOMAD_ADDR}/v1/status/leader')})")
+    status_line("acl token file", str(target_token_file()) if target_token_file().is_file() else "<absent>")
+
+    print("\nManaged configuration:")
+    docker = docker_config_values()
+    status_line("docker", f"allow_privileged {docker['allow_privileged']}, volumes {docker['volumes']}, "
+                          f"image gc {docker['image_gc']} (delay {unset_label(docker['image_delay'])}), "
+                          f"auth {unset_label(docker['auth_config'])}" if docker else "<not configured>")
+    cni_version = installed_cni_version()
+    status_line("cni", f"plugins {unset_label(cni_version)} in {CNI_BIN_DIR}" if CNI_CLIENT_CONFIG.is_file() else "<not configured>")
+    status_line("raw_exec", "enabled" if RAW_EXEC_CONFIG.is_file() else "<not configured>")
+    denied = read_driver_denylist()
+    status_line("denied drivers", ", ".join(denied) if denied else "<none>")
+    vault = vault_config_values()
+    status_line("vault", f"{unset_label(vault['address'])}, auth path {unset_label(vault['jwt_auth_backend_path'])}, "
+                         f"aud {unset_label(vault['aud'])}, ttl {unset_label(vault['ttl'])}" if vault else "<not configured>")
+    consul = consul_config_values()
+    status_line("consul", f"{unset_label(consul['address'])}, ssl {consul['ssl'] or 'false'}, "
+                          f"workload identity {consul['workload_identity']}" if consul else "<not configured>")
+    ui = ui_config_values()
+    status_line("ui", f"enabled {ui['enabled']}, label {unset_label(ui['label'])}" if ui else "<not configured>")
+    tls = tls_config_values()
+    status_line("tls", f"http {tls['http']}, rpc {tls['rpc']}, ca {unset_label(tls['ca_file'])}" if tls else "<not configured>")
+    telemetry = telemetry_config_values()
+    status_line("telemetry", f"prometheus {telemetry['prometheus_metrics']}, "
+                             f"interval {telemetry['collection_interval']}" if telemetry else "<not configured>")
+
+    print("\nHost volumes:")
+    volumes = list_host_volumes()
+    if not volumes:
+        print("  <none>")
+    for name, path, read_only in volumes:
+        mode = "read-only" if read_only == "true" else "read-write"
+        state = "missing" if path is None or not path.is_dir() else "ok"
+        status_line(name, f"{path or '<unreadable>'} ({mode}, {state})")
+
+    print("\nClient meta:")
+    pairs = read_meta_pairs()
+    if not pairs:
+        print("  <none>")
+    for key in sorted(pairs):
+        status_line(key, pairs[key])
+    print(f"\nRun '{NOMAD_MANAGER_CMD} doctor' to check whether any of this is broken.")
+    return 0
 
 
 def profile_path(profile: str) -> Path:
@@ -2154,7 +2548,8 @@ def remove_acl_token_file() -> None:
     token_file = target_token_file()
     if not token_file.is_file():
         return
-    first = token_file.open("r", encoding="utf-8").readline().rstrip("\n")
+    with token_file.open("r", encoding="utf-8") as handle:
+        first = handle.readline().rstrip("\n")
     if first != "# Generated by nomad-manager":
         log_warn(f"Skip removing ACL token file without generated marker: {token_file}")
         return
@@ -2596,6 +2991,7 @@ COMMAND_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         [
             ("install", "Install Nomad and this tool, write config, bootstrap ACL"),
             ("doctor", "Check the node and whatever integrations are configured"),
+            ("status", "Show the effective configuration of this node"),
         ],
     ),
     (
@@ -2724,6 +3120,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--integrations to run them all regardless.")
     doctor.add_argument("--integrations", action="store_true", help="Run Docker, CNI, Vault and Consul checks even if their managed configs are absent")
     doctor.set_defaults(func=cmd_doctor)
+
+    status = sub.add_parser(
+        "status",
+        description="Show what is configured on this node: versions, service state, every managed\n"
+        "config value, host volumes and client meta.\n"
+        "\n"
+        "status answers \"what is it\"; doctor answers \"is it broken\". Neither changes anything.",
+    )
+    status.set_defaults(func=cmd_status)
 
     docker = sub.add_parser("docker", description="Manage the Docker driver config. install already writes a working default, so use enable\nonly to change it; it rewrites 80-docker.hcl and restarts nomad.service.\n\nTo stop Nomad from using the Docker driver at all, deny it instead: driver deny docker.")
     docker_sub = docker.add_subparsers(dest="docker_command")
