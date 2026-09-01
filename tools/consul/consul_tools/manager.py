@@ -1376,6 +1376,17 @@ Layout:
   config : {CONFIG_FILE} plus managed fragments in {CONFIG_DIR}
   data   : {CONSUL_AGENT_DATA_DIR}
   service: {SYSTEMD_SERVICE}
+  tool   : {TOOL_DIR} -> {TOOL_ENTRY}
+
+There is no separate installer for this tool. install copies consul-manager
+into the node and links it onto PATH, so run it from a source checkout the
+first time:
+
+  ./tools/consul/consul-manager install
+
+Later, to update the tool without touching Consul itself, again from a checkout:
+
+  ./tools/consul/consul-manager tools update
 """,
     "acl": f"""ACL modes:
 
@@ -1455,7 +1466,7 @@ COMMAND_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         "Set up the node",
         "",
         [
-            ("install", "Download Consul, write config, choose the ACL mode"),
+            ("install", "Install Consul and this tool, choose the ACL mode"),
             ("acl", "Bootstrap ACL when install could not"),
             ("doctor", "Check the node, the ACL state and the Nomad integration"),
             ("status", "Show members, raft peers and install metadata"),
@@ -1554,7 +1565,13 @@ def build_parser() -> argparse.ArgumentParser:
         "must reach this Consul, and keep ACL enabled when you do.\n"
         "\n"
         "Re-running install reuses the existing gossip encryption key, so it does not break\n"
-        "an already running node.",
+        "an already running node.\n"
+        "\n"
+        "install also copies this tool itself into the node: consul-manager and the\n"
+        f"consul_tools package go to {TOOL_DIR},\n"
+        f"linked onto PATH as {TOOL_ENTRY}.\n"
+        "The node then runs its own copy, unaffected by the source tree moving or changing.\n"
+        "Refresh that copy later with 'tools update'.",
     )
     install.add_argument("version_pos", nargs="?", help="Consul version, for example 1.21.0 or latest")
     install.add_argument("--version", dest="version_opt", help="Consul version; overrides the positional version")
@@ -1704,7 +1721,12 @@ def build_parser() -> argparse.ArgumentParser:
     tools_update = tools_sub.add_parser(
         "update",
         help="Update consul-manager files only",
-        description="Update the installed consul-manager and consul_tools package without changing the Consul binary, config or service state.",
+        description="Refresh the tool copy that install placed on this node, without touching the\n"
+        "Consul binary, config or service state.\n"
+        "\n"
+        "The new files are read from the directory of the script you invoke, so run this from\n"
+        f"a source checkout. Running the installed {TOOL_ENTRY} would copy\n"
+        "the node's own copy onto itself and change nothing.",
     )
     tools_update.add_argument("--consul-version", help="Consul version recorded in tool metadata; defaults to existing metadata")
     tools_update.set_defaults(func=cmd_tools_update)

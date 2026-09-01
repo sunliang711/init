@@ -2383,9 +2383,17 @@ starts nomad.service. It then bootstraps ACL and saves the management token to
 Source that file before running any nomad command. Add --enable-cni to set up
 bridge networking in the same run.
 
-  {NOMAD_MANAGER_CMD} install --version {DEFAULT_NOMAD_VERSION}
+There is no separate installer for this tool: install copies nomad-manager and
+nomad-job into {TOOL_DIR}
+and links them onto PATH, so run it from a source checkout the first time.
+
+  ./tools/nomad/nomad-manager install --version {DEFAULT_NOMAD_VERSION}
   source {token_file}
   {NOMAD_MANAGER_CMD} doctor
+
+Later, to update the tool without touching Nomad itself, again from a checkout:
+
+  ./tools/nomad/nomad-manager tools update
 """,
         "docker": f"""Change the Docker driver settings.
 
@@ -2586,7 +2594,7 @@ COMMAND_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         "Set up the node",
         "",
         [
-            ("install", "Download Nomad, write config, bootstrap ACL"),
+            ("install", "Install Nomad and this tool, write config, bootstrap ACL"),
             ("doctor", "Check the node and whatever integrations are configured"),
         ],
     ),
@@ -2696,7 +2704,13 @@ def build_parser() -> argparse.ArgumentParser:
         "\n"
         "ACL is enabled in the generated config, and install bootstraps it and saves the\n"
         "management token to ~/nomad.acl (mode 0600). Source that file before running any\n"
-        "nomad command. Pass --no-acl-bootstrap to skip the bootstrap step.")
+        "nomad command. Pass --no-acl-bootstrap to skip the bootstrap step.\n"
+        "\n"
+        "install also copies this tool itself into the node: nomad-manager, nomad-job and\n"
+        f"the nomad_tools package go to {TOOL_DIR},\n"
+        f"linked onto PATH as {TOOL_ENTRY} and {JOB_ENTRY}.\n"
+        "The node then runs its own copy, unaffected by the source tree moving or changing.\n"
+        "Refresh that copy later with 'tools update'.")
     install.add_argument("version_pos", nargs="?", help="Nomad version, for example 2.0.0 or latest")
     install.add_argument("--version", dest="version_opt", help="Nomad version; overrides the positional version")
     install.add_argument("--no-acl-bootstrap", action="store_true", help="Skip automatic ACL bootstrap after install")
@@ -2871,7 +2885,8 @@ def build_parser() -> argparse.ArgumentParser:
     consul_setup_local = consul_sub.add_parser(
         "setup-local",
         help="Wire Nomad to a locally installed Consul",
-        description="Detect a consul-manager install on this host, load the Nomad agent token when ACL is on, and write the Nomad Consul config.",
+        description="Detect a consul-manager install on this host, load the Nomad agent token when ACL\n"
+        "is on, and write the Nomad Consul config.",
     )
     consul_setup_local.add_argument("--address", help="Override the detected Consul address")
     consul_setup_local.add_argument("--token-file", default="", help=f"Nomad agent token file (default: {CONSUL_NOMAD_AGENT_TOKEN_FILE})")
@@ -2907,7 +2922,8 @@ def build_parser() -> argparse.ArgumentParser:
     consul_token_set = consul_token_sub.add_parser(
         "set",
         help="Store the Consul token for nomad.service",
-        description=f"Write the token to {CONSUL_TOKEN_ENV_FILE} (0600) and reference it from {CONSUL_TOKEN_DROPIN}.",
+        description=f"Write the token to {CONSUL_TOKEN_ENV_FILE} (0600) and reference it from a\n"
+        f"systemd drop-in at {CONSUL_TOKEN_DROPIN}.",
     )
     consul_token_set.add_argument("--token", default="", help="Consul ACL token")
     consul_token_set.add_argument("--token-file", default="", help="File holding a Consul ACL token")
@@ -3002,7 +3018,10 @@ The host volume data directory is preserved unless --purge is given.
     ui_reset = ui_sub.add_parser("reset", help="Remove managed UI config")
     ui_reset.set_defaults(func=lambda _: remove_managed_file(UI_CONFIG) or 0)
 
-    tls = sub.add_parser("tls", description="Manage the managed TLS config. enable and disable rewrite 30-tls.hcl and restart nomad.service.\n\nCertificates are not generated here; point the options at files that already exist.")
+    tls = sub.add_parser("tls", description="Manage the managed TLS config. enable and disable rewrite 30-tls.hcl and\n"
+        "restart nomad.service.\n"
+        "\n"
+        "Certificates are not generated here; point the options at files that already exist.")
     tls_sub = tls.add_subparsers(dest="tls_command")
     tls.set_defaults(func=lambda _: missing_subcommand(tls, f"{NOMAD_MANAGER_CMD} tls"))
     tls_enable = tls_sub.add_parser("enable", help="Write managed TLS config")
@@ -3017,7 +3036,8 @@ The host volume data directory is preserved unless --purge is given.
     tls_disable = tls_sub.add_parser("disable", help="Remove managed TLS config")
     tls_disable.set_defaults(func=lambda _: remove_managed_file(TLS_CONFIG) or 0)
 
-    telemetry = sub.add_parser("telemetry", description="Manage the managed telemetry config. enable and disable rewrite 40-telemetry.hcl and restart nomad.service.")
+    telemetry = sub.add_parser("telemetry", description="Manage the managed telemetry config. enable and disable rewrite\n"
+        "40-telemetry.hcl and restart nomad.service.")
     telemetry_sub = telemetry.add_subparsers(dest="telemetry_command")
     telemetry.set_defaults(func=lambda _: missing_subcommand(telemetry, f"{NOMAD_MANAGER_CMD} telemetry"))
     telemetry_enable = telemetry_sub.add_parser("enable", help="Write managed telemetry config")
@@ -3042,7 +3062,12 @@ The host volume data directory is preserved unless --purge is given.
     tools_update = tools_sub.add_parser(
         "update",
         help="Update nomad-manager and nomad-job files only",
-        description="Update the installed nomad-manager, nomad-job and nomad_tools package without changing Nomad binary, config or service state.",
+        description="Refresh the tool copy that install placed on this node, without touching the Nomad\n"
+        "binary, config or service state.\n"
+        "\n"
+        "The new files are read from the directory of the script you invoke, so run this from\n"
+        f"a source checkout. Running the installed {TOOL_ENTRY} would copy\n"
+        "the node's own copy onto itself and change nothing.",
     )
     tools_update.add_argument("--nomad-version", help="Nomad version recorded in tool metadata; defaults to existing metadata")
     tools_update.set_defaults(func=cmd_tools_update)
