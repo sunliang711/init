@@ -15,7 +15,8 @@ sys.path.insert(0, str(REPO_ROOT / "tools" / "consul"))
 from consul_tools import manager  # noqa: E402
 
 
-MANAGED_CONFIG_CONSTANTS = ("TLS_CONFIG", "UI_CONFIG", "TELEMETRY_CONFIG", "DNS_CONFIG")
+MANAGED_CONFIG_CONSTANTS = ("TLS_CONFIG", "UI_CONFIG", "TELEMETRY_CONFIG", "DNS_CONFIG",
+                            "DNS_TOKEN_CONFIG")
 
 
 def install_args(**overrides) -> argparse.Namespace:
@@ -187,6 +188,107 @@ class ConsulDoctorTest(unittest.TestCase):
         for label in ("UI: not configured", "Telemetry: not configured",
                       "DNS: not configured", "TLS: not configured"):
             self.assertIn(label, output)
+
+
+class DnsTokenTest(unittest.TestCase):
+    """DNS 查询不携带 token，Consul 用 acl.tokens.dns 应答。
+
+    没有它时服务注册正常、HTTP API 查得到，只有 dig 返回 NXDOMAIN —— 排查起来最费劲。
+    """
+
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.config_dir = self.root / "consul.d"
+        self.config_dir.mkdir()
+        self._saved = {name: getattr(manager, name) for name in
+                       ("CONFIG_DIR", "CONFIG_FILE", "DNS_TOKEN_CONFIG", "install_text",
+                        "commit_managed_file", "dns_token_works")}
+        manager.CONFIG_DIR = self.config_dir
+        manager.CONFIG_FILE = self.config_dir / "consul.hcl"
+        manager.DNS_TOKEN_CONFIG = self.config_dir / "60-dns-token.hcl"
+        manager.install_text = lambda path, content, **kwargs: Path(path).write_text(content, encoding="utf-8")
+        manager.commit_managed_file = lambda target, content: Path(target).write_text(content, encoding="utf-8")
+        self.addCleanup(self.temp_dir.cleanup)
+        self.addCleanup(lambda: [setattr(manager, k, v) for k, v in self._saved.items()])
+
+    @staticmethod
+    def _capture(func, *args) -> tuple[int, str]:
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            result = func(*args)
+        return result, buffer.getvalue()
+
+    def _write_dns_token(self, token: str = "SECRET-DNS-TOKEN") -> None:
+        manager.DNS_TOKEN_CONFIG.write_text(
+            manager.managed_config('acl {\n  tokens {\n    dns = "%s"\n  }\n}' % token), encoding="utf-8")
+
+    def test_acl_enabled_without_a_dns_token_fails(self) -> None:
+        manager.write_consul_config(install_args(), "")
+
+        failures, output = self._capture(manager.doctor_dns_token, "http://127.0.0.1:8500")
+
+        self.assertEqual(failures, 1)
+        self.assertIn("no DNS token is configured", output)
+        self.assertIn("NXDOMAIN", output)
+        self.assertIn("acl dns-token", output)
+
+    def test_a_dns_token_that_cannot_read_the_catalog_fails(self) -> None:
+        manager.write_consul_config(install_args(), "")
+        self._write_dns_token()
+        manager.dns_token_works = lambda address, token: False
+
+        failures, output = self._capture(manager.doctor_dns_token, "http://127.0.0.1:8500")
+
+        self.assertEqual(failures, 1)
+        self.assertIn("cannot read the catalog", output)
+        self.assertIn("--force", output)
+
+    def test_a_working_dns_token_passes(self) -> None:
+        manager.write_consul_config(install_args(), "")
+        self._write_dns_token()
+        manager.dns_token_works = lambda address, token: True
+
+        failures, output = self._capture(manager.doctor_dns_token, "http://127.0.0.1:8500")
+
+        self.assertEqual(failures, 0)
+        self.assertIn("able to read the catalog", output)
+
+    def test_acl_disabled_needs_no_dns_token(self) -> None:
+        manager.write_consul_config(install_args(acl=False), "")
+
+        failures, output = self._capture(manager.doctor_dns_token, "http://127.0.0.1:8500")
+
+        self.assertEqual(failures, 0)
+        self.assertIn("not needed", output)
+
+    def test_unknown_acl_mode_is_skipped(self) -> None:
+        """没有安装 Consul 的机器不该因为这条报 FAIL。"""
+        failures, output = self._capture(manager.doctor_dns_token, "http://127.0.0.1:8500")
+
+        self.assertEqual(failures, 0)
+        self.assertIn("ACL mode unknown", output)
+
+    def test_the_token_is_read_back_from_the_fragment(self) -> None:
+        self._write_dns_token("abc-123")
+
+        self.assertEqual(manager.configured_dns_token(), "abc-123")
+
+    def test_an_unmanaged_fragment_is_ignored(self) -> None:
+        """没有托管 marker 的文件不算数，避免把手写配置当成自己写的。"""
+        manager.DNS_TOKEN_CONFIG.write_text(
+            'acl {\n  tokens {\n    dns = "hand-written"\n  }\n}', encoding="utf-8")
+
+        self.assertEqual(manager.configured_dns_token(), "")
+
+    def test_doctor_output_never_shows_the_token(self) -> None:
+        manager.write_consul_config(install_args(), "")
+        self._write_dns_token("SUPER-SECRET-VALUE")
+        manager.dns_token_works = lambda address, token: True
+
+        _, output = self._capture(manager.doctor_dns_token, "http://127.0.0.1:8500")
+
+        self.assertNotIn("SUPER-SECRET-VALUE", output)
 
 
 if __name__ == "__main__":

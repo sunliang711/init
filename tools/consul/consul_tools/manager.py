@@ -94,6 +94,9 @@ NOMAD_AUTH_METHOD = "nomad-workloads"
 NOMAD_AGENT_POLICY = "nomad-agent"
 NOMAD_AGENT_TOKEN_DESCRIPTION = "Nomad agent token managed by consul-manager"
 LOCAL_ADDRESSES = {"", "127.0.0.1", "localhost", "::1", "[::1]"}
+DNS_TOKEN_CONFIG = CONFIG_DIR / "60-dns-token.hcl"
+DNS_POLICY_NAME = "dns-read"
+DNS_TOKEN_DESCRIPTION = "Consul DNS token managed by consul-manager"
 
 
 def normalize_version(version: str) -> str:
@@ -311,6 +314,94 @@ def cmd_telemetry_enable(args: argparse.Namespace) -> int:
     )
     commit_managed_file(TELEMETRY_CONFIG, managed_config(body))
     return 0
+
+
+DNS_POLICY_RULES = """# Managed by consul-manager
+# Read-only access for the DNS interface. DNS queries carry no token, so Consul
+# answers them with acl.tokens.dns; without it every lookup is anonymous and
+# returns NXDOMAIN under default_policy = deny.
+node_prefix "" {
+  policy = "read"
+}
+
+service_prefix "" {
+  policy = "read"
+}
+
+query_prefix "" {
+  policy = "read"
+}
+"""
+
+
+def configured_dns_token() -> str:
+    """The DNS token from the managed fragment. Never print the return value."""
+    text = read_config_text(DNS_TOKEN_CONFIG)
+    if not text:
+        return ""
+    return hcl_text_value(hcl_block_body(hcl_block_body(text, "acl"), "tokens"), "dns")
+
+
+def write_dns_policy(address: str, token: str) -> None:
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".hcl") as handle:
+        handle.write(DNS_POLICY_RULES)
+        rules_path = handle.name
+    try:
+        exists = consul_cmd(address, token, ["acl", "policy", "read", "-name", DNS_POLICY_NAME],
+                            capture=True, check=False).returncode == 0
+        action = "update" if exists else "create"
+        log_info(f"Consul ACL policy {action}: {DNS_POLICY_NAME}")
+        consul_cmd(address, token, ["acl", "policy", action, "-name", DNS_POLICY_NAME,
+                                    "-description", "DNS read access managed by consul-manager",
+                                    "-rules", f"@{rules_path}"], capture=True)
+    finally:
+        Path(rules_path).unlink(missing_ok=True)
+
+
+def dns_token_works(address: str, token: str) -> bool:
+    """A DNS token that cannot list services resolves nothing."""
+    if not token:
+        return False
+    result = consul_cmd(address, token, ["catalog", "services"], capture=True, check=False)
+    return result.returncode == 0
+
+
+def create_dns_token(address: str, management_token: str, *, force: bool = False) -> int:
+    if not force and dns_token_works(address, configured_dns_token()):
+        log_success(f"DNS token already configured: {DNS_TOKEN_CONFIG}")
+        return 0
+    write_dns_policy(address, management_token)
+    log_info("Creating Consul ACL token for the DNS interface")
+    result = consul_cmd(address, management_token,
+                        ["acl", "token", "create", "-description", DNS_TOKEN_DESCRIPTION,
+                         "-policy-name", DNS_POLICY_NAME, "-format", "json"], capture=True)
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise CLIError("Failed to parse the Consul token create output") from exc
+    secret_id = payload.get("SecretID", "")
+    if not secret_id:
+        raise CLIError("Consul did not return a SecretID for the DNS token")
+    body = "acl {\n  tokens {\n    dns = " + hcl_string(secret_id) + "\n  }\n}"
+    commit_managed_file(DNS_TOKEN_CONFIG, managed_config(body))
+    log_success(f"DNS token configured: {DNS_TOKEN_CONFIG}")
+    return 0
+
+
+def cmd_acl_dns_token(args: argparse.Namespace) -> int:
+    address = args.address or CONSUL_ADDR
+    if not consul_installed():
+        raise CLIError(f"No consul-manager install found on this host: {CONFIG_FILE}")
+    if not acl_enabled():
+        log_success("Consul ACL is disabled; DNS resolves without a token")
+        return 0
+    token = resolve_consul_token(args)
+    if not token:
+        raise CLIError(
+            f"A Consul management token is required. Pass --token/--token-file, export CONSUL_HTTP_TOKEN, "
+            f"or source {target_token_file()}"
+        )
+    return create_dns_token(address, token, force=args.force)
 
 
 def cmd_dns_enable(args: argparse.Namespace) -> int:
@@ -600,6 +691,32 @@ def doctor_consul_config() -> int:
     return 1
 
 
+def doctor_dns_token(address: str) -> int:
+    """DNS answers with acl.tokens.dns, so a missing one breaks every lookup.
+
+    The service registers fine, the HTTP API finds it, and dig returns NXDOMAIN.
+    """
+    state = acl_state()
+    if state is None:
+        doctor_info("DNS token: ACL mode unknown, skipping")
+        return 0
+    if not state:
+        doctor_info("DNS token: not needed while ACL is disabled")
+        return 0
+    dns_token = configured_dns_token()
+    if not dns_token:
+        doctor_check("FAIL", f"ACL is enabled but no DNS token is configured: {DNS_TOKEN_CONFIG}")
+        doctor_check("INFO", "Every DNS lookup is anonymous, so <service>.service.consul returns NXDOMAIN")
+        doctor_check("INFO", f"Fix: {CONSUL_MANAGER_CMD} acl dns-token")
+        return 1
+    if dns_token_works(address, dns_token):
+        doctor_check("OK", f"DNS token configured and able to read the catalog: {DNS_TOKEN_CONFIG}")
+        return 0
+    doctor_check("FAIL", "The configured DNS token cannot read the catalog; DNS lookups will return NXDOMAIN")
+    doctor_check("INFO", f"Recreate it with: {CONSUL_MANAGER_CMD} acl dns-token --force")
+    return 1
+
+
 def doctor_acl(address: str, token: str) -> int:
     state = acl_state()
     if state is None:
@@ -783,12 +900,14 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print("\nBase configuration:")
     failures += doctor_base_configuration()
     print("\nManaged config fragments:")
-    for path, label in ((TLS_CONFIG, "TLS"), (UI_CONFIG, "UI"), (TELEMETRY_CONFIG, "Telemetry"), (DNS_CONFIG, "DNS")):
+    for path, label in ((TLS_CONFIG, "TLS"), (UI_CONFIG, "UI"), (TELEMETRY_CONFIG, "Telemetry"),
+                        (DNS_CONFIG, "DNS"), (DNS_TOKEN_CONFIG, "DNS token")):
         if doctor_config_file(path, label) == 1:
             failures += 1
     failures += doctor_node_configuration()
     print("\nACL checks:")
     failures += doctor_acl(address, token)
+    failures += doctor_dns_token(address)
     if args.integrations or NOMAD_AGENT_TOKEN_FILE.is_file():
         print("\nNomad integration checks:")
         failures += doctor_nomad_integration(address, token)
@@ -848,6 +967,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     dns = dns_config_values()
     status_line("dns", f"recursors {unset_label(dns['recursors'])}, only_passing {unset_label(dns['only_passing'])}"
                 if dns else "<not configured>")
+
+    status_line("dns token", "configured" if configured_dns_token() else "<absent>")
 
     print("\nNomad integration:")
     if not acl_enabled():
@@ -1338,7 +1459,13 @@ def cmd_install(args: argparse.Namespace) -> int:
         if not wait_for_consul_api():
             raise CLIError("Timed out waiting for Consul HTTP API")
         if args.acl:
-            bootstrap_acl(not args.no_acl_bootstrap)
+            management_token = bootstrap_acl(not args.no_acl_bootstrap)
+            if management_token:
+                # DNS carries no token, so without this every lookup is anonymous
+                create_dns_token(CONSUL_ADDR, management_token)
+            else:
+                log_warn("No management token available; the DNS token was not created")
+                log_warn(f"Create it later with: {CONSUL_MANAGER_CMD} acl dns-token")
         else:
             log_warn("Consul ACL is disabled; the HTTP API has no authentication")
     finally:
@@ -1761,6 +1888,9 @@ With ACL enabled, Nomad needs two things on the Consul side:
 Both are created by:
   {CONSUL_MANAGER_CMD} nomad-jwt apply
 
+Resolving services over DNS needs a third thing, which install sets up:
+  {CONSUL_MANAGER_CMD} acl dns-token
+
 Then on the Nomad side:
   nomad-manager consul setup-local
 
@@ -1783,6 +1913,13 @@ No leader after install:
 
 403 Permission denied:
   the token is missing or lacks rights; source {target_token_file()}
+
+DNS returns NXDOMAIN for a service that is registered and healthy:
+  DNS queries carry no token, so Consul answers them with acl.tokens.dns.
+  Without it every lookup is anonymous and sees nothing under default_policy
+  deny, while the HTTP API still finds the service because you pass a token.
+  doctor reports this. Fix it with:
+    {CONSUL_MANAGER_CMD} acl dns-token
 
 Nomad tasks fail to register services:
   confirm the JWT auth method exists
@@ -1966,6 +2103,21 @@ def build_parser() -> argparse.ArgumentParser:
     acl_bootstrap = acl_sub.add_parser("bootstrap", help="Bootstrap Consul ACL and save the management token")
     acl_bootstrap.add_argument("--address", help=f"Consul HTTP address (default: {CONSUL_ADDR})")
     acl_bootstrap.set_defaults(func=cmd_acl_bootstrap)
+    acl_dns = acl_sub.add_parser(
+        "dns-token",
+        help="Create the token the DNS interface answers with",
+        description="Create a read-only token and record it as acl.tokens.dns.\n"
+        "\n"
+        "DNS queries carry no token, so Consul answers them with this one. Without it every\n"
+        "lookup runs as the anonymous token and <service>.service.consul returns NXDOMAIN,\n"
+        "even though the service is registered and healthy.\n"
+        "\n"
+        "install does this automatically; run it here for a node installed earlier, or after\n"
+        "the token was revoked. A no-op when ACL is disabled.",
+    )
+    add_client_args(acl_dns)
+    acl_dns.add_argument("--force", action="store_true", help="Recreate the token even if the current one works")
+    acl_dns.set_defaults(func=cmd_acl_dns_token)
 
     doctor = sub.add_parser(
         "doctor",

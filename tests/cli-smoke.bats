@@ -100,6 +100,16 @@ setup() {
     [[ "${output}" == *"5. Learn"* ]]
 }
 
+@test "consul-manager exposes the dns-token command" {
+    run "${REPO_ROOT}/tools/consul/consul-manager" acl --help
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"dns-token"* ]]
+
+    run "${REPO_ROOT}/tools/consul/consul-manager" acl dns-token --help
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"NXDOMAIN"* ]]
+}
+
 @test "consul-manager nomad-jwt uses doctor instead of status" {
     run "${REPO_ROOT}/tools/consul/consul-manager" nomad-jwt --help
 
