@@ -966,10 +966,13 @@ def read_existing_encrypt_key() -> str:
     return hcl_file_string_value(CONFIG_FILE, "encrypt")
 
 
-def generate_gossip_key(tmpdir: Path) -> str:
-    binary = tmpdir / "extract" / "consul"
-    source = str(binary) if binary.is_file() else str(BIN_PATH)
-    result = run([source, "keygen"], capture=True)
+def generate_gossip_key() -> str:
+    """Use the installed binary; install_binary has already run by this point.
+
+    The extracted copy under the temporary directory is not executable, because
+    zipfile does not preserve the mode recorded in the archive.
+    """
+    result = run([str(BIN_PATH), "keygen"], capture=True)
     key = (result.stdout or "").strip()
     if not key:
         raise CLIError("Failed to generate a Consul gossip encryption key")
@@ -1312,7 +1315,7 @@ def cmd_install(args: argparse.Namespace) -> int:
             if encrypt_key:
                 log_info("Reusing existing gossip encryption key")
             else:
-                encrypt_key = generate_gossip_key(tmpdir)
+                encrypt_key = generate_gossip_key()
                 log_success("Generated a new gossip encryption key")
         write_systemd_service()
         write_consul_config(args, encrypt_key)

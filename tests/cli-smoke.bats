@@ -159,6 +159,12 @@ setup() {
     [[ "${output}" == *"Base configuration:"* ]]
 }
 
+@test "extracted release binaries stay executable" {
+    run python3 "${REPO_ROOT}/tests/test_manager_extract_zip.py"
+
+    [ "${status}" -eq 0 ]
+}
+
 @test "managers record the source revision they were installed from" {
     run python3 "${REPO_ROOT}/tests/test_manager_tool_revision.py"
 

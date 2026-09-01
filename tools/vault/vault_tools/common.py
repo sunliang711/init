@@ -467,8 +467,17 @@ def download_file(url: str, output: str | Path, *, timeout: int = 300) -> None:
 
 
 def extract_zip(zip_file: str | Path, output_dir: str | Path) -> None:
+    """Extract, preserving the mode the archive records.
+
+    zipfile.extractall drops it, so an executable in the archive lands as 0644
+    and cannot be run from where it was extracted.
+    """
     with zipfile.ZipFile(zip_file) as archive:
-        archive.extractall(output_dir)
+        for member in archive.infolist():
+            extracted = Path(archive.extract(member, output_dir))
+            mode = (member.external_attr >> 16) & 0o777
+            if mode and not member.is_dir():
+                extracted.chmod(mode)
 
 
 def with_default_scheme(address: str, scheme: str) -> str:
