@@ -58,3 +58,58 @@ setup() {
     [[ "${output}" == *"setup-local"* ]]
     [[ "${output}" == *"token"* ]]
 }
+
+@test "nomad-manager help groups commands by usage stage" {
+    run "${REPO_ROOT}/tools/nomad/nomad-manager" --help
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"1. Set up the node"* ]]
+    [[ "${output}" == *"2. Enable capabilities"* ]]
+    [[ "${output}" == *"3. Provide resources to jobs"* ]]
+    [[ "${output}" == *"4. Tune the node"* ]]
+    [[ "${output}" == *"5. Run jobs"* ]]
+    [[ "${output}" == *"6. Maintain and remove"* ]]
+    [[ "${output}" == *"7. Learn"* ]]
+}
+
+@test "nomad-manager vault jwt replaces the vault-jwt command" {
+    run "${REPO_ROOT}/tools/nomad/nomad-manager" vault jwt --help
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"apply"* ]]
+
+    run "${REPO_ROOT}/tools/nomad/nomad-manager" vault-jwt --help
+    [ "${status}" -ne 0 ]
+}
+
+@test "nomad-manager docker no longer duplicates the driver denylist" {
+    run "${REPO_ROOT}/tools/nomad/nomad-manager" docker --help
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" != *"disable-driver"* ]]
+    [[ "${output}" != *"enable-driver"* ]]
+}
+
+@test "consul-manager help groups commands by usage stage" {
+    run "${REPO_ROOT}/tools/consul/consul-manager" --help
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"1. Set up the node"* ]]
+    [[ "${output}" == *"2. Connect Nomad"* ]]
+    [[ "${output}" == *"3. Tune the node"* ]]
+    [[ "${output}" == *"4. Maintain and remove"* ]]
+    [[ "${output}" == *"5. Learn"* ]]
+}
+
+@test "consul-manager nomad-jwt uses doctor instead of status" {
+    run "${REPO_ROOT}/tools/consul/consul-manager" nomad-jwt --help
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"doctor"* ]]
+    [[ "${output}" != *"status"* ]]
+}
+
+@test "manager command groups stay in sync with the parsers" {
+    run python3 "${REPO_ROOT}/tests/test_manager_command_groups.py"
+
+    [ "${status}" -eq 0 ]
+}

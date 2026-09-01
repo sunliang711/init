@@ -1299,7 +1299,7 @@ def cmd_nomad_jwt_apply(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_nomad_jwt_status(args: argparse.Namespace) -> int:
+def cmd_nomad_jwt_doctor(args: argparse.Namespace) -> int:
     address = args.address or CONSUL_ADDR
     if not acl_enabled():
         doctor_check("WARN", "Consul ACL is disabled; Nomad needs no JWT auth method")
@@ -1310,27 +1310,35 @@ def cmd_nomad_jwt_status(args: argparse.Namespace) -> int:
 
 def cmd_quickstart(_: argparse.Namespace) -> int:
     print(
-        f"""Consul manager quickstart:
-  1. Install a single-node Consul with ACL enabled (default):
+        f"""Consul manager quickstart, in the order the commands are meant to be used.
+
+1. Set up the node
      {CONSUL_MANAGER_CMD} install --version latest
-
-     Or without ACL, for a throwaway lab node:
-     {CONSUL_MANAGER_CMD} install --no-acl
-
-  2. Load the bootstrapped management token (ACL mode only):
      source {target_token_file()}
-
-  3. Check node health:
      {CONSUL_MANAGER_CMD} doctor
 
-  4. Configure the Consul side for Nomad workload identity (no-op without ACL):
-     {CONSUL_MANAGER_CMD} nomad-jwt apply
+   Or for a throwaway lab node with no authentication:
+     {CONSUL_MANAGER_CMD} install --no-acl
 
-  5. Wire the Nomad side:
+2. Connect Nomad
+     {CONSUL_MANAGER_CMD} nomad-jwt plan
+     {CONSUL_MANAGER_CMD} nomad-jwt apply
      nomad-manager consul setup-local
 
-  6. Review destructive actions before removal:
+   With --no-acl, apply is a no-op and only the nomad-manager step is needed.
+
+3. Tune the node
+     {CONSUL_MANAGER_CMD} ui enable --metrics-provider prometheus
+     {CONSUL_MANAGER_CMD} dns enable --recursor 1.1.1.1
+
+4. Check everything at once
+     {CONSUL_MANAGER_CMD} doctor --integrations
+     {CONSUL_MANAGER_CMD} status
+
+5. Review before removing anything
      {CONSUL_MANAGER_CMD} uninstall --dry-run
+
+Run '{CONSUL_MANAGER_CMD} tutor <topic>' for the reasoning behind each step.
 """
     )
     return 0
@@ -1347,11 +1355,10 @@ Start here:
   {CONSUL_MANAGER_CMD} quickstart
   {CONSUL_MANAGER_CMD} doctor
 
-Topics:
-  install       Install a node and choose the ACL mode
-  acl           ACL modes, bootstrap and token handling
-  nomad         Connect Nomad to this Consul
-  troubleshoot  What to check when things fail
+Topics, in the same order as the commands:
+  1. Set up          install, acl
+  2. Connect Nomad   nomad
+  3. When it breaks  troubleshoot
 """,
     "install": f"""Install a single-node Consul:
 
@@ -1424,7 +1431,7 @@ No leader after install:
 
 Nomad tasks fail to register services:
   confirm the JWT auth method exists
-  {CONSUL_MANAGER_CMD} nomad-jwt status
+  {CONSUL_MANAGER_CMD} nomad-jwt doctor
 """,
 }
 
@@ -1443,25 +1450,100 @@ def add_client_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--token-file", default="", help=f"File holding a Consul ACL token (default: {target_token_file()})")
 
 
+COMMAND_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
+    (
+        "Set up the node",
+        "",
+        [
+            ("install", "Download Consul, write config, choose the ACL mode"),
+            ("acl", "Bootstrap ACL when install could not"),
+            ("doctor", "Check the node, the ACL state and the Nomad integration"),
+            ("status", "Show members, raft peers and install metadata"),
+        ],
+    ),
+    (
+        "Connect Nomad",
+        "",
+        [
+            ("nomad-jwt", "Consul side of Nomad workload identity"),
+        ],
+    ),
+    (
+        "Tune the node",
+        "",
+        [
+            ("ui", "Consul UI on/off and dashboard links"),
+            ("dns", "DNS behaviour and upstream recursors"),
+            ("tls", "TLS for the HTTP and RPC listeners"),
+            ("telemetry", "Prometheus metrics"),
+        ],
+    ),
+    (
+        "Maintain and remove",
+        "",
+        [
+            ("tools", "Update the installed consul-manager files"),
+            ("uninstall", "Remove Consul, after showing a removal plan"),
+        ],
+    ),
+    (
+        "Learn",
+        "",
+        [
+            ("quickstart", "A copyable end-to-end setup workflow"),
+            ("tutor", "Per-topic guidance with explanations"),
+        ],
+    ),
+]
+
+
+def grouped_command_names() -> list[str]:
+    return [name for _, _, commands in COMMAND_GROUPS for name, _ in commands]
+
+
+def registered_command_names(parser: argparse.ArgumentParser) -> list[str]:
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return list(action.choices)
+    return []
+
+
+def command_group_help() -> str:
+    """Render the command list grouped by the order the commands are used in."""
+    lines: list[str] = []
+    for index, (title, note, commands) in enumerate(COMMAND_GROUPS, start=1):
+        lines.append(f"{index}. {title}")
+        if note:
+            lines.append(f"     {note}")
+        for name, summary in commands:
+            lines.append(f"     {name:<14} {summary}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = CLIArgumentParser(
         prog=CONSUL_MANAGER_CMD,
-        description="Install and manage a single-node Consul setup.",
+        description="Manage a single-node Consul install, in the order you actually use it.\n"
+        "\n"
+        f"{command_group_help()}\n"
+        "\n"
+        f"Run '{CONSUL_MANAGER_CMD} <command> --help' for what a command does and when to use it,\n"
+        f"or '{CONSUL_MANAGER_CMD} quickstart' for the whole path end to end.",
         epilog=f"""Examples:
-  {CONSUL_MANAGER_CMD} quickstart
   {CONSUL_MANAGER_CMD} install --version latest
   {CONSUL_MANAGER_CMD} install --no-acl
-  {CONSUL_MANAGER_CMD} doctor
   {CONSUL_MANAGER_CMD} nomad-jwt apply
+  {CONSUL_MANAGER_CMD} ui enable --metrics-provider prometheus
+  {CONSUL_MANAGER_CMD} doctor --integrations
   {CONSUL_MANAGER_CMD} uninstall --dry-run
 """,
     )
-    sub = parser.add_subparsers(dest="command")
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
     parser.set_defaults(func=lambda _: missing_subcommand(parser, CONSUL_MANAGER_CMD))
 
     install = sub.add_parser(
         "install",
-        help="Install Consul",
         description="Install Consul, write managed config and start consul.service.\n"
         "\n"
         "ACL is enabled by default with default_policy deny; install bootstraps it and saves\n"
@@ -1510,54 +1592,8 @@ def build_parser() -> argparse.ArgumentParser:
         )
     )
 
-    uninstall = sub.add_parser(
-        "uninstall",
-        help="Uninstall Consul",
-        description="Stop Consul and remove runtime files after showing a removal plan.\n"
-        "\n"
-        "Run --dry-run first: the real uninstall deletes the data directory, which destroys\n"
-        "the KV store, the service catalog and every ACL token. Installed tools and audit\n"
-        "logs are preserved unless --remove-tools or --purge is given.",
-    )
-    uninstall.add_argument("--remove-tools", action="store_true", help="Also remove consul-manager from the managed install")
-    uninstall.add_argument("--purge", action="store_true", help="Remove runtime files, tools, metadata and audit logs")
-    uninstall.add_argument("--dry-run", action="store_true", help="Print the uninstall plan without changing files")
-    uninstall.add_argument("--yes", action="store_true", help="Skip the interactive confirmation")
-    uninstall.set_defaults(func=cmd_uninstall)
-
-    doctor = sub.add_parser(
-        "doctor",
-        help="Run node and integration checks",
-        description="Check the managed Consul install, service status, ACL state and Nomad integration.\n"
-        "\n"
-        "Read-only. ACL and Nomad checks adapt to the ACL mode recorded at install time, so a\n"
-        "node installed with --no-acl is not reported as broken.",
-    )
-    add_client_args(doctor)
-    doctor.add_argument("--integrations", action="store_true", help="Run Nomad integration checks even when no agent token file exists")
-    doctor.set_defaults(func=cmd_doctor)
-
-    status = sub.add_parser("status", help="Show members, raft peers and install metadata")
-    add_client_args(status)
-    status.set_defaults(func=cmd_status)
-
-    quickstart = sub.add_parser("quickstart", help="Show a copyable setup workflow")
-    quickstart.set_defaults(func=cmd_quickstart)
-
-    tools = sub.add_parser("tools", help="Manage installed tool files")
-    tools_sub = tools.add_subparsers(dest="tools_command")
-    tools.set_defaults(func=lambda _: missing_subcommand(tools, f"{CONSUL_MANAGER_CMD} tools"))
-    tools_update = tools_sub.add_parser(
-        "update",
-        help="Update consul-manager files only",
-        description="Update the installed consul-manager and consul_tools package without changing the Consul binary, config or service state.",
-    )
-    tools_update.add_argument("--consul-version", help="Consul version recorded in tool metadata; defaults to existing metadata")
-    tools_update.set_defaults(func=cmd_tools_update)
-
     acl = sub.add_parser(
         "acl",
-        help="Manage Consul ACL bootstrap",
         description="Bootstrap the Consul ACL system and save the management token.\n"
         "\n"
         "install already does this when ACL is enabled, so run it only when the bootstrap was\n"
@@ -1570,59 +1606,23 @@ def build_parser() -> argparse.ArgumentParser:
     acl_bootstrap.add_argument("--address", help=f"Consul HTTP address (default: {CONSUL_ADDR})")
     acl_bootstrap.set_defaults(func=cmd_acl_bootstrap)
 
-    ui = sub.add_parser("ui", description="Manage the Consul UI. enable and disable rewrite 35-ui.hcl and restart consul.service;\nreset removes the managed file entirely.", help="Manage the Consul UI config")
-    ui_sub = ui.add_subparsers(dest="ui_command")
-    ui.set_defaults(func=lambda _: missing_subcommand(ui, f"{CONSUL_MANAGER_CMD} ui"))
-    ui_enable = ui_sub.add_parser("enable", help="Write managed UI config")
-    ui_enable.add_argument("--metrics-provider", default="", help="UI metrics provider, for example prometheus")
-    ui_enable.add_argument("--metrics-proxy-base-url", default="", help="Base URL proxied for UI metrics")
-    ui_enable.add_argument("--dashboard-url-template", default="", help="Service dashboard URL template")
-    ui_enable.set_defaults(func=cmd_ui_enable)
-    ui_disable = ui_sub.add_parser("disable", help="Disable the Consul UI")
-    ui_disable.set_defaults(func=cmd_ui_disable)
-    ui_reset = ui_sub.add_parser("reset", help="Remove managed UI config")
-    ui_reset.set_defaults(func=lambda _: remove_managed_file(UI_CONFIG) or 0)
+    doctor = sub.add_parser(
+        "doctor",
+        description="Check the managed Consul install, service status, ACL state and Nomad integration.\n"
+        "\n"
+        "Read-only. ACL and Nomad checks adapt to the ACL mode recorded at install time, so a\n"
+        "node installed with --no-acl is not reported as broken.",
+    )
+    add_client_args(doctor)
+    doctor.add_argument("--integrations", action="store_true", help="Run Nomad integration checks even when no agent token file exists")
+    doctor.set_defaults(func=cmd_doctor)
 
-    tls = sub.add_parser("tls", description="Manage the managed TLS config. enable and disable rewrite 30-tls.hcl and restart\nconsul.service.\n\nCertificates are not generated here; point the options at files that already exist.", help="Manage TLS config")
-    tls_sub = tls.add_subparsers(dest="tls_command")
-    tls.set_defaults(func=lambda _: missing_subcommand(tls, f"{CONSUL_MANAGER_CMD} tls"))
-    tls_enable = tls_sub.add_parser("enable", help="Write managed TLS config")
-    tls_enable.add_argument("--ca-file", required=True, help="Consul CA certificate file")
-    tls_enable.add_argument("--cert-file", required=True, help="Consul certificate file")
-    tls_enable.add_argument("--key-file", required=True, help="Consul private key file")
-    add_bool_argument(tls_enable, "--verify-incoming", default=False, help_text="Verify incoming TLS connections", no_help="Do not verify incoming TLS connections")
-    add_bool_argument(tls_enable, "--verify-outgoing", default=True, help_text="Verify outgoing TLS connections", no_help="Do not verify outgoing TLS connections")
-    add_bool_argument(tls_enable, "--verify-server-hostname", default=True, help_text="Verify server hostnames for internal RPC", no_help="Do not verify server hostnames for internal RPC")
-    add_bool_argument(tls_enable, "--auto-encrypt", default=False, help_text="Allow auto_encrypt TLS distribution to clients", no_help="Disable auto_encrypt TLS distribution")
-    tls_enable.set_defaults(func=cmd_tls_enable)
-    tls_disable = tls_sub.add_parser("disable", help="Remove managed TLS config")
-    tls_disable.set_defaults(func=lambda _: remove_managed_file(TLS_CONFIG) or 0)
-
-    telemetry = sub.add_parser("telemetry", description="Manage the managed telemetry config. enable and disable rewrite 40-telemetry.hcl and\nrestart consul.service.", help="Manage telemetry config")
-    telemetry_sub = telemetry.add_subparsers(dest="telemetry_command")
-    telemetry.set_defaults(func=lambda _: missing_subcommand(telemetry, f"{CONSUL_MANAGER_CMD} telemetry"))
-    telemetry_enable = telemetry_sub.add_parser("enable", help="Write managed telemetry config")
-    telemetry_enable.add_argument("--retention", default="24h", help="Prometheus retention time (default: 24h)")
-    add_bool_argument(telemetry_enable, "--disable-hostname", default=True, help_text="Disable hostname labels in telemetry", no_help="Keep hostname labels in telemetry", no_option="--keep-hostname")
-    telemetry_enable.set_defaults(func=cmd_telemetry_enable)
-    telemetry_disable = telemetry_sub.add_parser("disable", help="Remove managed telemetry config")
-    telemetry_disable.set_defaults(func=lambda _: remove_managed_file(TELEMETRY_CONFIG) or 0)
-
-    dns = sub.add_parser("dns", description="Manage Consul DNS behaviour in 50-dns.hcl, including upstream recursors. Both commands\nrestart consul.service.", help="Manage DNS config")
-    dns_sub = dns.add_subparsers(dest="dns_command")
-    dns.set_defaults(func=lambda _: missing_subcommand(dns, f"{CONSUL_MANAGER_CMD} dns"))
-    dns_enable = dns_sub.add_parser("enable", help="Write managed DNS config")
-    dns_enable.add_argument("--recursor", action="append", default=[], help="Upstream DNS recursor; repeatable")
-    add_bool_argument(dns_enable, "--allow-stale", default=True, help_text="Allow stale DNS reads", no_help="Require leader-consistent DNS reads")
-    add_bool_argument(dns_enable, "--enable-truncate", default=True, help_text="Set the truncate bit on large DNS responses", no_help="Do not set the truncate bit")
-    add_bool_argument(dns_enable, "--only-passing", default=False, help_text="Return only passing services from DNS", no_help="Return warning services from DNS as well")
-    dns_enable.set_defaults(func=cmd_dns_enable)
-    dns_disable = dns_sub.add_parser("disable", help="Remove managed DNS config")
-    dns_disable.set_defaults(func=lambda _: remove_managed_file(DNS_CONFIG) or 0)
+    status = sub.add_parser("status")
+    add_client_args(status)
+    status.set_defaults(func=cmd_status)
 
     nomad_jwt = sub.add_parser(
         "nomad-jwt",
-        help="Configure the Consul side for Nomad workload identity",
         description="Create the Consul JWT auth method, binding rules and Nomad agent token, so\n"
         "Nomad tasks can exchange their workload identity for a Consul token.\n"
         "\n"
@@ -1644,13 +1644,92 @@ def build_parser() -> argparse.ArgumentParser:
     jwt_apply.add_argument("--nomad-addr", help=f"Nomad HTTP address (default: {DEFAULT_NOMAD_ADDR})")
     jwt_apply.add_argument("--force", action="store_true", help="Recreate the Nomad agent token even when the existing one is valid")
     jwt_apply.set_defaults(func=cmd_nomad_jwt_apply)
-    jwt_status = jwt_sub.add_parser("status", help="Check the Consul side of the Nomad integration")
-    add_client_args(jwt_status)
-    jwt_status.set_defaults(func=cmd_nomad_jwt_status)
+    jwt_doctor = jwt_sub.add_parser("doctor", help="Check the Consul side of the Nomad integration")
+    add_client_args(jwt_doctor)
+    jwt_doctor.set_defaults(func=cmd_nomad_jwt_doctor)
 
-    tutor = sub.add_parser("tutor", help="Show short workflow guidance")
+    ui = sub.add_parser("ui", description="Manage the Consul UI. enable and disable rewrite 35-ui.hcl and restart consul.service;\nreset removes the managed file entirely.")
+    ui_sub = ui.add_subparsers(dest="ui_command")
+    ui.set_defaults(func=lambda _: missing_subcommand(ui, f"{CONSUL_MANAGER_CMD} ui"))
+    ui_enable = ui_sub.add_parser("enable", help="Write managed UI config")
+    ui_enable.add_argument("--metrics-provider", default="", help="UI metrics provider, for example prometheus")
+    ui_enable.add_argument("--metrics-proxy-base-url", default="", help="Base URL proxied for UI metrics")
+    ui_enable.add_argument("--dashboard-url-template", default="", help="Service dashboard URL template")
+    ui_enable.set_defaults(func=cmd_ui_enable)
+    ui_disable = ui_sub.add_parser("disable", help="Disable the Consul UI")
+    ui_disable.set_defaults(func=cmd_ui_disable)
+    ui_reset = ui_sub.add_parser("reset", help="Remove managed UI config")
+    ui_reset.set_defaults(func=lambda _: remove_managed_file(UI_CONFIG) or 0)
+
+    dns = sub.add_parser("dns", description="Manage Consul DNS behaviour in 50-dns.hcl, including upstream recursors. Both commands\nrestart consul.service.")
+    dns_sub = dns.add_subparsers(dest="dns_command")
+    dns.set_defaults(func=lambda _: missing_subcommand(dns, f"{CONSUL_MANAGER_CMD} dns"))
+    dns_enable = dns_sub.add_parser("enable", help="Write managed DNS config")
+    dns_enable.add_argument("--recursor", action="append", default=[], help="Upstream DNS recursor; repeatable")
+    add_bool_argument(dns_enable, "--allow-stale", default=True, help_text="Allow stale DNS reads", no_help="Require leader-consistent DNS reads")
+    add_bool_argument(dns_enable, "--enable-truncate", default=True, help_text="Set the truncate bit on large DNS responses", no_help="Do not set the truncate bit")
+    add_bool_argument(dns_enable, "--only-passing", default=False, help_text="Return only passing services from DNS", no_help="Return warning services from DNS as well")
+    dns_enable.set_defaults(func=cmd_dns_enable)
+    dns_disable = dns_sub.add_parser("disable", help="Remove managed DNS config")
+    dns_disable.set_defaults(func=lambda _: remove_managed_file(DNS_CONFIG) or 0)
+
+    tls = sub.add_parser("tls", description="Manage the managed TLS config. enable and disable rewrite 30-tls.hcl and restart\nconsul.service.\n\nCertificates are not generated here; point the options at files that already exist.")
+    tls_sub = tls.add_subparsers(dest="tls_command")
+    tls.set_defaults(func=lambda _: missing_subcommand(tls, f"{CONSUL_MANAGER_CMD} tls"))
+    tls_enable = tls_sub.add_parser("enable", help="Write managed TLS config")
+    tls_enable.add_argument("--ca-file", required=True, help="Consul CA certificate file")
+    tls_enable.add_argument("--cert-file", required=True, help="Consul certificate file")
+    tls_enable.add_argument("--key-file", required=True, help="Consul private key file")
+    add_bool_argument(tls_enable, "--verify-incoming", default=False, help_text="Verify incoming TLS connections", no_help="Do not verify incoming TLS connections")
+    add_bool_argument(tls_enable, "--verify-outgoing", default=True, help_text="Verify outgoing TLS connections", no_help="Do not verify outgoing TLS connections")
+    add_bool_argument(tls_enable, "--verify-server-hostname", default=True, help_text="Verify server hostnames for internal RPC", no_help="Do not verify server hostnames for internal RPC")
+    add_bool_argument(tls_enable, "--auto-encrypt", default=False, help_text="Allow auto_encrypt TLS distribution to clients", no_help="Disable auto_encrypt TLS distribution")
+    tls_enable.set_defaults(func=cmd_tls_enable)
+    tls_disable = tls_sub.add_parser("disable", help="Remove managed TLS config")
+    tls_disable.set_defaults(func=lambda _: remove_managed_file(TLS_CONFIG) or 0)
+
+    telemetry = sub.add_parser("telemetry", description="Manage the managed telemetry config. enable and disable rewrite 40-telemetry.hcl and\nrestart consul.service.")
+    telemetry_sub = telemetry.add_subparsers(dest="telemetry_command")
+    telemetry.set_defaults(func=lambda _: missing_subcommand(telemetry, f"{CONSUL_MANAGER_CMD} telemetry"))
+    telemetry_enable = telemetry_sub.add_parser("enable", help="Write managed telemetry config")
+    telemetry_enable.add_argument("--retention", default="24h", help="Prometheus retention time (default: 24h)")
+    add_bool_argument(telemetry_enable, "--disable-hostname", default=True, help_text="Disable hostname labels in telemetry", no_help="Keep hostname labels in telemetry", no_option="--keep-hostname")
+    telemetry_enable.set_defaults(func=cmd_telemetry_enable)
+    telemetry_disable = telemetry_sub.add_parser("disable", help="Remove managed telemetry config")
+    telemetry_disable.set_defaults(func=lambda _: remove_managed_file(TELEMETRY_CONFIG) or 0)
+
+    tools = sub.add_parser("tools")
+    tools_sub = tools.add_subparsers(dest="tools_command")
+    tools.set_defaults(func=lambda _: missing_subcommand(tools, f"{CONSUL_MANAGER_CMD} tools"))
+    tools_update = tools_sub.add_parser(
+        "update",
+        help="Update consul-manager files only",
+        description="Update the installed consul-manager and consul_tools package without changing the Consul binary, config or service state.",
+    )
+    tools_update.add_argument("--consul-version", help="Consul version recorded in tool metadata; defaults to existing metadata")
+    tools_update.set_defaults(func=cmd_tools_update)
+
+    uninstall = sub.add_parser(
+        "uninstall",
+        description="Stop Consul and remove runtime files after showing a removal plan.\n"
+        "\n"
+        "Run --dry-run first: the real uninstall deletes the data directory, which destroys\n"
+        "the KV store, the service catalog and every ACL token. Installed tools and audit\n"
+        "logs are preserved unless --remove-tools or --purge is given.",
+    )
+    uninstall.add_argument("--remove-tools", action="store_true", help="Also remove consul-manager from the managed install")
+    uninstall.add_argument("--purge", action="store_true", help="Remove runtime files, tools, metadata and audit logs")
+    uninstall.add_argument("--dry-run", action="store_true", help="Print the uninstall plan without changing files")
+    uninstall.add_argument("--yes", action="store_true", help="Skip the interactive confirmation")
+    uninstall.set_defaults(func=cmd_uninstall)
+
+    quickstart = sub.add_parser("quickstart")
+    quickstart.set_defaults(func=cmd_quickstart)
+
+    tutor = sub.add_parser("tutor")
     tutor.add_argument("topic", nargs="?", help=f"Topic name: {', '.join(sorted(TUTOR_TOPICS))}")
     tutor.set_defaults(func=cmd_tutor)
+
     return parser
 
 
