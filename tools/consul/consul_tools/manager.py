@@ -398,9 +398,131 @@ def doctor_check(status: str, message: str) -> None:
         "OK": (terminal_status_prefix(), COLOR_GREEN),
         "WARN": ("WARN", COLOR_YELLOW),
         "FAIL": ("FAIL", COLOR_RED),
+        "INFO": ("INFO", ""),
     }
     label, color = labels.get(status, (status, ""))
-    print(f"{color_text(f'{label:<5}', color)} {message}")
+    prefix = f"{label:<5}"
+    print(f"{color_text(prefix, color) if color else prefix} {message}")
+
+
+def doctor_info(message: str) -> None:
+    """Report an effective setting. Informational only; never counted as a failure."""
+    doctor_check("INFO", message)
+
+
+def hcl_block_body(text: str, block: str) -> str:
+    """Return the body of a `<block> {` ... `}` section from a Consul config."""
+    match = re.search(rf"(?m)^\s*{re.escape(block)}\s*\{{", text)
+    if not match:
+        return ""
+    start = text.index("{", match.start())
+    depth = 0
+    for index in range(start, len(text)):
+        if text[index] == "{":
+            depth += 1
+        elif text[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:index]
+    return ""
+
+
+def hcl_text_value(text: str, key: str) -> str:
+    match = re.search(rf'(?m)^\s*{re.escape(key)}\s*=\s*(".*?"|true|false|\[[^\]]*\]|\S+)', text)
+    return match.group(1).strip().strip('"') if match else ""
+
+
+def read_config_text(path: Path) -> str:
+    if not is_managed_file(path):
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def read_base_config_text() -> str:
+    """The base config carries no managed marker; install owns it outright."""
+    try:
+        return CONFIG_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def unset_label(value: str) -> str:
+    return value if value else "<unset>"
+
+
+def base_config_values() -> dict[str, str]:
+    text = read_base_config_text()
+    if not text:
+        return {}
+    ports = hcl_block_body(text, "ports")
+    acl = hcl_block_body(text, "acl")
+    return {
+        "datacenter": hcl_text_value(text, "datacenter"),
+        "data_dir": hcl_text_value(text, "data_dir"),
+        "bind_addr": hcl_text_value(text, "bind_addr"),
+        "client_addr": hcl_text_value(text, "client_addr"),
+        "bootstrap_expect": hcl_text_value(text, "bootstrap_expect"),
+        "log_level": hcl_text_value(text, "log_level"),
+        # never surface the key itself, only whether gossip encryption is configured
+        "gossip_encrypt": "true" if hcl_text_value(text, "encrypt") else "false",
+        "http_port": hcl_text_value(ports, "http"),
+        "grpc_port": hcl_text_value(ports, "grpc"),
+        "dns_port": hcl_text_value(ports, "dns"),
+        "connect": hcl_text_value(hcl_block_body(text, "connect"), "enabled"),
+        "acl_enabled": hcl_text_value(acl, "enabled") or "false",
+        "acl_default_policy": hcl_text_value(acl, "default_policy"),
+    }
+
+
+def tls_config_values() -> dict[str, str]:
+    text = read_config_text(TLS_CONFIG)
+    if not text:
+        return {}
+    defaults = hcl_block_body(text, "defaults")
+    return {
+        "ca_file": hcl_text_value(defaults, "ca_file"),
+        "cert_file": hcl_text_value(defaults, "cert_file"),
+        "key_file": hcl_text_value(defaults, "key_file"),
+        "verify_incoming": hcl_text_value(defaults, "verify_incoming"),
+        "verify_outgoing": hcl_text_value(defaults, "verify_outgoing"),
+        "verify_server_hostname": hcl_text_value(hcl_block_body(text, "internal_rpc"), "verify_server_hostname"),
+        "auto_encrypt": hcl_text_value(hcl_block_body(text, "auto_encrypt"), "allow_tls"),
+    }
+
+
+def ui_config_values() -> dict[str, str]:
+    text = read_config_text(UI_CONFIG)
+    if not text:
+        return {}
+    body = hcl_block_body(text, "ui_config")
+    return {
+        "enabled": hcl_text_value(body, "enabled"),
+        "metrics_provider": hcl_text_value(body, "metrics_provider"),
+        "metrics_proxy": hcl_text_value(hcl_block_body(body, "metrics_proxy"), "base_url"),
+    }
+
+
+def telemetry_config_values() -> dict[str, str]:
+    text = read_config_text(TELEMETRY_CONFIG)
+    if not text:
+        return {}
+    return {key: hcl_text_value(text, key) for key in ("prometheus_retention_time", "disable_hostname")}
+
+
+def dns_config_values() -> dict[str, str]:
+    text = read_config_text(DNS_CONFIG)
+    if not text:
+        return {}
+    body = hcl_block_body(text, "dns_config")
+    return {
+        "recursors": hcl_text_value(text, "recursors"),
+        "allow_stale": hcl_text_value(body, "allow_stale"),
+        "enable_truncate": hcl_text_value(body, "enable_truncate"),
+        "only_passing": hcl_text_value(body, "only_passing"),
+    }
 
 
 def hcl_file_string_value(path: Path, key: str) -> str:
@@ -520,6 +642,92 @@ def doctor_nomad_integration(address: str, token: str) -> int:
     return failures
 
 
+def doctor_node_runtime() -> int:
+    """Version, data directory and the tool copy this node runs from."""
+    failures = 0
+    recorded = read_installed_consul_version()
+    doctor_info(f"recorded version = {recorded}")
+    if BIN_PATH.is_file():
+        result = run([str(BIN_PATH), "version"], capture=True, check=False)
+        match = re.search(r"Consul v([0-9]+\.[0-9]+\.[0-9]+)", result.stdout or "")
+        if match:
+            doctor_info(f"binary version   = {match.group(1)}")
+            if recorded not in {"unknown", match.group(1)}:
+                doctor_check("WARN", f"Binary version {match.group(1)} differs from recorded {recorded}; run tools update")
+    if CONSUL_AGENT_DATA_DIR.is_dir():
+        doctor_check("OK", f"Data directory exists: {CONSUL_AGENT_DATA_DIR}")
+    else:
+        doctor_check("FAIL", f"Data directory missing: {CONSUL_AGENT_DATA_DIR}")
+        failures += 1
+    if TOOL_DIR.is_dir():
+        doctor_check("OK", f"Tool copy present: {TOOL_DIR}")
+    else:
+        doctor_check("WARN", f"Tool copy missing: {TOOL_DIR}; this node was not installed by consul-manager")
+    return failures
+
+
+def doctor_base_configuration() -> int:
+    values = base_config_values()
+    if not values:
+        doctor_check("FAIL", f"Base config not readable: {CONFIG_FILE}")
+        return 1
+    failures = 0
+    doctor_info(f"datacenter   = {unset_label(values['datacenter'])}")
+    doctor_info(f"bind_addr    = {unset_label(values['bind_addr'])}")
+    doctor_info(f"client_addr  = {unset_label(values['client_addr'])}")
+    doctor_info(f"ports        = http {unset_label(values['http_port'])}, "
+                f"grpc {unset_label(values['grpc_port'])}, dns {unset_label(values['dns_port'])}")
+    doctor_info(f"connect      = {values['connect'] or 'false'}")
+    doctor_info(f"gossip encr. = {values['gossip_encrypt']}")
+    doctor_info(f"acl          = {values['acl_enabled']}"
+                + (f" (default_policy {unset_label(values['acl_default_policy'])})" if values["acl_enabled"] == "true" else ""))
+    if values["connect"] == "true" and values["grpc_port"] in {"-1", ""}:
+        doctor_check("FAIL", "Connect is enabled but the gRPC port is disabled; service mesh will not work")
+        failures += 1
+    if values["acl_enabled"] == "true" and values["acl_default_policy"] == "allow":
+        doctor_check("WARN", "ACL default_policy is allow; tokens are issued but nothing is denied")
+    if values["bind_addr"] not in {"127.0.0.1", "", "localhost"} and values["acl_enabled"] != "true":
+        doctor_check("FAIL", f"Consul binds {values['bind_addr']} with ACL disabled; the API is open to that network")
+        failures += 1
+    return failures
+
+
+def doctor_node_configuration() -> int:
+    failures = 0
+    ui = ui_config_values()
+    if ui:
+        doctor_info(f"UI: enabled {unset_label(ui['enabled'])}, "
+                    f"metrics_provider {unset_label(ui['metrics_provider'])}")
+    else:
+        doctor_info("UI: not configured")
+    telemetry = telemetry_config_values()
+    if telemetry:
+        doctor_info(f"Telemetry: prometheus_retention_time {unset_label(telemetry['prometheus_retention_time'])}")
+    else:
+        doctor_info("Telemetry: not configured")
+    dns = dns_config_values()
+    if dns:
+        doctor_info(f"DNS: recursors {unset_label(dns['recursors'])}, only_passing {unset_label(dns['only_passing'])}")
+    else:
+        doctor_info("DNS: not configured")
+    tls = tls_config_values()
+    if tls:
+        doctor_info(f"TLS: verify_incoming {unset_label(tls['verify_incoming'])}, "
+                    f"verify_outgoing {unset_label(tls['verify_outgoing'])}")
+        for key in ("ca_file", "cert_file", "key_file"):
+            value = tls.get(key, "")
+            if not value:
+                continue
+            if Path(value).is_file():
+                doctor_check("OK", f"TLS {key} exists: {value}")
+            else:
+                doctor_check("FAIL", f"TLS {key} missing: {value}; consul.service will not start")
+                failures += 1
+    else:
+        doctor_info("TLS: not configured")
+    return failures
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     failures = 0
     address = args.address or CONSUL_ADDR
@@ -563,10 +771,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     else:
         doctor_check("FAIL", "Consul has no elected leader")
         failures += 1
+    print("\nNode runtime:")
+    failures += doctor_node_runtime()
+    print("\nBase configuration:")
+    failures += doctor_base_configuration()
     print("\nManaged config fragments:")
     for path, label in ((TLS_CONFIG, "TLS"), (UI_CONFIG, "UI"), (TELEMETRY_CONFIG, "Telemetry"), (DNS_CONFIG, "DNS")):
         if doctor_config_file(path, label) == 1:
             failures += 1
+    failures += doctor_node_configuration()
     print("\nACL checks:")
     failures += doctor_acl(address, token)
     if args.integrations or NOMAD_AGENT_TOKEN_FILE.is_file():
@@ -577,20 +790,72 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 0 if failures == 0 else 1
 
 
+def status_line(key: str, value: str) -> None:
+    print(f"  {key:<22} {value}")
+
+
 def cmd_status(args: argparse.Namespace) -> int:
+    """Show what is configured. doctor answers whether it is healthy."""
     address = args.address or CONSUL_ADDR
     token = resolve_consul_token(args)
-    if not BIN_PATH.is_file() and not command_exists("consul"):
-        raise CLIError(f"Consul binary not found: {BIN_PATH}")
-    print("Consul members:")
-    consul_cmd(address, token, ["members"], check=False)
-    print("\nRaft peers:")
-    consul_cmd(address, token, ["operator", "raft", "list-peers"], check=False)
-    print(f"\nACL enabled: {str(acl_enabled()).lower()}")
-    metadata = read_install_metadata()
-    if metadata:
-        print(f"Consul version: {metadata.get('consul_version', 'unknown')}")
-        print(f"Datacenter: {metadata.get('datacenter', 'unknown')}")
+    base = base_config_values()
+
+    print("Install:")
+    status_line("recorded version", read_installed_consul_version())
+    if BIN_PATH.is_file():
+        match = re.search(r"Consul v([0-9]+\.[0-9]+\.[0-9]+)", (run([str(BIN_PATH), "version"], capture=True, check=False).stdout or ""))
+        status_line("binary version", match.group(1) if match else "unknown")
+    status_line("binary", str(BIN_PATH) if BIN_PATH.is_file() else "<not installed>")
+    status_line("config dir", str(CONFIG_DIR))
+    status_line("data dir", str(CONSUL_AGENT_DATA_DIR))
+    status_line("tool dir", str(TOOL_DIR) if TOOL_DIR.is_dir() else "<not installed>")
+    if command_exists("systemctl"):
+        status_line("service", (run(["systemctl", "is-active", "consul"], check=False, capture=True).stdout or "").strip() or "unknown")
+    status_line("api", f"{address} ({http_status(f'{address.rstrip(chr(47))}/v1/status/leader')})")
+    status_line("acl token file", str(target_token_file()) if target_token_file().is_file() else "<absent>")
+
+    print("\nBase configuration:")
+    if not base:
+        print(f"  <not readable: {CONFIG_FILE}>")
+    else:
+        status_line("datacenter", unset_label(base["datacenter"]))
+        status_line("bind / client", f"{unset_label(base['bind_addr'])} / {unset_label(base['client_addr'])}")
+        status_line("ports", f"http {unset_label(base['http_port'])}, grpc {unset_label(base['grpc_port'])}, "
+                             f"dns {unset_label(base['dns_port'])}")
+        status_line("connect", base["connect"] or "false")
+        status_line("gossip encryption", base["gossip_encrypt"])
+        status_line("acl", base["acl_enabled"] + (f" (default_policy {base['acl_default_policy']})"
+                                                  if base["acl_enabled"] == "true" else ""))
+
+    print("\nManaged configuration:")
+    ui = ui_config_values()
+    status_line("ui", f"enabled {unset_label(ui['enabled'])}, metrics {unset_label(ui['metrics_provider'])}"
+                if ui else "<not configured>")
+    tls = tls_config_values()
+    status_line("tls", f"verify_incoming {unset_label(tls['verify_incoming'])}, "
+                       f"ca {unset_label(tls['ca_file'])}" if tls else "<not configured>")
+    telemetry = telemetry_config_values()
+    status_line("telemetry", f"retention {unset_label(telemetry['prometheus_retention_time'])}"
+                if telemetry else "<not configured>")
+    dns = dns_config_values()
+    status_line("dns", f"recursors {unset_label(dns['recursors'])}, only_passing {unset_label(dns['only_passing'])}"
+                if dns else "<not configured>")
+
+    print("\nNomad integration:")
+    if not acl_enabled():
+        status_line("workload identity", "not needed (ACL disabled)")
+    else:
+        status_line("agent token file", str(NOMAD_AGENT_TOKEN_FILE) if NOMAD_AGENT_TOKEN_FILE.is_file() else "<absent>")
+        status_line("jwt auth method", NOMAD_AUTH_METHOD)
+
+    if BIN_PATH.is_file() or command_exists("consul"):
+        print("\nConsul members:")
+        consul_cmd(address, token, ["members"], check=False)
+        print("\nRaft peers:")
+        consul_cmd(address, token, ["operator", "raft", "list-peers"], check=False)
+    else:
+        print(f"\nConsul binary not found: {BIN_PATH}; skipping members and raft peers")
+    print(f"\nRun '{CONSUL_MANAGER_CMD} doctor' to check whether any of this is broken.")
     return 0
 
 

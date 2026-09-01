@@ -136,3 +136,25 @@ setup() {
     [[ "${output}" == *"Node configuration:"* ]]
     [[ "${output}" == *"Host volumes:"* ]]
 }
+
+@test "consul-manager doctor reads managed config values" {
+    run python3 "${REPO_ROOT}/tests/test_consul_manager_doctor.py"
+
+    [ "${status}" -eq 0 ]
+}
+
+@test "consul-manager status shows the effective configuration" {
+    run "${REPO_ROOT}/tools/consul/consul-manager" status
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"Base configuration:"* ]]
+    [[ "${output}" == *"Managed configuration:"* ]]
+    [[ "${output}" == *"Nomad integration:"* ]]
+}
+
+@test "consul-manager doctor reports runtime and base config sections" {
+    run "${REPO_ROOT}/tools/consul/consul-manager" doctor
+
+    [[ "${output}" == *"Node runtime:"* ]]
+    [[ "${output}" == *"Base configuration:"* ]]
+}
