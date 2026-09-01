@@ -1,4 +1,4 @@
-"""验证两个 manager 拒绝从已安装的自身副本更新工具文件。
+"""验证三个 manager 都拒绝从已安装的自身副本更新工具文件。
 
 从 /opt/<product>/lib/<product>-init-tools 里跑 install 或 tools update 时，
 源目录就是目标目录，拷贝是空操作，旧代码会继续留在节点上而没有任何提示。
@@ -14,12 +14,15 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "tools" / "nomad"))
 sys.path.insert(0, str(REPO_ROOT / "tools" / "consul"))
+sys.path.insert(0, str(REPO_ROOT / "tools" / "vault"))
 
 from consul_tools import manager as consul_manager  # noqa: E402
 from nomad_tools import manager as nomad_manager  # noqa: E402
+from vault_tools import manager as vault_manager  # noqa: E402
 
 
-MANAGERS = (("nomad-manager", nomad_manager), ("consul-manager", consul_manager))
+MANAGERS = (("nomad-manager", nomad_manager), ("consul-manager", consul_manager),
+            ("vault-manager", vault_manager))
 
 
 class ToolSourceGuardTest(unittest.TestCase):
@@ -77,7 +80,7 @@ class ToolSourceGuardTest(unittest.TestCase):
                 module.install_tool_snapshot = lambda *args: called.append(args)
                 try:
                     with self.assertRaises(module.CLIError) as caught:
-                        module.cmd_tools_update(argparse.Namespace(nomad_version=None, consul_version=None))
+                        module.cmd_tools_update(argparse.Namespace(nomad_version=None, consul_version=None, vault_version=None))
                     self.assertIn("Refusing to update from the installed copy", str(caught.exception))
                     self.assertEqual(called, [], f"{label}: snapshot must not be written")
                 finally:
@@ -89,7 +92,8 @@ class ToolSourceGuardTest(unittest.TestCase):
         checkout.mkdir()
         # each tool names its own version reader
         version_readers = {"nomad-manager": "read_installed_nomad_version",
-                           "consul-manager": "read_installed_consul_version"}
+                           "consul-manager": "read_installed_consul_version",
+                           "vault-manager": "read_installed_vault_version"}
         for label, module in MANAGERS:
             with self.subTest(tool=label):
                 reader = version_readers[label]
@@ -104,7 +108,7 @@ class ToolSourceGuardTest(unittest.TestCase):
                 called = []
                 module.install_tool_snapshot = lambda *args: called.append(args)
                 try:
-                    result = module.cmd_tools_update(argparse.Namespace(nomad_version=None, consul_version=None))
+                    result = module.cmd_tools_update(argparse.Namespace(nomad_version=None, consul_version=None, vault_version=None))
                     self.assertEqual(result, 0)
                     self.assertEqual(len(called), 1, f"{label}: snapshot should be written once")
                 finally:

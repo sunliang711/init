@@ -1,4 +1,4 @@
-"""验证 nomad-manager 与 consul-manager 顶层命令与各自 COMMAND_GROUPS 分组表保持一致。"""
+"""验证三个 manager 的顶层命令与各自 COMMAND_GROUPS 分组表保持一致。"""
 
 import argparse
 import sys
@@ -9,12 +9,15 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "tools" / "nomad"))
 sys.path.insert(0, str(REPO_ROOT / "tools" / "consul"))
+sys.path.insert(0, str(REPO_ROOT / "tools" / "vault"))
 
 from consul_tools import manager as consul_manager  # noqa: E402
 from nomad_tools import manager as nomad_manager  # noqa: E402
+from vault_tools import manager as vault_manager  # noqa: E402
 
 
-MANAGERS = (("nomad-manager", nomad_manager), ("consul-manager", consul_manager))
+MANAGERS = (("nomad-manager", nomad_manager), ("consul-manager", consul_manager),
+            ("vault-manager", vault_manager))
 
 
 class CommandGroupsTest(unittest.TestCase):

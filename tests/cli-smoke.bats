@@ -164,3 +164,46 @@ setup() {
 
     [ "${status}" -eq 0 ]
 }
+
+@test "vault-manager help groups commands by usage stage" {
+    run "${REPO_ROOT}/tools/vault/vault-manager" --help
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"1. Set up the node"* ]]
+    [[ "${output}" == *"2. Bring Vault online"* ]]
+    [[ "${output}" == *"3. Configure Vault"* ]]
+    [[ "${output}" == *"4. Maintain and remove"* ]]
+    [[ "${output}" == *"5. Learn"* ]]
+}
+
+@test "vault-manager uninstall dry-run warns about the unseal keys" {
+    run "${REPO_ROOT}/tools/vault/vault-manager" uninstall --dry-run --purge
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"Vault uninstall plan:"* ]]
+    [[ "${output}" == *"destroys the unseal keys and root token"* ]]
+}
+
+@test "vault-manager status and doctor report the seal path" {
+    run "${REPO_ROOT}/tools/vault/vault-manager" status
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"Configuration:"* ]]
+    [[ "${output}" == *"Init output:"* ]]
+
+    run "${REPO_ROOT}/tools/vault/vault-manager" doctor
+    [[ "${output}" == *"Node runtime:"* ]]
+    [[ "${output}" == *"Vault state:"* ]]
+}
+
+@test "vault-manager logic tests pass" {
+    run python3 "${REPO_ROOT}/tests/test_vault_manager.py"
+
+    [ "${status}" -eq 0 ]
+}
+
+@test "the bash vault manager is still available under vault-sh" {
+    run bash "${REPO_ROOT}/tools/vault-sh/vault-manager" help
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"Vault manager"* ]]
+}
