@@ -159,6 +159,20 @@ setup() {
     [[ "${output}" == *"Base configuration:"* ]]
 }
 
+@test "managers record the source revision they were installed from" {
+    run python3 "${REPO_ROOT}/tests/test_manager_tool_revision.py"
+
+    [ "${status}" -eq 0 ]
+}
+
+@test "status reports the installed tool revision" {
+    for tool in nomad/nomad-manager consul/consul-manager vault/vault-manager; do
+        run "${REPO_ROOT}/tools/${tool}" status
+        [ "${status}" -eq 0 ]
+        [[ "${output}" == *"tool revision"* ]]
+    done
+}
+
 @test "managers refuse to update from their own installed copy" {
     run python3 "${REPO_ROOT}/tests/test_manager_tool_source.py"
 

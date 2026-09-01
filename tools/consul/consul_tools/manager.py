@@ -647,6 +647,7 @@ def doctor_node_runtime() -> int:
     failures = 0
     recorded = read_installed_consul_version()
     doctor_info(f"recorded version = {recorded}")
+    doctor_info(f"tool revision    = {read_installed_tool_revision()}")
     if BIN_PATH.is_file():
         result = run([str(BIN_PATH), "version"], capture=True, check=False)
         match = re.search(r"Consul v([0-9]+\.[0-9]+\.[0-9]+)", result.stdout or "")
@@ -809,6 +810,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     status_line("config dir", str(CONFIG_DIR))
     status_line("data dir", str(CONSUL_AGENT_DATA_DIR))
     status_line("tool dir", str(TOOL_DIR) if TOOL_DIR.is_dir() else "<not installed>")
+    status_line("tool revision", read_installed_tool_revision())
     if command_exists("systemctl"):
         status_line("service", (run(["systemctl", "is-active", "consul"], check=False, capture=True).stdout or "").strip() or "unknown")
     status_line("api", f"{address} ({http_status(f'{address.rstrip(chr(47))}/v1/status/leader')})")
@@ -1042,7 +1044,46 @@ def write_tool_manifest() -> None:
     install_text(TOOL_MANIFEST_FILE, "\n".join(lines) + "\n", mode="0644")
 
 
-def write_install_metadata(version: str, args: argparse.Namespace) -> None:
+def source_tool_revision(script_dir: Path) -> tuple[str, bool]:
+    """The git revision of the source tree the snapshot is taken from.
+
+    Returns ("unknown", False) when git is unavailable or the source is not a
+    checkout. Dirtiness is scoped to the tool directory, so unrelated edits
+    elsewhere in the repository do not mark the snapshot as modified.
+    """
+    if not command_exists("git"):
+        return "unknown", False
+    revision = run(["git", "-C", str(script_dir), "rev-parse", "--short", "HEAD"],
+                   capture=True, check=False)
+    if revision.returncode != 0:
+        return "unknown", False
+    # the pathspec is resolved relative to -C, so it must be "." and not script_dir
+    status = run(["git", "-C", str(script_dir), "status", "--porcelain", "--", "."],
+                 capture=True, check=False)
+    dirty = status.returncode == 0 and bool((status.stdout or "").strip())
+    return (revision.stdout or "").strip() or "unknown", dirty
+
+
+def read_installed_tool_revision() -> str:
+    metadata = read_install_metadata()
+    revision = metadata.get("tool_revision")
+    if isinstance(revision, str) and revision.strip():
+        return revision.strip() + ("-dirty" if metadata.get("tool_revision_dirty") else "")
+    values: dict[str, str] = {}
+    try:
+        for line in TOOL_VERSION_FILE.read_text(encoding="utf-8").splitlines():
+            key, sep, value = line.partition("=")
+            if sep:
+                values[key] = value.strip()
+    except OSError:
+        return "unknown"
+    revision = values.get("tool_revision", "")
+    if not revision:
+        return "unknown"
+    return revision + ("-dirty" if values.get("tool_revision_dirty") == "true" else "")
+
+
+def write_install_metadata(version: str, args: argparse.Namespace, revision: str = "unknown", dirty: bool = False) -> None:
     metadata = {
         "tool": "consul-manager",
         "root_dir": str(CONSUL_ROOT_DIR),
@@ -1068,6 +1109,8 @@ def write_install_metadata(version: str, args: argparse.Namespace) -> None:
         "connect_enabled": bool(args.connect),
         "gossip_encrypt": bool(args.gossip_encrypt),
         "installed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "tool_revision": revision,
+        "tool_revision_dirty": dirty,
         "manifest_file": str(TOOL_MANIFEST_FILE),
         "manifest_sha256": sha256_file(TOOL_MANIFEST_FILE) if TOOL_MANIFEST_FILE.is_file() else "",
         "audit_log": str(AUDIT_LOG_FILE),
@@ -1091,7 +1134,8 @@ def write_data_pointer() -> None:
 
 
 def install_tool_snapshot(version: str, script_dir: Path, args: argparse.Namespace) -> None:
-    log_info(f"Installing Consul init tools snapshot: {TOOL_DIR}")
+    revision, dirty = source_tool_revision(script_dir)
+    log_info(f"Installing Consul init tools snapshot: {TOOL_DIR} (source revision {revision}{'-dirty' if dirty else ''})")
     run_root(["install", "-d", "-m", "0755", "-o", "root", "-g", "root", str(BIN_DIR)])
     run_root(["install", "-d", "-m", "0755", "-o", "root", "-g", "root", str(TOOL_DIR)])
     run_root(["install", "-m", "0755", "-o", "root", "-g", "root", str(script_dir / "consul-manager"), str(TOOL_DIR / "consul-manager")])
@@ -1100,11 +1144,13 @@ def install_tool_snapshot(version: str, script_dir: Path, args: argparse.Namespa
     run_root(["chown", "-R", "root:root", str(TOOL_DIR / "consul_tools")])
     install_text(
         TOOL_VERSION_FILE,
-        f"tool=consul-manager\nconsul_version={version}\ninstalled_at={time.strftime('%Y-%m-%dT%H:%M:%S%z')}\nsource_dir={script_dir}\n",
+        f"tool=consul-manager\nconsul_version={version}\ntool_revision={revision}\n"
+        f"tool_revision_dirty={str(dirty).lower()}\n"
+        f"installed_at={time.strftime('%Y-%m-%dT%H:%M:%S%z')}\nsource_dir={script_dir}\n",
         mode="0644",
     )
     write_tool_manifest()
-    write_install_metadata(version, args)
+    write_install_metadata(version, args, revision, dirty)
     write_data_pointer()
     run_root(["ln", "-sfn", str(TOOL_DIR / "consul-manager"), str(TOOL_PATH)])
     run_root(["install", "-d", "-m", "0755", "-o", "root", "-g", "root", str(TOOL_ENTRY.parent)])
