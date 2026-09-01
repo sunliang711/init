@@ -195,6 +195,31 @@ setup() {
     [[ "${output}" == *"Vault state:"* ]]
 }
 
+@test "vault jwt emits a minimal, runnable command" {
+    run python3 "${REPO_ROOT}/tests/test_nomad_manager_vault_jwt.py"
+
+    [ "${status}" -eq 0 ]
+}
+
+@test "vault jwt apply help groups its flags" {
+    run "${REPO_ROOT}/tools/nomad/nomad-manager" vault jwt apply --help
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"connection:"* ]]
+    [[ "${output}" == *"what gets created in Vault:"* ]]
+    [[ "${output}" == *"what the workloads may do:"* ]]
+    [[ "${output}" == *"default: jwt-nomad"* ]]
+}
+
+@test "tutor vault-jwt shows how the flags connect" {
+    run "${REPO_ROOT}/tools/nomad/nomad-manager" tutor vault-jwt
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"How the flags connect"* ]]
+    [[ "${output}" == *"auth/jwt-nomad"* ]]
+    [[ "${output}" == *"--secret-path"* ]]
+}
+
 @test "vault-manager logic tests pass" {
     run python3 "${REPO_ROOT}/tests/test_vault_manager.py"
 

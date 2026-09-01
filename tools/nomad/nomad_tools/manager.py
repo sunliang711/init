@@ -53,6 +53,7 @@ from .common import (
     safe_remove_path,
     sha256_file,
     terminal_status_prefix,
+    terminal_supports_checkmark,
     validate_hcl_key,
     validate_name,
     wait_http,
@@ -1645,6 +1646,79 @@ def cmd_status(_: argparse.Namespace) -> int:
     return 0
 
 
+PROFILE_DEFAULTS: dict[str, Any] = {
+    "auth_path": "jwt-nomad",
+    "role": "nomad-workloads",
+    "policy": "nomad-workloads",
+    "aud": "vault.io",
+    "ttl": "1h",
+    "secret_paths": ["kv/data/*"],
+    "policy_file": "",
+    "vault_namespace": "",
+}
+
+
+def arrow_glyphs() -> tuple[str, str]:
+    """Box-drawing when the terminal can render it, plain ASCII otherwise."""
+    return ("\u2502", "\u25bc") if terminal_supports_checkmark() else ("|", "v")
+
+
+def jwt_wiring_diagram(data: dict[str, Any], links: dict[str, list[tuple[str, str]]] | None = None) -> str:
+    """Show how the flags chain together, using this profile's real values.
+
+    links maps a stage key to extra (status, message) lines, so doctor can mark
+    which link in the chain is broken.
+    """
+    pipe, down = arrow_glyphs()
+    secret_paths = ", ".join(data["secret_paths"])
+    stages = [
+        (
+            "nomad",
+            "Nomad signs a JWT for each task",
+            [("audience", data["aud"], "--aud"),
+             ("published", data["nomad_jwks_url"], "--nomad-addr")],
+        ),
+        (
+            "auth",
+            f"Vault auth mount   auth/{data['auth_path']}",
+            [("validates", "the JWT against that JWKS URL", "--auth-path")],
+        ),
+        (
+            "role",
+            f"Vault role         {data['role']}",
+            [("issues", f"tokens with TTL {data['ttl']}", "--ttl")],
+        ),
+        (
+            "policy",
+            f"Vault policy       {data['policy']}",
+            [("grants", f"read on {secret_paths}", "--secret-path")],
+        ),
+    ]
+    lines: list[str] = []
+    for index, (key, title, rows) in enumerate(stages):
+        lines.append(f"  {title}")
+        for label, value, flag in rows:
+            lines.append(f"      {label:<10} {value:<42} {flag}")
+        for status, message in (links or {}).get(key, []):
+            lines.append(f"{status:<5} {message}")
+        if index < len(stages) - 1:
+            lines.append(f"                            {pipe}")
+            lines.append(f"                            {down}")
+    return "\n".join(lines)
+
+
+def profile_header(data: dict[str, Any]) -> str:
+    lines = [f"Profile:  {data['profile']}  ->  {profile_path(data['profile'])}"]
+    extras = []
+    if data.get("vault_namespace"):
+        extras.append(f"namespace {data['vault_namespace']}")
+    if data.get("policy_file"):
+        extras.append(f"policy file {data['policy_file']}")
+    extras.append(f"vault {data['vault_addr']}")
+    lines.append(f"          {', '.join(extras)}")
+    return "\n".join(lines)
+
+
 def profile_path(profile: str) -> Path:
     validate_name(profile, "vault-jwt profile")
     return VAULT_JWT_PROFILE_DIR / f"{profile}.json"
@@ -1669,16 +1743,16 @@ def prepare_profile(args: argparse.Namespace) -> dict[str, Any]:
         "vault_namespace": args.vault_namespace if args.vault_namespace is not None else existing.get("vault_namespace", ""),
         "nomad_addr": args.nomad_addr or existing.get("nomad_addr"),
         "nomad_jwks_url": args.nomad_jwks_url or existing.get("nomad_jwks_url"),
-        "auth_path": args.auth_path or existing.get("auth_path", "jwt-nomad"),
-        "role": args.role or existing.get("role", "nomad-workloads"),
-        "policy": args.policy or existing.get("policy", "nomad-workloads"),
-        "aud": args.aud or existing.get("aud", "vault.io"),
-        "ttl": args.ttl or existing.get("ttl", "1h"),
-        "secret_paths": args.secret_path or existing.get("secret_paths", ["kv/data/*"]),
+        "auth_path": args.auth_path or existing.get("auth_path", PROFILE_DEFAULTS["auth_path"]),
+        "role": args.role or existing.get("role", PROFILE_DEFAULTS["role"]),
+        "policy": args.policy or existing.get("policy", PROFILE_DEFAULTS["policy"]),
+        "aud": args.aud or existing.get("aud", PROFILE_DEFAULTS["aud"]),
+        "ttl": args.ttl or existing.get("ttl", PROFILE_DEFAULTS["ttl"]),
+        "secret_paths": args.secret_path or existing.get("secret_paths", list(PROFILE_DEFAULTS["secret_paths"])),
         "policy_file": args.policy_file if args.policy_file is not None else existing.get("policy_file", ""),
     }
     if not data["nomad_jwks_url"] and data["nomad_addr"]:
-        data["nomad_jwks_url"] = f"{str(data['nomad_addr']).rstrip('/')}/.well-known/jwks.json"
+        data["nomad_jwks_url"] = derived_jwks_url(data["nomad_addr"])
     for key, label in (("vault_addr", "vault-jwt requires --vault-addr or an existing profile"), ("nomad_addr", "vault-jwt requires --nomad-addr or an existing profile"), ("nomad_jwks_url", "vault-jwt requires --nomad-jwks-url or --nomad-addr")):
         if not data[key]:
             raise CLIError(label)
@@ -1693,60 +1767,37 @@ def prepare_profile(args: argparse.Namespace) -> dict[str, Any]:
     return data
 
 
-def profile_summary(data: dict[str, Any]) -> str:
-    path = profile_path(data["profile"])
-    secret_paths = ",".join(data["secret_paths"])
-    return "\n".join(
-        [
-            f"Profile:          {data['profile']}",
-            f"Profile file:     {path}",
-            f"Vault address:    {data['vault_addr']}",
-            f"Vault namespace:  {data.get('vault_namespace') or '<none>'}",
-            f"Nomad address:    {data['nomad_addr']}",
-            f"Nomad JWKS URL:   {data['nomad_jwks_url']}",
-            f"Auth path:        {data['auth_path']}",
-            f"Role:             {data['role']}",
-            f"Policy:           {data['policy']}",
-            f"Audience:         {data['aud']}",
-            f"TTL:              {data['ttl']}",
-            f"Secret paths:     {secret_paths}",
-            f"Policy file:      {data.get('policy_file') or '<generated>'}",
-        ]
-    )
-
-
 def shell_command(args: list[str]) -> str:
     return " ".join(shlex.quote(str(item)) for item in args)
 
 
+def derived_jwks_url(nomad_addr: str) -> str:
+    return f"{str(nomad_addr).rstrip('/')}/.well-known/jwks.json"
+
+
 def vault_jwt_apply_command(data: dict[str, Any], *, force: bool = False) -> str:
+    """The shortest command that reproduces this profile.
+
+    Values equal to the defaults are omitted, so the printed command stays
+    readable instead of restating every flag.
+    """
     command = [
-        NOMAD_MANAGER_CMD,
-        "vault-jwt",
-        "apply",
-        "--profile",
-        data["profile"],
-        "--vault-addr",
-        data["vault_addr"],
-        "--nomad-addr",
-        data["nomad_addr"],
-        "--auth-path",
-        data["auth_path"],
-        "--role",
-        data["role"],
-        "--policy",
-        data["policy"],
-        "--aud",
-        data["aud"],
-        "--ttl",
-        data["ttl"],
+        NOMAD_MANAGER_CMD, "vault", "jwt", "apply",
+        "--profile", data["profile"],
+        "--vault-addr", data["vault_addr"],
+        "--nomad-addr", data["nomad_addr"],
     ]
+    for flag, key in (("--auth-path", "auth_path"), ("--role", "role"),
+                      ("--policy", "policy"), ("--aud", "aud"), ("--ttl", "ttl")):
+        if data[key] != PROFILE_DEFAULTS[key]:
+            command.extend([flag, data[key]])
     if data.get("vault_namespace"):
         command.extend(["--vault-namespace", data["vault_namespace"]])
-    if data.get("nomad_jwks_url"):
+    if data.get("nomad_jwks_url") and data["nomad_jwks_url"] != derived_jwks_url(data["nomad_addr"]):
         command.extend(["--nomad-jwks-url", data["nomad_jwks_url"]])
-    for secret_path in data["secret_paths"]:
-        command.extend(["--secret-path", secret_path])
+    if data["secret_paths"] != PROFILE_DEFAULTS["secret_paths"]:
+        for secret_path in data["secret_paths"]:
+            command.extend(["--secret-path", secret_path])
     if data.get("policy_file"):
         command.extend(["--policy-file", data["policy_file"]])
     if force:
@@ -1756,7 +1807,10 @@ def vault_jwt_apply_command(data: dict[str, Any], *, force: bool = False) -> str
 
 def cmd_vault_jwt_plan(args: argparse.Namespace) -> int:
     data = prepare_profile(args)
-    print(profile_summary(data))
+    print(profile_header(data))
+    print()
+    print(jwt_wiring_diagram(data))
+    print()
     failures = vault_jwt_preflight(data)
     print(
         "\nPlan:\n"
@@ -1767,7 +1821,9 @@ def cmd_vault_jwt_plan(args: argparse.Namespace) -> int:
         f"  [5/7] Write Nomad vault config {VAULT_CONFIG}\n"
         "  [6/7] Validate Nomad config and restart nomad.service\n"
         f"  [7/7] Save profile {profile_path(data['profile'])}\n\n"
-        f"Next:\n  {vault_jwt_apply_command(data, force=args.force)}"
+        f"Next:\n  {vault_jwt_apply_command(data, force=args.force)}\n\n"
+        f"The profile stores all of this, so later commands only need --profile {data['profile']}:\n"
+        f"  {NOMAD_MANAGER_CMD} vault jwt doctor --profile {data['profile']}"
     )
     return 0 if failures == 0 else 1
 
@@ -1821,24 +1877,37 @@ def vault_token_has_capability(data: dict[str, Any], path: str, required: set[st
 
 
 def vault_jwt_preflight(data: dict[str, Any]) -> int:
-    failures = 0
-    print("Preflight:")
-    if command_exists("vault"):
-        doctor_check("OK", f"vault CLI found: {shutil.which('vault')}")
-    else:
-        doctor_check("FAIL", "vault CLI not found")
-        failures += 1
-        return failures
+    """Report every problem at once; the caller aborts if anything failed.
 
+    Connectivity comes first because a wrong --vault-addr or --nomad-addr is the
+    most common failure, and a missing vault CLI no longer hides the rest.
+    """
+    failures = 0
+    print("Connectivity:")
     health_url = f"{str(data['vault_addr']).rstrip('/')}/v1/sys/health"
     code = http_status(health_url, cafile=vault_ca_cert_file(data["vault_addr"]))
     if code in {200, 429, 472, 473, 501, 503}:
-        doctor_check("OK", f"Vault health endpoint reachable: {health_url} ({code})")
+        doctor_check("OK", f"Vault reachable: {health_url} ({code})")
     else:
-        doctor_check("FAIL", f"Vault health endpoint not reachable: {health_url} ({code})")
+        doctor_check("FAIL", f"Vault not reachable: {health_url} ({code})")
+        doctor_check("INFO", f"Vault may be down, or --vault-addr may be wrong: {data['vault_addr']}")
+        failures += 1
+    if wait_http(data["nomad_jwks_url"], attempts=1, delay=0):
+        doctor_check("OK", f"Nomad JWKS reachable: {data['nomad_jwks_url']}")
+    else:
+        doctor_check("FAIL", f"Nomad JWKS not reachable: {data['nomad_jwks_url']}")
+        doctor_check("INFO", f"Nomad may be down, or --nomad-addr may be wrong: {data['nomad_addr']}")
         failures += 1
 
-    status = vault_status_json_for_jwt(data)
+    print("\nVault state:")
+    has_cli = command_exists("vault")
+    if has_cli:
+        doctor_check("OK", f"vault CLI found: {shutil.which('vault')}")
+    else:
+        doctor_check("FAIL", "vault CLI not found; Vault state and permission checks are skipped")
+        failures += 1
+
+    status = vault_status_json_for_jwt(data) if has_cli else None
     if status is None:
         doctor_check("FAIL", "vault status failed; check Vault address, TLS and namespace")
         failures += 1
@@ -1857,8 +1926,14 @@ def vault_jwt_preflight(data: dict[str, Any]) -> int:
             doctor_check("FAIL", "Vault seal status is unknown")
             failures += 1
 
+    print("\nVault permissions:")
     auth_type = ""
-    if status is not None and status.get("sealed") is False:
+    reachable = has_cli and status is not None and status.get("sealed") is False
+    if not has_cli:
+        doctor_check("WARN", "Skipped: install the vault CLI to check auth path and token permissions")
+    elif not reachable:
+        doctor_check("WARN", "Skipped: Vault must be reachable and unsealed before permissions can be checked")
+    if reachable:
         auth_list = vault_cmd(data, ["auth", "list", "-format=json"], capture=True, check=False)
         if auth_list.returncode != 0:
             doctor_check("FAIL", "Vault token cannot list auth methods; check VAULT_TOKEN permissions")
@@ -1896,12 +1971,7 @@ def vault_jwt_preflight(data: dict[str, Any]) -> int:
             doctor_check("FAIL", "Vault token lookup failed; set VAULT_TOKEN or use a token with management permissions")
             failures += 1
 
-    if wait_http(data["nomad_jwks_url"], attempts=1, delay=0):
-        doctor_check("OK", f"Nomad JWKS URL reachable: {data['nomad_jwks_url']}")
-    else:
-        doctor_check("FAIL", f"Nomad JWKS URL not reachable: {data['nomad_jwks_url']}")
-        failures += 1
-
+    print("\nLocal inputs:")
     policy_file = data.get("policy_file")
     if policy_file and not Path(policy_file).is_file():
         doctor_check("FAIL", f"Policy file not found: {policy_file}")
@@ -2000,42 +2070,111 @@ def cmd_vault_jwt_apply(args: argparse.Namespace) -> int:
         )
     )
     write_profile(data)
+    print()
+    print(jwt_wiring_diagram(data))
+    print(f"\nSaved to {profile_path(data['profile'])}. "
+          f"Later commands only need --profile {data['profile']}:")
+    print(f"  {NOMAD_MANAGER_CMD} vault jwt doctor --profile {data['profile']}")
+    print(f"  {NOMAD_MANAGER_CMD} vault jwt job-example --profile {data['profile']} --job web --secret kv/data/app/config")
     return 0
 
 
+def vault_read_json(data: dict[str, Any], path: str) -> dict[str, Any]:
+    result = vault_cmd(data, ["read", "-format=json", path], capture=True, check=False)
+    if result.returncode != 0:
+        return {}
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return {}
+    body = payload.get("data") if isinstance(payload, dict) else None
+    return body if isinstance(body, dict) else {}
+
+
 def vault_jwt_status_impl(profile: str) -> int:
+    """Walk the chain and report where it is broken, not just what is missing.
+
+    Each stage is checked for existence and for agreement with the neighbour it
+    points at, which is how a stale jwks_url or audience is caught.
+    """
     data = load_profile(profile)
     failures = 0
-    doctor_check("OK", f"profile loaded: {profile_path(profile)}")
-    if VAULT_CONFIG.is_file() and f'jwt_auth_backend_path = "{data["auth_path"]}"' in VAULT_CONFIG.read_text(encoding="utf-8"):
-        doctor_check("OK", f"Nomad vault config uses auth path {data['auth_path']}")
-    else:
-        doctor_check("FAIL", f"Nomad vault config missing or mismatched: {VAULT_CONFIG}")
-        failures += 1
+    links: dict[str, list[tuple[str, str]]] = {"nomad": [], "auth": [], "role": [], "policy": []}
+
+    def note(stage: str, status: str, message: str) -> None:
+        nonlocal failures
+        links[stage].append((status, message))
+        if status == "FAIL":
+            failures += 1
+
     if wait_http(data["nomad_jwks_url"], attempts=1, delay=0):
-        doctor_check("OK", f"Nomad JWKS URL reachable: {data['nomad_jwks_url']}")
+        note("nomad", "OK", "JWKS endpoint reachable")
     else:
-        doctor_check("FAIL", f"Nomad JWKS URL not reachable from this host: {data['nomad_jwks_url']}")
-        failures += 1
-    if command_exists("vault"):
-        if vault_auth_type(data) == "jwt":
-            doctor_check("OK", f"Vault auth path {data['auth_path']} type jwt")
+        note("nomad", "FAIL", f"JWKS endpoint not reachable: {data['nomad_jwks_url']}")
+
+    if VAULT_CONFIG.is_file():
+        nomad_config = VAULT_CONFIG.read_text(encoding="utf-8")
+        configured_path = hcl_file_string_value(VAULT_CONFIG, "jwt_auth_backend_path")
+        if configured_path == data["auth_path"]:
+            note("auth", "OK", f"Nomad config points at auth/{configured_path}")
         else:
-            doctor_check("FAIL", f"Vault auth path {data['auth_path']} missing or not jwt")
-            failures += 1
-        if vault_cmd(data, ["policy", "read", data["policy"]], check=False, capture=True).returncode == 0:
-            doctor_check("OK", f"Vault policy exists: {data['policy']}")
+            note("auth", "FAIL",
+                 f"Nomad config uses auth path {configured_path or '<unset>'}, profile says {data['auth_path']}")
+        if data["aud"] in nomad_config:
+            note("nomad", "OK", f"Nomad config signs for audience {data['aud']}")
         else:
-            doctor_check("FAIL", f"Vault policy missing: {data['policy']}")
-            failures += 1
-        if vault_cmd(data, ["read", f"auth/{data['auth_path']}/role/{data['role']}"], check=False, capture=True).returncode == 0:
-            doctor_check("OK", f"Vault role exists: {data['role']}")
-        else:
-            doctor_check("FAIL", f"Vault role missing: {data['role']}")
-            failures += 1
+            note("nomad", "FAIL", f"Nomad config does not list audience {data['aud']}")
     else:
-        doctor_check("FAIL", "vault command is required for Vault checks")
-        failures += 1
+        note("auth", "FAIL", f"Nomad vault config missing: {VAULT_CONFIG}")
+
+    if not command_exists("vault"):
+        note("auth", "FAIL", "vault CLI not found; the Vault side cannot be checked")
+        print(profile_header(data))
+        print()
+        print(jwt_wiring_diagram(data, links))
+        return failures
+
+    if vault_auth_type(data) == "jwt":
+        note("auth", "OK", f"Vault mount auth/{data['auth_path']} exists, type jwt")
+        auth_config = vault_read_json(data, f"auth/{data['auth_path']}/config")
+        vault_jwks = str(auth_config.get("jwks_url", ""))
+        if not auth_config:
+            note("auth", "FAIL", "Vault JWT auth config is unreadable")
+        elif vault_jwks == data["nomad_jwks_url"]:
+            note("auth", "OK", "Vault validates against the same JWKS URL")
+        else:
+            note("auth", "FAIL",
+                 f"Vault validates against {vault_jwks or '<unset>'}, which is not the URL above")
+    else:
+        note("auth", "FAIL", f"Vault mount auth/{data['auth_path']} missing or not jwt")
+
+    role = vault_read_json(data, f"auth/{data['auth_path']}/role/{data['role']}")
+    if role:
+        note("role", "OK", f"Vault role {data['role']} exists")
+        bound = [str(item) for item in role.get("bound_audiences") or []]
+        expected = parse_csv(data["aud"])
+        if set(expected) <= set(bound):
+            note("role", "OK", f"Role accepts audience {', '.join(expected)}")
+        else:
+            note("role", "FAIL",
+                 f"Role accepts {', '.join(bound) or '<none>'}, but Nomad signs {', '.join(expected)}")
+        policies = [str(item) for item in role.get("token_policies") or []]
+        if data["policy"] in policies:
+            note("role", "OK", f"Role grants policy {data['policy']}")
+        else:
+            note("role", "FAIL",
+                 f"Role grants {', '.join(policies) or '<none>'}, not {data['policy']}")
+    else:
+        note("role", "FAIL", f"Vault role {data['role']} missing")
+
+    if vault_cmd(data, ["policy", "read", data["policy"]], check=False, capture=True).returncode == 0:
+        note("policy", "OK", f"Vault policy {data['policy']} exists")
+    else:
+        note("policy", "FAIL", f"Vault policy {data['policy']} missing")
+
+    print(profile_header(data))
+    print()
+    print(jwt_wiring_diagram(data, links))
     return failures
 
 
@@ -2757,6 +2896,14 @@ Run '{NOMAD_MANAGER_CMD} tutor <topic>' for the reasoning behind each step.
     return 0
 
 
+def default_jwt_profile(vault_addr: str, nomad_addr: str) -> dict[str, Any]:
+    """A profile made only of defaults, for rendering the diagram without one."""
+    data = dict(PROFILE_DEFAULTS)
+    data.update({"profile": "default", "vault_addr": vault_addr, "nomad_addr": nomad_addr,
+                 "nomad_jwks_url": derived_jwks_url(nomad_addr)})
+    return data
+
+
 def cmd_tutor(args: argparse.Namespace) -> int:
     topic = args.topic or "overview"
     vault_addr = detected_vault_addr()
@@ -2850,13 +2997,22 @@ apply creates the Vault JWT auth mount, policy and role, and also writes the
 Nomad side of the integration ({VAULT_CONFIG}).
 There is no need to run 'vault enable' afterwards.
 
-Requires the vault CLI, an unsealed Vault, and a VAULT_TOKEN allowed to create
-auth mounts, policies and roles. plan runs the same preflight checks and prints
-the generated policy and role without changing anything, so start there.
+How the flags connect, with their default values:
+
+{jwt_wiring_diagram(default_jwt_profile(vault_addr, NOMAD_ADDR))}
+
+Only --vault-addr and --nomad-addr have no default, so the shortest form is:
 
   {vault_jwt_plan_command_line}
   {vault_jwt_apply_command_line}
+
+Everything is stored in the profile, so from then on:
+
   {NOMAD_MANAGER_CMD} vault jwt doctor --profile default
+
+Requires the vault CLI, an unsealed Vault, and a VAULT_TOKEN allowed to create
+auth mounts, policies and roles. plan runs the same checks without changing
+anything, so start there.
 """,
         "consul": f"""Point Nomad at Consul.
 
@@ -2991,19 +3147,40 @@ Read the service log directly when a restart failed:
 
 
 def add_common_vault_jwt_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--profile", required=True, help="Local profile name")
-    parser.add_argument("--vault-addr", help="Vault address, for example http://127.0.0.1:8200")
-    parser.add_argument("--vault-namespace", help="Vault Enterprise namespace")
-    parser.add_argument("--nomad-addr", help="Nomad address used to derive the JWKS URL")
-    parser.add_argument("--nomad-jwks-url", help="Explicit Nomad JWKS URL")
-    parser.add_argument("--auth-path", help="Vault JWT auth mount path")
-    parser.add_argument("--role", help="Vault role name")
-    parser.add_argument("--policy", help="Vault policy name")
-    parser.add_argument("--aud", help="Comma-separated JWT audiences")
-    parser.add_argument("--ttl", help="Vault token TTL")
-    parser.add_argument("--secret-path", action="append", help="Vault secret path allowed by the generated policy; repeat for multiple paths")
-    parser.add_argument("--policy-file", help="Use an existing Vault policy HCL file")
-    parser.add_argument("--force", action="store_true", help="Replace an existing profile with different values")
+    """Group the flags by what they control, and state the defaults.
+
+    argparse itself keeps default=None on purpose: prepare_profile uses "not
+    given" to fall back to the stored profile, so a real argparse default would
+    silently overwrite a customised profile on the next run.
+    """
+    parser.add_argument("--profile", required=True, help="Local profile name; stores everything below")
+
+    connection = parser.add_argument_group(
+        "connection", "Set these the first time. Later runs read them back from the profile."
+    )
+    connection.add_argument("--vault-addr", help="Vault address, for example http://127.0.0.1:8200")
+    connection.add_argument("--nomad-addr", help="Nomad address; the JWKS URL is derived from it")
+    connection.add_argument("--vault-namespace", help="Vault Enterprise namespace (default: none)")
+
+    created = parser.add_argument_group(
+        "what gets created in Vault", "The defaults are fine unless they clash with something you already have."
+    )
+    created.add_argument("--auth-path", help=f"JWT auth mount path (default: {PROFILE_DEFAULTS['auth_path']})")
+    created.add_argument("--role", help=f"Vault role name (default: {PROFILE_DEFAULTS['role']})")
+    created.add_argument("--policy", help=f"Vault policy name (default: {PROFILE_DEFAULTS['policy']})")
+
+    granted = parser.add_argument_group(
+        "what the workloads may do", "This is the part worth reviewing: it decides which secrets tasks can read."
+    )
+    granted.add_argument("--secret-path", action="append",
+                         help=f"Secret path the generated policy grants; repeatable (default: {PROFILE_DEFAULTS['secret_paths'][0]})")
+    granted.add_argument("--aud", help=f"Comma-separated JWT audiences; must match on both sides (default: {PROFILE_DEFAULTS['aud']})")
+    granted.add_argument("--ttl", help=f"TTL of the tokens Vault issues (default: {PROFILE_DEFAULTS['ttl']})")
+    granted.add_argument("--policy-file", help="Use an existing policy HCL file instead of generating one")
+
+    advanced = parser.add_argument_group("advanced")
+    advanced.add_argument("--nomad-jwks-url", help="Override the JWKS URL derived from --nomad-addr")
+    advanced.add_argument("--force", action="store_true", help="Replace an existing profile with different values")
 
 
 COMMAND_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
@@ -3228,7 +3405,9 @@ def build_parser() -> argparse.ArgumentParser:
         "\n"
         "Requires the vault CLI, an unsealed Vault, and a VAULT_TOKEN allowed to create auth\n"
         "mounts, policies and roles. Settings are kept in a local profile under\n"
-        f"{VAULT_JWT_PROFILE_DIR}, so later commands only need --profile.",
+        f"{VAULT_JWT_PROFILE_DIR}, so later commands only need --profile.\n"
+        "\n"
+        f"Run '{NOMAD_MANAGER_CMD} tutor vault-jwt' for how these flags connect.",
     )
     jwt_sub = vault_jwt.add_subparsers(dest="vault_jwt_command")
     vault_jwt.set_defaults(func=lambda _: missing_subcommand(vault_jwt, f"{NOMAD_MANAGER_CMD} vault jwt"))
