@@ -905,7 +905,7 @@ def cmd_install(args: argparse.Namespace) -> int:
 
 def print_install_next_steps() -> None:
     print("\nNext steps:")
-    print(f"  1. {VAULT_MANAGER_CMD} init --key-shares 1 --key-threshold 1")
+    print(f"  1. {VAULT_MANAGER_CMD} init --key-shares 5 --key-threshold 3")
     print(f"  2. {VAULT_MANAGER_CMD} unseal --keys-file {DEFAULT_INIT_FILE}")
     print("  3. source ~/vault.acl")
     print(f"  4. {VAULT_MANAGER_CMD} doctor")
@@ -1161,7 +1161,7 @@ def cmd_policy_delete(args: argparse.Namespace) -> int:
 
 
 SEAL_HINTS = {
-    501: ("Vault is not initialized", f"{VAULT_MANAGER_CMD} init --key-shares 1 --key-threshold 1"),
+    501: ("Vault is not initialized", f"{VAULT_MANAGER_CMD} init --key-shares 5 --key-threshold 3"),
     503: ("Vault is sealed", f"{VAULT_MANAGER_CMD} unseal --keys-file {DEFAULT_INIT_FILE}"),
 }
 
@@ -1423,7 +1423,7 @@ def cmd_quickstart(_: argparse.Namespace) -> int:
      {VAULT_MANAGER_CMD} install --tls-auto
 
 2. Bring Vault online
-     {VAULT_MANAGER_CMD} init --key-shares 1 --key-threshold 1
+     {VAULT_MANAGER_CMD} init --key-shares 5 --key-threshold 3
      {VAULT_MANAGER_CMD} unseal --keys-file {DEFAULT_INIT_FILE}
      source {target_acl_file()}
 
@@ -1516,12 +1516,18 @@ anything else. Losing it means losing the raft store.
 
 init also writes {target_acl_file()} so your shell can reach Vault:
 
-  {VAULT_MANAGER_CMD} init --key-shares 1 --key-threshold 1
+  {VAULT_MANAGER_CMD} init --key-shares 5 --key-threshold 3
   source {target_acl_file()}
 
---key-shares 1 --key-threshold 1 suits a single-node lab. Use more shares when
-different people should each hold one, and remember every unseal then needs
---key-threshold of them.
+The default is 5 shares with a threshold of 3: Vault hands back five keys and
+any three of them unseal it. Give the five to different people, and no single
+person can unseal Vault alone, while losing one or two keys is survivable.
+
+  --key-shares 1 --key-threshold 1
+
+collapses that to a single key. It is quicker for a throwaway lab, but that one
+key is then the only thing between anyone who reads the file and every secret,
+and losing it loses the raft store.
 
 init refuses to run against an initialized Vault, and refuses to overwrite an
 existing output file without --force.
@@ -1701,7 +1707,7 @@ def build_parser() -> argparse.ArgumentParser:
         f"or '{VAULT_MANAGER_CMD} quickstart' for the whole path end to end.",
         epilog=f"""Examples:
   {VAULT_MANAGER_CMD} install --tls-auto
-  {VAULT_MANAGER_CMD} init --key-shares 1 --key-threshold 1
+  {VAULT_MANAGER_CMD} init --key-shares 5 --key-threshold 3
   {VAULT_MANAGER_CMD} unseal --keys-file {DEFAULT_INIT_FILE}
   {VAULT_MANAGER_CMD} auth enable jwt --path jwt-nomad
   {VAULT_MANAGER_CMD} policy write app-read ./policy.hcl

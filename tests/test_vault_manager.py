@@ -7,6 +7,7 @@ import argparse
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -235,6 +236,62 @@ class TlsDoctorTest(unittest.TestCase):
         failures, _ = self._capture(manager.doctor_tls, {"tls_disable": "false", "tls_cert_file": "", "tls_key_file": ""})
 
         self.assertEqual(failures, 2)
+
+
+class InitExampleDefaultsTest(unittest.TestCase):
+    """示例命令里的 shares/threshold 必须和 argparse 的默认值一致。
+
+    此前默认值是 5/3，而所有示例写的是 1/1，两者各说各话了很久。
+    """
+
+    KEY_ARGS = re.compile(r"init --key-shares (\d+) --key-threshold (\d+)")
+
+    def _parser_defaults(self) -> tuple[int, int]:
+        import argparse as ap
+
+        parser = manager.build_parser()
+        init = next(a for a in parser._actions if isinstance(a, ap._SubParsersAction)).choices["init"]
+        by_flag = {a.option_strings[0]: a.default for a in init._actions if a.option_strings}
+        return by_flag["--key-shares"], by_flag["--key-threshold"]
+
+    @staticmethod
+    def _capture(func) -> str:
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            func()
+        return buffer.getvalue()
+
+    def _sources(self) -> dict[str, str]:
+        return {
+            "root epilog": manager.build_parser().format_help(),
+            "quickstart": self._capture(lambda: manager.cmd_quickstart(argparse.Namespace())),
+            "tutor init": manager.TUTOR_TOPICS["init"],
+            "install next steps": self._capture(manager.print_install_next_steps),
+            "seal hints": " ".join(fix for _, fix in manager.SEAL_HINTS.values()),
+        }
+
+    def test_defaults_are_five_shares_three_threshold(self) -> None:
+        self.assertEqual(self._parser_defaults(), (5, 3))
+
+    def test_every_example_matches_the_defaults(self) -> None:
+        shares, threshold = self._parser_defaults()
+
+        for label, text in self._sources().items():
+            found = self.KEY_ARGS.findall(text)
+            with self.subTest(source=label):
+                self.assertTrue(found, f"{label} should show an init example")
+                for got_shares, got_threshold in found:
+                    self.assertEqual(
+                        (int(got_shares), int(got_threshold)), (shares, threshold),
+                        f"{label} shows {got_shares}/{got_threshold} but the default is {shares}/{threshold}",
+                    )
+
+    def test_the_single_key_form_is_only_shown_as_a_contrast(self) -> None:
+        """tutor 里保留 1/1 是为了说明取舍，不能出现在任何建议执行的命令里。"""
+        for label, text in self._sources().items():
+            with self.subTest(source=label):
+                self.assertNotIn("init --key-shares 1 --key-threshold 1", text)
+        self.assertIn("--key-shares 1 --key-threshold 1", manager.TUTOR_TOPICS["init"])
 
 
 class HealthCodeHintTest(unittest.TestCase):
