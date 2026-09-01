@@ -158,3 +158,9 @@ setup() {
     [[ "${output}" == *"Node runtime:"* ]]
     [[ "${output}" == *"Base configuration:"* ]]
 }
+
+@test "managers refuse to update from their own installed copy" {
+    run python3 "${REPO_ROOT}/tests/test_manager_tool_source.py"
+
+    [ "${status}" -eq 0 ]
+}

@@ -2487,6 +2487,19 @@ def read_installed_nomad_version() -> str:
     return "unknown"
 
 
+def running_from_installed_copy(script_dir: Path) -> bool:
+    """True when the running script is the copy that install placed under TOOL_DIR.
+
+    Updating from there would copy the directory onto itself and change nothing.
+    """
+    try:
+        resolved = Path(script_dir).resolve()
+        tool_dir = TOOL_DIR.resolve()
+    except OSError:
+        return False
+    return resolved == tool_dir or tool_dir in resolved.parents
+
+
 def require_tool_source(script_dir: Path) -> None:
     missing = [
         str(script_dir / name)
@@ -2503,6 +2516,11 @@ def cmd_tools_update(args: argparse.Namespace) -> int:
     require_linux()
     require_command("install")
     script_dir = current_script_dir(__file__).parent
+    if running_from_installed_copy(script_dir):
+        raise CLIError(
+            f"Refusing to update from the installed copy at {TOOL_DIR}: it would copy onto itself "
+            f"and change nothing. Run tools update from a source checkout instead"
+        )
     require_tool_source(script_dir)
     version = normalize_version(args.nomad_version) if args.nomad_version else read_installed_nomad_version()
     if version == "unknown":
@@ -2591,7 +2609,11 @@ def cmd_install(args: argparse.Namespace) -> int:
         write_systemd_service()
         write_nomad_config()
         write_default_managed_configs()
-        install_tool_snapshot(version, current_script_dir(__file__).parent)
+        script_dir = current_script_dir(__file__).parent
+        if running_from_installed_copy(script_dir):
+            log_warn(f"Running the copy installed at {TOOL_DIR}; the tool files will not change")
+            log_warn("Run install from a source checkout to update nomad-manager and nomad-job as well")
+        install_tool_snapshot(version, script_dir)
         log_info("Enabling Nomad service")
         run_root(["systemctl", "daemon-reload"])
         run_root(["systemctl", "enable", "nomad"])
