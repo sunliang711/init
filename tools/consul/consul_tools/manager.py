@@ -1,0 +1,1668 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import pwd
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+from .common import (
+    AuditConfig,
+    COLOR_GREEN,
+    COLOR_RED,
+    COLOR_YELLOW,
+    CLIArgumentParser,
+    CLIError,
+    add_bool_argument,
+    atomic_write_text,
+    command_exists,
+    color_text,
+    current_script_dir,
+    detect_arch,
+    download_file,
+    ensure_default_path,
+    extract_zip,
+    fetch_url,
+    hcl_bool,
+    hcl_list,
+    hcl_string,
+    http_status,
+    install_text,
+    log_error,
+    log_info,
+    log_success,
+    log_warn,
+    missing_subcommand,
+    require_command,
+    require_linux,
+    run,
+    run_root,
+    run_with_audit,
+    safe_remove_path,
+    sha256_file,
+    terminal_status_prefix,
+)
+
+
+CONSUL_MANAGER_CMD = os.environ.get("CONSUL_MANAGER_CMD", "consul-manager")
+DEFAULT_CONSUL_VERSION = "1.21.0"
+CONSUL_USER = "consul"
+CONSUL_GROUP = "consul"
+CONSUL_ROOT_DIR = Path("/opt/consul")
+BIN_DIR = CONSUL_ROOT_DIR / "bin"
+BIN_PATH = BIN_DIR / "consul"
+BIN_ENTRY = Path("/usr/local/bin/consul")
+CONFIG_DIR = CONSUL_ROOT_DIR / "etc" / "consul.d"
+CONFIG_FILE = CONFIG_DIR / "consul.hcl"
+DATA_DIR = CONSUL_ROOT_DIR / "data" / "consul"
+CONSUL_AGENT_DATA_DIR = DATA_DIR / "agent"
+SYSTEMD_SERVICE = Path("/etc/systemd/system/consul.service")
+TOOL_DIR = CONSUL_ROOT_DIR / "lib" / "consul-init-tools"
+TOOL_STATE_DIR = CONSUL_ROOT_DIR / "data" / "consul-init-tools"
+TOOL_LOG_DIR = CONSUL_ROOT_DIR / "log" / "consul-init-tools"
+TOOL_PATH = BIN_DIR / "consul-manager"
+TOOL_ENTRY = Path("/usr/local/bin/consul-manager")
+TOOL_VERSION_FILE = TOOL_DIR / "VERSION"
+TOOL_MANIFEST_FILE = TOOL_DIR / "MANIFEST.sha256"
+INSTALL_METADATA_FILE = TOOL_STATE_DIR / "install.json"
+AUDIT_LOG_FILE = TOOL_LOG_DIR / "manager.audit.log"
+DATA_POINTER_FILE = DATA_DIR / ".managed-by-consul-init-tools"
+RELEASE_INDEX_URL = "https://releases.hashicorp.com/consul/"
+CONSUL_ADDR = "http://127.0.0.1:8500"
+DEFAULT_NOMAD_ADDR = "http://127.0.0.1:4646"
+LOCAL_NO_PROXY = "127.0.0.1,localhost,::1"
+MANAGED_MARKER = "# Managed by tools/consul/consul-manager"
+TLS_CONFIG = CONFIG_DIR / "30-tls.hcl"
+UI_CONFIG = CONFIG_DIR / "35-ui.hcl"
+TELEMETRY_CONFIG = CONFIG_DIR / "40-telemetry.hcl"
+DNS_CONFIG = CONFIG_DIR / "50-dns.hcl"
+NOMAD_AGENT_TOKEN_FILE = CONFIG_DIR / "nomad-agent.token"
+DEFAULT_DATACENTER = "dc1"
+DEFAULT_BIND_ADDR = "127.0.0.1"
+DEFAULT_CLIENT_ADDR = "127.0.0.1"
+DEFAULT_HTTP_PORT = 8500
+DEFAULT_GRPC_PORT = 8502
+DEFAULT_DNS_PORT = 8600
+NOMAD_AUTH_METHOD = "nomad-workloads"
+NOMAD_AGENT_POLICY = "nomad-agent"
+NOMAD_AGENT_TOKEN_DESCRIPTION = "Nomad agent token managed by consul-manager"
+
+
+def normalize_version(version: str) -> str:
+    value = version.removeprefix("v")
+    if not re.match(r"^[0-9]+[.][0-9]+[.][0-9]+$", value):
+        raise CLIError(f"Invalid Consul version: {version}")
+    return value
+
+
+def fetch_latest_version() -> str:
+    html = fetch_url(RELEASE_INDEX_URL, timeout=60).decode("utf-8", errors="replace")
+    versions = re.findall(r'href="/consul/([0-9]+\.[0-9]+\.[0-9]+)/"', html)
+    if not versions:
+        raise CLIError("Failed to resolve latest Consul version")
+    return normalize_version(versions[0])
+
+
+def resolve_version(requested: str | None) -> str:
+    if requested and requested != "latest":
+        return normalize_version(requested)
+    try:
+        latest = fetch_latest_version()
+        log_success(f"Resolved latest Consul version: {latest}")
+        return latest
+    except Exception:
+        log_warn(f"Failed to resolve latest Consul version, fallback to {DEFAULT_CONSUL_VERSION}")
+        return DEFAULT_CONSUL_VERSION
+
+
+def is_managed_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        first_line = path.open("r", encoding="utf-8").readline().rstrip("\n")
+    except OSError:
+        return False
+    return first_line == MANAGED_MARKER
+
+
+def ensure_managed_or_absent(path: Path) -> None:
+    if path.exists() and not is_managed_file(path):
+        raise CLIError(f"Refuse to manage non-managed file: {path}")
+
+
+def require_config_environment() -> None:
+    require_linux()
+    require_command("install")
+    require_command("systemctl")
+    if not BIN_PATH.exists():
+        raise CLIError(f"Consul binary not found: {BIN_PATH}. Please run install first")
+    run_root(["install", "-d", "-m", "0750", "-o", CONSUL_USER, "-g", CONSUL_GROUP, str(CONFIG_DIR)])
+
+
+def validate_consul_config() -> None:
+    run_root([str(BIN_PATH), "validate", str(CONFIG_DIR)])
+
+
+def consul_leader_elected() -> bool:
+    try:
+        body = fetch_url(f"{CONSUL_ADDR}/v1/status/leader", timeout=2, no_proxy=True)
+    except Exception:
+        return False
+    return body.decode("utf-8", errors="replace").strip() not in {"", '""'}
+
+
+def wait_for_consul_api() -> bool:
+    log_info("Waiting for Consul HTTP API and leader election")
+    for _ in range(60):
+        if consul_leader_elected():
+            return True
+        active = run_root(["systemctl", "is-active", "--quiet", "consul"], check=False)
+        if active.returncode != 0:
+            log_error("Consul service is not active")
+            if command_exists("journalctl"):
+                run_root(["journalctl", "-u", "consul", "-n", "80", "--no-pager"], check=False)
+            return False
+        time.sleep(2)
+    if command_exists("journalctl"):
+        run_root(["journalctl", "-u", "consul", "-n", "80", "--no-pager"], check=False)
+    return False
+
+
+def restart_consul_service() -> None:
+    run_root(["systemctl", "restart", "consul"])
+    time.sleep(2)
+    if run_root(["systemctl", "is-active", "--quiet", "consul"], check=False).returncode != 0:
+        if command_exists("journalctl"):
+            run_root(["journalctl", "-u", "consul", "-n", "80", "--no-pager"], check=False)
+        raise CLIError("Consul service failed to start")
+    if not wait_for_consul_api():
+        raise CLIError("Timed out waiting for Consul HTTP API")
+
+
+def restore_managed_file(target: Path, backup: Path | None) -> None:
+    if backup and backup.exists():
+        run_root(["install", "-m", "0640", "-o", CONSUL_USER, "-g", CONSUL_GROUP, str(backup), str(target)])
+    else:
+        run_root(["rm", "-f", "--", str(target)])
+
+
+def commit_managed_file(target: Path, content: str) -> None:
+    require_config_environment()
+    ensure_managed_or_absent(target)
+    backup: Path | None = None
+    if target.exists():
+        backup_handle = tempfile.NamedTemporaryFile(delete=False)
+        backup_handle.close()
+        backup = Path(backup_handle.name)
+        run_root(["cp", str(target), str(backup)])
+        try:
+            if target.read_text(encoding="utf-8") == content:
+                backup.unlink(missing_ok=True)
+                log_success(f"No config change: {target}")
+                return
+        except OSError:
+            pass
+    try:
+        install_text(target, content, mode="0640", owner=CONSUL_USER, group=CONSUL_GROUP)
+        validate_consul_config()
+        restart_consul_service()
+    except Exception as exc:
+        restore_managed_file(target, backup)
+        if backup:
+            backup.unlink(missing_ok=True)
+        raise CLIError(f"Consul config apply failed, rollback completed: {exc}") from exc
+    if backup:
+        backup.unlink(missing_ok=True)
+    log_success(f"Config applied: {target}")
+
+
+def remove_managed_file(target: Path) -> None:
+    require_config_environment()
+    if not target.exists():
+        log_success(f"Config already absent: {target}")
+        return
+    ensure_managed_or_absent(target)
+    backup_handle = tempfile.NamedTemporaryFile(delete=False)
+    backup_handle.close()
+    backup = Path(backup_handle.name)
+    run_root(["cp", str(target), str(backup)])
+    try:
+        run_root(["rm", "-f", "--", str(target)])
+        validate_consul_config()
+        restart_consul_service()
+    except Exception as exc:
+        run_root(["install", "-m", "0640", "-o", CONSUL_USER, "-g", CONSUL_GROUP, str(backup), str(target)])
+        raise CLIError(f"Consul config removal failed, rollback completed: {exc}") from exc
+    finally:
+        backup.unlink(missing_ok=True)
+    log_success(f"Config removed: {target}")
+
+
+def managed_config(body: str) -> str:
+    return f"{MANAGED_MARKER}\n{body.rstrip()}\n"
+
+
+def cmd_ui_enable(args: argparse.Namespace) -> int:
+    lines = ["ui_config {", "  enabled = true"]
+    if args.metrics_provider:
+        lines.append(f"  metrics_provider = {hcl_string(args.metrics_provider)}")
+    if args.metrics_proxy_base_url:
+        lines.extend(
+            [
+                "",
+                "  metrics_proxy {",
+                f"    base_url = {hcl_string(args.metrics_proxy_base_url)}",
+                "  }",
+            ]
+        )
+    if args.dashboard_url_template:
+        lines.append(f"  dashboard_url_templates = {{ service = {hcl_string(args.dashboard_url_template)} }}")
+    lines.append("}")
+    commit_managed_file(UI_CONFIG, managed_config("\n".join(lines)))
+    return 0
+
+
+def cmd_ui_disable(_: argparse.Namespace) -> int:
+    commit_managed_file(UI_CONFIG, managed_config("ui_config {\n  enabled = false\n}"))
+    return 0
+
+
+def cmd_tls_enable(args: argparse.Namespace) -> int:
+    body = "\n".join(
+        [
+            "tls {",
+            "  defaults {",
+            f"    ca_file         = {hcl_string(args.ca_file)}",
+            f"    cert_file       = {hcl_string(args.cert_file)}",
+            f"    key_file        = {hcl_string(args.key_file)}",
+            f"    verify_incoming = {hcl_bool(args.verify_incoming)}",
+            f"    verify_outgoing = {hcl_bool(args.verify_outgoing)}",
+            "  }",
+            "",
+            "  internal_rpc {",
+            f"    verify_server_hostname = {hcl_bool(args.verify_server_hostname)}",
+            "  }",
+            "}",
+            "",
+            f"auto_encrypt {{\n  allow_tls = {hcl_bool(args.auto_encrypt)}\n}}",
+        ]
+    )
+    commit_managed_file(TLS_CONFIG, managed_config(body))
+    return 0
+
+
+def cmd_telemetry_enable(args: argparse.Namespace) -> int:
+    body = "\n".join(
+        [
+            "telemetry {",
+            f"  prometheus_retention_time = {hcl_string(args.retention)}",
+            f"  disable_hostname          = {hcl_bool(args.disable_hostname)}",
+            "}",
+        ]
+    )
+    commit_managed_file(TELEMETRY_CONFIG, managed_config(body))
+    return 0
+
+
+def cmd_dns_enable(args: argparse.Namespace) -> int:
+    lines: list[str] = []
+    if args.recursor:
+        lines.append(f"recursors = {hcl_list(args.recursor)}")
+        lines.append("")
+    lines.extend(
+        [
+            "dns_config {",
+            f"  allow_stale  = {hcl_bool(args.allow_stale)}",
+            f"  enable_truncate = {hcl_bool(args.enable_truncate)}",
+            f"  only_passing = {hcl_bool(args.only_passing)}",
+            "}",
+        ]
+    )
+    commit_managed_file(DNS_CONFIG, managed_config("\n".join(lines)))
+    return 0
+
+
+def read_acl_file_token(path: Path) -> str:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    match = re.search(r"(?m)^\s*export\s+CONSUL_HTTP_TOKEN=(\S+)\s*$", content)
+    return match.group(1) if match else ""
+
+
+def target_token_file() -> Path:
+    target_user = os.environ.get("SUDO_USER") or pwd.getpwuid(os.getuid()).pw_name
+    try:
+        target_home = Path(pwd.getpwnam(target_user).pw_dir)
+    except KeyError:
+        target_home = Path.home()
+    if not target_home.is_dir():
+        target_home = Path.home()
+    return target_home / "consul.acl"
+
+
+def resolve_consul_token(args: argparse.Namespace) -> str:
+    token = getattr(args, "token", "") or ""
+    if token:
+        return token
+    token_file = getattr(args, "token_file", "") or ""
+    if token_file:
+        path = Path(token_file)
+        if not path.is_file():
+            raise CLIError(f"Consul token file not found: {path}")
+        value = path.read_text(encoding="utf-8").strip()
+        if not value:
+            raise CLIError(f"Consul token file is empty: {path}")
+        return read_acl_file_token(path) or value.splitlines()[0].strip()
+    env_token = os.environ.get("CONSUL_HTTP_TOKEN", "")
+    if env_token:
+        return env_token
+    return read_acl_file_token(target_token_file())
+
+
+def consul_env(address: str, token: str) -> dict[str, str]:
+    env = os.environ.copy()
+    env["CONSUL_HTTP_ADDR"] = address
+    env["no_proxy"] = LOCAL_NO_PROXY
+    env["NO_PROXY"] = LOCAL_NO_PROXY
+    if token:
+        env["CONSUL_HTTP_TOKEN"] = token
+    else:
+        env.pop("CONSUL_HTTP_TOKEN", None)
+    return env
+
+
+def consul_cmd(
+    address: str,
+    token: str,
+    command: list[str],
+    *,
+    capture: bool = False,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    binary = str(BIN_PATH) if BIN_PATH.is_file() else "consul"
+    return run([binary, *command], env=consul_env(address, token), capture=capture, check=check)
+
+
+def doctor_check(status: str, message: str) -> None:
+    labels = {
+        "OK": (terminal_status_prefix(), COLOR_GREEN),
+        "WARN": ("WARN", COLOR_YELLOW),
+        "FAIL": ("FAIL", COLOR_RED),
+    }
+    label, color = labels.get(status, (status, ""))
+    print(f"{color_text(f'{label:<5}', color)} {message}")
+
+
+def hcl_file_string_value(path: Path, key: str) -> str:
+    if not path.is_file():
+        return ""
+    match = re.search(rf'^\s*{re.escape(key)}\s*=\s*"([^"]*)"', path.read_text(encoding="utf-8"), re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+def doctor_config_file(path: Path, label: str) -> int:
+    if not path.exists():
+        doctor_check("WARN", f"{label} config absent: {path}")
+        return 2
+    if is_managed_file(path):
+        doctor_check("OK", f"{label} config managed: {path}")
+        return 0
+    doctor_check("FAIL", f"{label} config exists but is not managed: {path}")
+    return 1
+
+
+def read_install_metadata() -> dict[str, Any]:
+    try:
+        data = json.loads(INSTALL_METADATA_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def acl_enabled_from_config() -> bool | None:
+    if not CONFIG_FILE.is_file():
+        return None
+    try:
+        content = CONFIG_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not re.search(r"(?m)^\s*acl\s*\{", content):
+        return False
+    match = re.search(r"(?ms)^\s*acl\s*\{.*?^\s*\}", content)
+    block = match.group(0) if match else ""
+    enabled = re.search(r"(?m)^\s*enabled\s*=\s*(true|false)", block)
+    return enabled.group(1) == "true" if enabled else False
+
+
+def consul_installed() -> bool:
+    return CONFIG_FILE.is_file() or BIN_PATH.is_file() or bool(read_install_metadata())
+
+
+def acl_state() -> bool | None:
+    """True or False when the ACL mode is known, None when Consul is not installed here."""
+    from_config = acl_enabled_from_config()
+    if from_config is not None:
+        return from_config
+    value = read_install_metadata().get("acl_enabled")
+    return value if isinstance(value, bool) else None
+
+
+def acl_enabled() -> bool:
+    state = acl_state()
+    return True if state is None else state
+
+
+def doctor_consul_config() -> int:
+    if not BIN_PATH.exists():
+        doctor_check("FAIL", f"Consul binary not found: {BIN_PATH}")
+        return 1
+    if not CONFIG_DIR.is_dir():
+        doctor_check("FAIL", f"Consul config directory missing: {CONFIG_DIR}")
+        return 1
+    result = run([str(BIN_PATH), "validate", str(CONFIG_DIR)], check=False, capture=True)
+    if result.returncode == 0:
+        doctor_check("OK", f"Consul config validates: {CONFIG_DIR}")
+        return 0
+    doctor_check("FAIL", f"Consul config validation failed: {CONFIG_DIR}")
+    return 1
+
+
+def doctor_acl(address: str, token: str) -> int:
+    state = acl_state()
+    if state is None:
+        doctor_check("WARN", f"Consul config not found: {CONFIG_FILE}; ACL mode unknown")
+        return 0
+    if not state:
+        doctor_check("WARN", "Consul ACL is disabled; anyone reaching the API has full access")
+        return 0
+    doctor_check("OK", "Consul ACL is enabled")
+    failures = 0
+    if not token:
+        doctor_check("WARN", f"No Consul token available; pass --token/--token-file or source {target_token_file()}")
+        return failures
+    result = consul_cmd(address, token, ["acl", "token", "read", "-self"], capture=True, check=False)
+    if result.returncode == 0:
+        doctor_check("OK", "Consul token is valid")
+    else:
+        doctor_check("FAIL", "Consul token is not accepted by the cluster")
+        failures += 1
+    return failures
+
+
+def doctor_nomad_integration(address: str, token: str) -> int:
+    if not acl_enabled():
+        doctor_check("WARN", "ACL disabled; Nomad needs no JWT auth method or agent token")
+        return 0
+    failures = 0
+    if not token:
+        doctor_check("WARN", "Skipping Nomad integration checks without a Consul token")
+        return failures
+    result = consul_cmd(address, token, ["acl", "auth-method", "read", "-name", NOMAD_AUTH_METHOD], capture=True, check=False)
+    if result.returncode == 0:
+        doctor_check("OK", f"Consul JWT auth method exists: {NOMAD_AUTH_METHOD}")
+    else:
+        doctor_check("FAIL", f"Consul JWT auth method missing: {NOMAD_AUTH_METHOD}. Run {CONSUL_MANAGER_CMD} nomad-jwt apply")
+        failures += 1
+    if NOMAD_AGENT_TOKEN_FILE.is_file():
+        doctor_check("OK", f"Nomad agent token file present: {NOMAD_AGENT_TOKEN_FILE}")
+    else:
+        doctor_check("WARN", f"Nomad agent token file absent: {NOMAD_AGENT_TOKEN_FILE}. Run {CONSUL_MANAGER_CMD} nomad-jwt apply")
+    return failures
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    failures = 0
+    address = args.address or CONSUL_ADDR
+    token = resolve_consul_token(args)
+    doctor_check("OK" if sys.platform.startswith("linux") else "FAIL", f"platform: {sys.platform}")
+    if not sys.platform.startswith("linux"):
+        failures += 1
+    if command_exists("systemctl"):
+        doctor_check("OK", f"systemctl found: {shutil.which('systemctl')}")
+        if run(["systemctl", "is-active", "--quiet", "consul"], check=False).returncode == 0:
+            doctor_check("OK", "consul.service is active")
+        else:
+            doctor_check("FAIL", "consul.service is not active")
+            failures += 1
+    else:
+        doctor_check("FAIL", "systemctl not found")
+        failures += 1
+    if BIN_PATH.is_file():
+        doctor_check("OK", f"Consul binary found: {BIN_PATH}")
+    else:
+        doctor_check("FAIL", f"Consul binary missing: {BIN_PATH}")
+        failures += 1
+    if BIN_ENTRY.exists() or BIN_ENTRY.is_symlink():
+        doctor_check("OK", f"Consul entry exists: {BIN_ENTRY}")
+    else:
+        doctor_check("WARN", f"Consul entry missing: {BIN_ENTRY}")
+    if SYSTEMD_SERVICE.is_file():
+        doctor_check("OK", f"systemd service file found: {SYSTEMD_SERVICE}")
+    else:
+        doctor_check("FAIL", f"systemd service file missing: {SYSTEMD_SERVICE}")
+        failures += 1
+    failures += doctor_consul_config()
+    code = http_status(f"{address.rstrip('/')}/v1/status/leader")
+    if code == 200:
+        doctor_check("OK", f"Consul HTTP API reachable: {address}")
+    else:
+        doctor_check("FAIL", f"Consul HTTP API not reachable: {address} ({code})")
+        failures += 1
+    if consul_leader_elected():
+        doctor_check("OK", "Consul has an elected leader")
+    else:
+        doctor_check("FAIL", "Consul has no elected leader")
+        failures += 1
+    print("\nManaged config fragments:")
+    for path, label in ((TLS_CONFIG, "TLS"), (UI_CONFIG, "UI"), (TELEMETRY_CONFIG, "Telemetry"), (DNS_CONFIG, "DNS")):
+        if doctor_config_file(path, label) == 1:
+            failures += 1
+    print("\nACL checks:")
+    failures += doctor_acl(address, token)
+    if args.integrations or NOMAD_AGENT_TOKEN_FILE.is_file():
+        print("\nNomad integration checks:")
+        failures += doctor_nomad_integration(address, token)
+    if failures == 0:
+        print("\nAll checks passed.")
+    return 0 if failures == 0 else 1
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    address = args.address or CONSUL_ADDR
+    token = resolve_consul_token(args)
+    if not BIN_PATH.is_file() and not command_exists("consul"):
+        raise CLIError(f"Consul binary not found: {BIN_PATH}")
+    print("Consul members:")
+    consul_cmd(address, token, ["members"], check=False)
+    print("\nRaft peers:")
+    consul_cmd(address, token, ["operator", "raft", "list-peers"], check=False)
+    print(f"\nACL enabled: {str(acl_enabled()).lower()}")
+    metadata = read_install_metadata()
+    if metadata:
+        print(f"Consul version: {metadata.get('consul_version', 'unknown')}")
+        print(f"Datacenter: {metadata.get('datacenter', 'unknown')}")
+    return 0
+
+
+def create_install_tmpdir(prefix: str) -> Path:
+    parent = Path(os.environ.get("TMPDIR", "/var/tmp"))
+    if not parent.is_dir() or not os.access(parent, os.W_OK):
+        raise CLIError(f"Temporary directory parent is not writable: {parent}. Set TMPDIR to a writable directory with enough space")
+    path = Path(tempfile.mkdtemp(prefix=f"{prefix}.", dir=str(parent)))
+    log_info(f"Using install temporary directory: {path}")
+    return path
+
+
+def verify_checksum(zip_file: Path, sums_file: Path) -> None:
+    expected = ""
+    for raw in sums_file.read_text(encoding="utf-8").splitlines():
+        parts = raw.split()
+        if len(parts) >= 2 and parts[1] == zip_file.name:
+            expected = parts[0]
+            break
+    if not expected:
+        raise CLIError(f"Checksum entry not found for {zip_file.name}")
+    actual = sha256_file(zip_file)
+    if expected != actual:
+        raise CLIError(f"Checksum mismatch for {zip_file.name}")
+    log_success(f"Checksum verified: {zip_file.name}")
+
+
+def download_consul(version: str, arch: str, tmpdir: Path) -> None:
+    zip_name = f"consul_{version}_linux_{arch}.zip"
+    sums_name = f"consul_{version}_SHA256SUMS"
+    base_url = f"https://releases.hashicorp.com/consul/{version}"
+    zip_file = tmpdir / zip_name
+    sums_file = tmpdir / sums_name
+    log_info(f"Downloading Consul {version} for linux_{arch}")
+    download_file(f"{base_url}/{zip_name}", zip_file, timeout=300)
+    download_file(f"{base_url}/{sums_name}", sums_file, timeout=300)
+    verify_checksum(zip_file, sums_file)
+    extract_dir = tmpdir / "extract"
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    extract_zip(zip_file, extract_dir)
+    if not (extract_dir / "consul").is_file():
+        raise CLIError("Consul binary not found in archive")
+
+
+def ensure_consul_user() -> None:
+    if run(["id", CONSUL_USER], check=False, capture=True).returncode == 0:
+        return
+    log_info(f"Creating system user: {CONSUL_USER}")
+    run_root(["useradd", "--system", "--home", str(CONSUL_ROOT_DIR), "--shell", "/bin/false", CONSUL_USER])
+
+
+def install_directories() -> None:
+    log_info("Creating Consul directories")
+    for path, mode, owner, group in [
+        (CONSUL_ROOT_DIR, "0755", "root", "root"),
+        (BIN_DIR, "0755", "root", "root"),
+        (CONSUL_ROOT_DIR / "etc", "0755", "root", "root"),
+        (CONSUL_ROOT_DIR / "data", "0755", "root", "root"),
+        (CONSUL_ROOT_DIR / "lib", "0755", "root", "root"),
+        (CONSUL_ROOT_DIR / "log", "0750", "root", "root"),
+        (CONFIG_DIR, "0750", CONSUL_USER, CONSUL_GROUP),
+        (DATA_DIR, "0750", CONSUL_USER, CONSUL_GROUP),
+        (CONSUL_AGENT_DATA_DIR, "0750", CONSUL_USER, CONSUL_GROUP),
+    ]:
+        run_root(["install", "-d", "-m", mode, "-o", owner, "-g", group, str(path)])
+
+
+def install_binary(tmpdir: Path) -> None:
+    log_info(f"Installing binary: {BIN_PATH}")
+    run_root(["install", "-d", "-m", "0755", "-o", "root", "-g", "root", str(BIN_DIR)])
+    run_root(["install", "-m", "0755", "-o", "root", "-g", "root", str(tmpdir / "extract" / "consul"), str(BIN_PATH)])
+    run_root(["install", "-d", "-m", "0755", "-o", "root", "-g", "root", str(BIN_ENTRY.parent)])
+    run_root(["ln", "-sfn", str(BIN_PATH), str(BIN_ENTRY)])
+    log_success(f"Consul binary entry installed: {BIN_ENTRY}")
+    run([str(BIN_PATH), "version"])
+
+
+def write_systemd_service() -> None:
+    content = f"""[Unit]
+Description=Consul
+Documentation=https://developer.hashicorp.com/consul/docs
+Wants=network-online.target
+After=network-online.target
+ConditionFileNotEmpty={CONFIG_FILE}
+
+[Service]
+User={CONSUL_USER}
+Group={CONSUL_GROUP}
+ExecStart={BIN_PATH} agent -config-dir={CONFIG_DIR}
+ExecReload=/bin/kill --signal HUP $MAINPID
+KillMode=process
+KillSignal=SIGTERM
+LimitNOFILE=65536
+Restart=on-failure
+RestartSec=2
+TasksMax=infinity
+
+[Install]
+WantedBy=multi-user.target
+"""
+    log_info(f"Installing systemd service: {SYSTEMD_SERVICE}")
+    install_text(SYSTEMD_SERVICE, content, mode="0644")
+
+
+def read_existing_encrypt_key() -> str:
+    return hcl_file_string_value(CONFIG_FILE, "encrypt")
+
+
+def generate_gossip_key(tmpdir: Path) -> str:
+    binary = tmpdir / "extract" / "consul"
+    source = str(binary) if binary.is_file() else str(BIN_PATH)
+    result = run([source, "keygen"], capture=True)
+    key = (result.stdout or "").strip()
+    if not key:
+        raise CLIError("Failed to generate a Consul gossip encryption key")
+    return key
+
+
+def write_consul_config(args: argparse.Namespace, encrypt_key: str) -> None:
+    lines = [
+        f"datacenter = {hcl_string(args.datacenter)}",
+        f'data_dir   = {hcl_string(str(CONSUL_AGENT_DATA_DIR))}',
+        f"log_level  = {hcl_string(args.log_level)}",
+        "",
+        "server           = true",
+        "bootstrap_expect = 1",
+        "",
+        f"bind_addr   = {hcl_string(args.bind)}",
+        f"client_addr = {hcl_string(args.client)}",
+    ]
+    if encrypt_key:
+        lines.append(f"encrypt     = {hcl_string(encrypt_key)}")
+    lines.extend(
+        [
+            "",
+            "ports {",
+            f"  http = {args.http_port}",
+            f"  grpc = {args.grpc_port if args.connect else -1}",
+            f"  dns  = {args.dns_port}",
+            "}",
+            "",
+            "connect {",
+            f"  enabled = {hcl_bool(args.connect)}",
+            "}",
+        ]
+    )
+    if args.acl:
+        lines.extend(
+            [
+                "",
+                "acl {",
+                "  enabled                  = true",
+                f"  default_policy           = {hcl_string(args.acl_default_policy)}",
+                "  down_policy              = \"extend-cache\"",
+                "  enable_token_persistence = true",
+                "}",
+            ]
+        )
+    log_info(f"Installing Consul config: {CONFIG_FILE}")
+    install_text(CONFIG_FILE, "\n".join(lines) + "\n", mode="0640", owner=CONSUL_USER, group=CONSUL_GROUP)
+
+
+def write_default_managed_configs(args: argparse.Namespace) -> None:
+    log_info("Installing default managed configs")
+    install_text(
+        UI_CONFIG,
+        managed_config(f"ui_config {{\n  enabled = {hcl_bool(args.ui)}\n}}"),
+        mode="0640",
+        owner=CONSUL_USER,
+        group=CONSUL_GROUP,
+    )
+    install_text(
+        TELEMETRY_CONFIG,
+        managed_config('telemetry {\n  prometheus_retention_time = "24h"\n  disable_hostname          = true\n}'),
+        mode="0640",
+        owner=CONSUL_USER,
+        group=CONSUL_GROUP,
+    )
+
+
+def write_tool_manifest() -> None:
+    path = TOOL_DIR / "consul-manager"
+    lines = [f"{sha256_file(path)}  consul-manager"] if path.is_file() else []
+    install_text(TOOL_MANIFEST_FILE, "\n".join(lines) + "\n", mode="0644")
+
+
+def write_install_metadata(version: str, args: argparse.Namespace) -> None:
+    metadata = {
+        "tool": "consul-manager",
+        "root_dir": str(CONSUL_ROOT_DIR),
+        "tool_dir": str(TOOL_DIR),
+        "manager_path": str(TOOL_PATH),
+        "manager_entry": str(TOOL_ENTRY),
+        "consul_binary": str(BIN_PATH),
+        "consul_entry": str(BIN_ENTRY),
+        "config_dir": str(CONFIG_DIR),
+        "config_file": str(CONFIG_FILE),
+        "data_dir": str(DATA_DIR),
+        "agent_data_dir": str(CONSUL_AGENT_DATA_DIR),
+        "service": str(SYSTEMD_SERVICE),
+        "consul_version": version,
+        "datacenter": args.datacenter,
+        "bind_addr": args.bind,
+        "client_addr": args.client,
+        "http_port": args.http_port,
+        "grpc_port": args.grpc_port if args.connect else -1,
+        "dns_port": args.dns_port,
+        "acl_enabled": bool(args.acl),
+        "acl_default_policy": args.acl_default_policy if args.acl else "",
+        "connect_enabled": bool(args.connect),
+        "gossip_encrypt": bool(args.gossip_encrypt),
+        "installed_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "manifest_file": str(TOOL_MANIFEST_FILE),
+        "manifest_sha256": sha256_file(TOOL_MANIFEST_FILE) if TOOL_MANIFEST_FILE.is_file() else "",
+        "audit_log": str(AUDIT_LOG_FILE),
+    }
+    run_root(["install", "-d", "-m", "0750", "-o", "root", "-g", "root", str(TOOL_STATE_DIR)])
+    install_text(INSTALL_METADATA_FILE, json.dumps(metadata, indent=2, sort_keys=True) + "\n", mode="0644")
+
+
+def write_data_pointer() -> None:
+    content = "\n".join(
+        [
+            "Managed by consul-manager",
+            f"Install metadata: {INSTALL_METADATA_FILE}",
+            f"Tool dir: {TOOL_DIR}",
+            f"Config dir: {CONFIG_DIR}",
+            f"Audit log: {AUDIT_LOG_FILE}",
+            "",
+        ]
+    )
+    install_text(DATA_POINTER_FILE, content, mode="0644", owner=CONSUL_USER, group=CONSUL_GROUP)
+
+
+def install_tool_snapshot(version: str, script_dir: Path, args: argparse.Namespace) -> None:
+    log_info(f"Installing Consul init tools snapshot: {TOOL_DIR}")
+    run_root(["install", "-d", "-m", "0755", "-o", "root", "-g", "root", str(BIN_DIR)])
+    run_root(["install", "-d", "-m", "0755", "-o", "root", "-g", "root", str(TOOL_DIR)])
+    run_root(["install", "-m", "0755", "-o", "root", "-g", "root", str(script_dir / "consul-manager"), str(TOOL_DIR / "consul-manager")])
+    safe_remove_path(TOOL_DIR / "consul_tools")
+    run_root(["cp", "-R", str(script_dir / "consul_tools"), str(TOOL_DIR / "consul_tools")])
+    run_root(["chown", "-R", "root:root", str(TOOL_DIR / "consul_tools")])
+    install_text(
+        TOOL_VERSION_FILE,
+        f"tool=consul-manager\nconsul_version={version}\ninstalled_at={time.strftime('%Y-%m-%dT%H:%M:%S%z')}\nsource_dir={script_dir}\n",
+        mode="0644",
+    )
+    write_tool_manifest()
+    write_install_metadata(version, args)
+    write_data_pointer()
+    run_root(["ln", "-sfn", str(TOOL_DIR / "consul-manager"), str(TOOL_PATH)])
+    run_root(["install", "-d", "-m", "0755", "-o", "root", "-g", "root", str(TOOL_ENTRY.parent)])
+    run_root(["ln", "-sfn", str(TOOL_PATH), str(TOOL_ENTRY)])
+    log_success(f"Consul manager entry installed: {TOOL_ENTRY}")
+
+
+def read_installed_consul_version() -> str:
+    metadata = read_install_metadata()
+    version = metadata.get("consul_version")
+    if isinstance(version, str) and version.strip():
+        return version.strip()
+    try:
+        for line in TOOL_VERSION_FILE.read_text(encoding="utf-8").splitlines():
+            key, sep, value = line.partition("=")
+            if sep and key == "consul_version" and value.strip():
+                return value.strip()
+    except OSError:
+        pass
+    return "unknown"
+
+
+def metadata_install_args() -> argparse.Namespace:
+    metadata = read_install_metadata()
+    return argparse.Namespace(
+        datacenter=metadata.get("datacenter", DEFAULT_DATACENTER),
+        bind=metadata.get("bind_addr", DEFAULT_BIND_ADDR),
+        client=metadata.get("client_addr", DEFAULT_CLIENT_ADDR),
+        http_port=metadata.get("http_port", DEFAULT_HTTP_PORT),
+        grpc_port=metadata.get("grpc_port", DEFAULT_GRPC_PORT),
+        dns_port=metadata.get("dns_port", DEFAULT_DNS_PORT),
+        acl=bool(metadata.get("acl_enabled", acl_enabled())),
+        acl_default_policy=metadata.get("acl_default_policy", "deny") or "deny",
+        connect=bool(metadata.get("connect_enabled", True)),
+        gossip_encrypt=bool(metadata.get("gossip_encrypt", True)),
+    )
+
+
+def require_tool_source(script_dir: Path) -> None:
+    missing: list[str] = []
+    if not (script_dir / "consul-manager").is_file():
+        missing.append(str(script_dir / "consul-manager"))
+    if not (script_dir / "consul_tools").is_dir():
+        missing.append(str(script_dir / "consul_tools"))
+    if missing:
+        raise CLIError(f"Tool source is incomplete: {', '.join(missing)}")
+
+
+def cmd_tools_update(args: argparse.Namespace) -> int:
+    require_linux()
+    require_command("install")
+    script_dir = current_script_dir(__file__).parent
+    require_tool_source(script_dir)
+    version = normalize_version(args.consul_version) if args.consul_version else read_installed_consul_version()
+    if version == "unknown":
+        log_warn("Installed Consul version metadata not found; recording unknown")
+    log_info(f"Updating Consul init tool files from: {script_dir}")
+    install_tool_snapshot(version, script_dir, metadata_install_args())
+    log_success("Consul init tools updated")
+    return 0
+
+
+def write_acl_token_file(output: str, address: str) -> str:
+    token_file = target_token_file()
+    match = re.search(r"(?im)^\s*SecretID\s*:\s*(\S+)", output)
+    secret_id = match.group(1) if match else ""
+    content = "# Generated by consul-manager\n# Source this file to use the bootstrapped ACL token.\n"
+    content += f"export CONSUL_HTTP_ADDR={address}\n"
+    if secret_id:
+        content += f"export CONSUL_HTTP_TOKEN={secret_id}\n"
+    content += "\n" + "\n".join(f"# {line}" for line in output.splitlines()) + "\n"
+    atomic_write_text(token_file, content, mode=0o600)
+    target_user = os.environ.get("SUDO_USER") or pwd.getpwuid(os.getuid()).pw_name
+    if os.geteuid() == 0 and target_user != "root":
+        try:
+            user_info = pwd.getpwnam(target_user)
+            os.chown(token_file, user_info.pw_uid, user_info.pw_gid)
+        except Exception:
+            pass
+    log_success(f"ACL token saved to {token_file}")
+    return secret_id
+
+
+def remove_acl_token_file() -> None:
+    token_file = target_token_file()
+    if not token_file.is_file():
+        return
+    first = token_file.open("r", encoding="utf-8").readline().rstrip("\n")
+    if first != "# Generated by consul-manager":
+        log_warn(f"Skip removing ACL token file without generated marker: {token_file}")
+        return
+    token_file.unlink()
+    log_success(f"Removed ACL token file: {token_file}")
+
+
+def bootstrap_acl(enabled: bool, address: str = CONSUL_ADDR) -> str:
+    if not enabled:
+        log_info("Skipping ACL bootstrap")
+        return ""
+    log_info("Bootstrapping Consul ACL")
+    result = consul_cmd(address, "", ["acl", "bootstrap"], capture=True, check=False)
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode == 0:
+        return write_acl_token_file(output, address)
+    if "already been bootstrapped" in output.lower() or "already bootstrapped" in output.lower():
+        log_warn("Consul ACL has already been bootstrapped")
+    else:
+        log_warn("Consul ACL bootstrap failed. Check service status and run acl bootstrap manually if needed")
+    return ""
+
+
+def cmd_acl_bootstrap(args: argparse.Namespace) -> int:
+    address = args.address or CONSUL_ADDR
+    if not consul_installed():
+        raise CLIError(f"No consul-manager install found on this host: {CONFIG_FILE}")
+    if not acl_enabled():
+        raise CLIError("Consul ACL is disabled in the current config; nothing to bootstrap")
+    if not bootstrap_acl(True, address):
+        return 1
+    return 0
+
+
+def cmd_install(args: argparse.Namespace) -> int:
+    require_linux()
+    for command in ("install", "systemctl", "useradd"):
+        require_command(command)
+    if args.acl_default_policy not in {"deny", "allow"}:
+        raise CLIError(f"Invalid ACL default policy: {args.acl_default_policy}")
+    version = resolve_version(args.version)
+    arch = detect_arch()
+    tmpdir = create_install_tmpdir("consul-install")
+    try:
+        download_consul(version, arch, tmpdir)
+        install_binary(tmpdir)
+        ensure_consul_user()
+        install_directories()
+        encrypt_key = ""
+        if args.gossip_encrypt:
+            encrypt_key = read_existing_encrypt_key()
+            if encrypt_key:
+                log_info("Reusing existing gossip encryption key")
+            else:
+                encrypt_key = generate_gossip_key(tmpdir)
+                log_success("Generated a new gossip encryption key")
+        write_systemd_service()
+        write_consul_config(args, encrypt_key)
+        write_default_managed_configs(args)
+        install_tool_snapshot(version, current_script_dir(__file__).parent, args)
+        log_info("Enabling Consul service")
+        run_root(["systemctl", "daemon-reload"])
+        run_root(["systemctl", "enable", "consul"])
+        run_root(["systemctl", "restart", "consul"])
+        if not wait_for_consul_api():
+            raise CLIError("Timed out waiting for Consul HTTP API")
+        if args.acl:
+            bootstrap_acl(not args.no_acl_bootstrap)
+        else:
+            log_warn("Consul ACL is disabled; the HTTP API has no authentication")
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    log_success("Consul installation completed")
+    print_install_next_steps(args)
+    return 0
+
+
+def print_install_next_steps(args: argparse.Namespace) -> None:
+    print("\nNext steps:")
+    if args.acl:
+        print(f"  1. source {target_token_file()}")
+        print(f"  2. {CONSUL_MANAGER_CMD} nomad-jwt apply       # configure the Consul side for Nomad")
+        print("  3. nomad-manager consul setup-local")
+        print(f"  4. {CONSUL_MANAGER_CMD} doctor")
+    else:
+        print("  1. nomad-manager consul setup-local           # ACL is off, no token needed")
+        print(f"  2. {CONSUL_MANAGER_CMD} doctor")
+
+
+def remove_tool_snapshot() -> None:
+    log_info("Removing Consul init tools")
+    for path in uninstall_tool_paths():
+        if Path(path).exists() or Path(path).is_symlink():
+            safe_remove_path(path)
+
+
+def purge_tool_state() -> None:
+    log_warn("Purging Consul init tool metadata and audit logs")
+    safe_remove_path(TOOL_STATE_DIR)
+    safe_remove_path(TOOL_LOG_DIR)
+
+
+def uninstall_runtime_paths() -> list[Path]:
+    return [SYSTEMD_SERVICE, BIN_ENTRY, BIN_PATH, CONFIG_DIR, DATA_DIR]
+
+
+def uninstall_tool_paths() -> list[Path]:
+    return [TOOL_ENTRY, TOOL_PATH, TOOL_DIR]
+
+
+def print_uninstall_plan(args: argparse.Namespace) -> None:
+    print("Consul uninstall plan:")
+    print("  Stop and disable service:")
+    print("    - consul.service")
+    print("  Remove runtime paths:")
+    for path in uninstall_runtime_paths():
+        suffix = "   <-- destroys the KV store, service catalog and ACL tokens" if path == DATA_DIR else ""
+        print(f"    - {path}{suffix}")
+    print("  Remove generated ACL token if present:")
+    print(f"    - {target_token_file()}")
+    if args.remove_tools or args.purge:
+        print("  Remove tool paths:")
+        for path in uninstall_tool_paths():
+            print(f"    - {path}")
+    else:
+        print("  Preserve tool paths:")
+        print(f"    - {TOOL_DIR}")
+    if args.purge:
+        print("  Purge tool state:")
+        print(f"    - {TOOL_STATE_DIR}")
+        print(f"    - {TOOL_LOG_DIR}")
+    else:
+        print("  Preserve tool state:")
+        print(f"    - {TOOL_STATE_DIR}")
+        print(f"    - {TOOL_LOG_DIR}")
+
+
+def confirm_uninstall(args: argparse.Namespace) -> None:
+    if args.yes:
+        return
+    try:
+        answer = input("Proceed with uninstall? Type yes to continue: ")
+    except EOFError as exc:
+        raise CLIError("Uninstall requires confirmation. Re-run with --yes for non-interactive use") from exc
+    if answer != "yes":
+        raise CLIError("Uninstall cancelled")
+
+
+def cmd_uninstall(args: argparse.Namespace) -> int:
+    print_uninstall_plan(args)
+    if args.dry_run:
+        return 0
+    confirm_uninstall(args)
+    require_linux()
+    require_command("systemctl")
+    log_info("Stopping Consul service")
+    run_root(["systemctl", "stop", "consul"], check=False)
+    run_root(["systemctl", "disable", "consul"], check=False)
+    log_info("Removing Consul files")
+    for path in uninstall_runtime_paths():
+        if Path(path).exists() or Path(path).is_symlink():
+            safe_remove_path(path)
+    remove_acl_token_file()
+    if args.remove_tools or args.purge:
+        remove_tool_snapshot()
+    else:
+        log_warn(f"Consul init tools preserved: {TOOL_DIR}. Use --remove-tools to remove them")
+    if args.purge:
+        purge_tool_state()
+    else:
+        log_warn(f"Consul init tool metadata preserved: {TOOL_STATE_DIR}")
+        log_warn(f"Consul init tool audit logs preserved: {TOOL_LOG_DIR}")
+    run_root(["systemctl", "daemon-reload"])
+    run_root(["systemctl", "reset-failed", "consul"], check=False)
+    if run(["id", CONSUL_USER], check=False, capture=True).returncode == 0:
+        log_info(f"Removing system user: {CONSUL_USER}")
+        run_root(["userdel", CONSUL_USER], check=False)
+    log_success("Consul uninstallation completed")
+    return 0
+
+
+NOMAD_AGENT_POLICY_RULES = """# Managed by consul-manager
+# Minimal policy for the Nomad agent itself under Consul workload identity.
+# Task and service tokens are issued through the JWT auth method instead.
+agent_prefix "" {
+  policy = "read"
+}
+
+node_prefix "" {
+  policy = "read"
+}
+
+service_prefix "" {
+  policy = "write"
+}
+"""
+
+
+def nomad_binary() -> str:
+    for candidate in ("/opt/nomad/bin/nomad", "/usr/local/bin/nomad"):
+        if Path(candidate).is_file():
+            return candidate
+    if command_exists("nomad"):
+        return shutil.which("nomad") or "nomad"
+    raise CLIError("Nomad binary not found; install Nomad before configuring the Consul side")
+
+
+def nomad_setup_help() -> str:
+    result = run([nomad_binary(), "setup", "consul", "-help"], capture=True, check=False)
+    if result.returncode != 0:
+        raise CLIError(
+            "This Nomad build has no 'nomad setup consul' subcommand. "
+            "Upgrade Nomad, or create the Consul JWT auth method and binding rules manually"
+        )
+    return (result.stdout or "") + (result.stderr or "")
+
+
+def nomad_setup_env(address: str, token: str, nomad_addr: str) -> dict[str, str]:
+    env = consul_env(address, token)
+    env["NOMAD_ADDR"] = nomad_addr
+    return env
+
+
+def run_nomad_setup(address: str, token: str, nomad_addr: str, extra: list[str]) -> subprocess.CompletedProcess[str]:
+    return run(
+        [nomad_binary(), "setup", "consul", *extra],
+        env=nomad_setup_env(address, token, nomad_addr),
+        check=False,
+    )
+
+
+def require_management_token(token: str) -> str:
+    if not token:
+        raise CLIError(
+            f"A Consul management token is required. Pass --token/--token-file, export CONSUL_HTTP_TOKEN, "
+            f"or source {target_token_file()}"
+        )
+    return token
+
+
+def consul_policy_exists(address: str, token: str, name: str) -> bool:
+    result = consul_cmd(address, token, ["acl", "policy", "read", "-name", name], capture=True, check=False)
+    return result.returncode == 0
+
+
+def write_nomad_agent_policy(address: str, token: str) -> None:
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, suffix=".hcl") as handle:
+        handle.write(NOMAD_AGENT_POLICY_RULES)
+        rules_path = handle.name
+    try:
+        action = "update" if consul_policy_exists(address, token, NOMAD_AGENT_POLICY) else "create"
+        log_info(f"Consul ACL policy {action}: {NOMAD_AGENT_POLICY}")
+        consul_cmd(
+            address,
+            token,
+            [
+                "acl",
+                "policy",
+                action,
+                "-name",
+                NOMAD_AGENT_POLICY,
+                "-description",
+                "Nomad agent policy managed by consul-manager",
+                "-rules",
+                f"@{rules_path}",
+            ],
+            capture=True,
+        )
+    finally:
+        Path(rules_path).unlink(missing_ok=True)
+
+
+def nomad_agent_token_valid(address: str) -> bool:
+    if not NOMAD_AGENT_TOKEN_FILE.is_file():
+        return False
+    try:
+        existing = NOMAD_AGENT_TOKEN_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        return False
+    if not existing:
+        return False
+    return consul_cmd(address, existing, ["acl", "token", "read", "-self"], capture=True, check=False).returncode == 0
+
+
+def create_nomad_agent_token(address: str, token: str, *, force: bool) -> None:
+    if not force and nomad_agent_token_valid(address):
+        log_success(f"Nomad agent token already valid: {NOMAD_AGENT_TOKEN_FILE}")
+        return
+    write_nomad_agent_policy(address, token)
+    log_info("Creating Consul ACL token for the Nomad agent")
+    result = consul_cmd(
+        address,
+        token,
+        [
+            "acl",
+            "token",
+            "create",
+            "-description",
+            NOMAD_AGENT_TOKEN_DESCRIPTION,
+            "-policy-name",
+            NOMAD_AGENT_POLICY,
+            "-format",
+            "json",
+        ],
+        capture=True,
+    )
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        raise CLIError("Failed to parse the Consul token create output") from exc
+    secret_id = payload.get("SecretID", "")
+    if not secret_id:
+        raise CLIError("Consul did not return a SecretID for the Nomad agent token")
+    install_text(NOMAD_AGENT_TOKEN_FILE, f"{secret_id}\n", mode="0600", owner="root", group="root")
+    log_success(f"Nomad agent token written: {NOMAD_AGENT_TOKEN_FILE}")
+
+
+def nomad_jwt_skip_when_acl_disabled() -> bool:
+    if acl_enabled():
+        return False
+    log_success("Consul ACL is disabled; no JWT auth method or agent token is needed")
+    log_info("Run 'nomad-manager consul enable --no-workload-identity' on the Nomad side")
+    return True
+
+
+def cmd_nomad_jwt_plan(args: argparse.Namespace) -> int:
+    address = args.address or CONSUL_ADDR
+    nomad_addr = args.nomad_addr or DEFAULT_NOMAD_ADDR
+    if nomad_jwt_skip_when_acl_disabled():
+        return 0
+    token = require_management_token(resolve_consul_token(args))
+    help_text = nomad_setup_help()
+    print("Consul side changes for Nomad workload identity:")
+    print(f"  Consul address : {address}")
+    print(f"  Nomad address  : {nomad_addr}")
+    print(f"  JWT auth method: {NOMAD_AUTH_METHOD} (JWKS from {nomad_addr}/.well-known/jwks.json)")
+    print("  Binding rules  : created by 'nomad setup consul'")
+    print(f"  Agent policy   : {NOMAD_AGENT_POLICY}")
+    print(f"  Agent token    : {NOMAD_AGENT_TOKEN_FILE}")
+    print("\nCommands that apply would run:")
+    print(f"  nomad setup consul -y")
+    print(f"  consul acl policy create -name {NOMAD_AGENT_POLICY} -rules @<generated>")
+    print(f"  consul acl token create -policy-name {NOMAD_AGENT_POLICY}")
+    if "-check" in help_text:
+        print("\nRunning 'nomad setup consul -check':\n")
+        result = run_nomad_setup(address, token, nomad_addr, ["-check"])
+        if result.returncode != 0:
+            log_warn("nomad setup consul -check reported pending or failing steps")
+    return 0
+
+
+def cmd_nomad_jwt_apply(args: argparse.Namespace) -> int:
+    address = args.address or CONSUL_ADDR
+    nomad_addr = args.nomad_addr or DEFAULT_NOMAD_ADDR
+    if nomad_jwt_skip_when_acl_disabled():
+        return 0
+    token = require_management_token(resolve_consul_token(args))
+    nomad_setup_help()  # raises when this Nomad build has no 'setup consul' subcommand
+    if not consul_leader_elected():
+        raise CLIError(f"Consul has no elected leader at {address}; start Consul before applying")
+    log_info("Running: nomad setup consul -y")
+    result = run_nomad_setup(address, token, nomad_addr, ["-y"])
+    if result.returncode != 0:
+        raise CLIError("nomad setup consul failed; no agent token was created")
+    log_success(f"Consul JWT auth method configured: {NOMAD_AUTH_METHOD}")
+    create_nomad_agent_token(address, token, force=args.force)
+    print("\nNext step on the Nomad side:")
+    print(f"  nomad-manager consul setup-local")
+    print(f"  # or: nomad-manager consul token set --token-file {NOMAD_AGENT_TOKEN_FILE}")
+    return 0
+
+
+def cmd_nomad_jwt_status(args: argparse.Namespace) -> int:
+    address = args.address or CONSUL_ADDR
+    if not acl_enabled():
+        doctor_check("WARN", "Consul ACL is disabled; Nomad needs no JWT auth method")
+        return 0
+    token = resolve_consul_token(args)
+    return doctor_nomad_integration(address, token)
+
+
+def cmd_quickstart(_: argparse.Namespace) -> int:
+    print(
+        f"""Consul manager quickstart:
+  1. Install a single-node Consul with ACL enabled (default):
+     {CONSUL_MANAGER_CMD} install --version latest
+
+     Or without ACL, for a throwaway lab node:
+     {CONSUL_MANAGER_CMD} install --no-acl
+
+  2. Load the bootstrapped management token (ACL mode only):
+     source {target_token_file()}
+
+  3. Check node health:
+     {CONSUL_MANAGER_CMD} doctor
+
+  4. Configure the Consul side for Nomad workload identity (no-op without ACL):
+     {CONSUL_MANAGER_CMD} nomad-jwt apply
+
+  5. Wire the Nomad side:
+     nomad-manager consul setup-local
+
+  6. Review destructive actions before removal:
+     {CONSUL_MANAGER_CMD} uninstall --dry-run
+"""
+    )
+    return 0
+
+
+TUTOR_TOPICS = {
+    "overview": f"""Consul manager tutor.
+
+Manage a single-node Consul install and the Consul side of the Nomad
+integration. Every enable/disable command validates the config and restarts
+consul.service, rolling back automatically when validation fails.
+
+Start here:
+  {CONSUL_MANAGER_CMD} quickstart
+  {CONSUL_MANAGER_CMD} doctor
+
+Topics:
+  install       Install a node and choose the ACL mode
+  acl           ACL modes, bootstrap and token handling
+  nomad         Connect Nomad to this Consul
+  troubleshoot  What to check when things fail
+""",
+    "install": f"""Install a single-node Consul:
+
+  {CONSUL_MANAGER_CMD} install                     # latest, ACL on, default_policy deny
+  {CONSUL_MANAGER_CMD} install 1.21.0              # pin a version
+  {CONSUL_MANAGER_CMD} install --no-acl            # ACL off
+  {CONSUL_MANAGER_CMD} install --acl-default-policy allow
+  {CONSUL_MANAGER_CMD} install --bind 0.0.0.0 --client 0.0.0.0
+
+Defaults bind to 127.0.0.1 only. Widen them only when another host must reach
+this Consul, and keep ACL enabled when you do.
+
+Layout:
+  binary : {BIN_PATH} -> {BIN_ENTRY}
+  config : {CONFIG_FILE} plus managed fragments in {CONFIG_DIR}
+  data   : {CONSUL_AGENT_DATA_DIR}
+  service: {SYSTEMD_SERVICE}
+""",
+    "acl": f"""ACL modes:
+
+  install               acl.enabled = true, default_policy = "deny"
+  install --acl-default-policy allow
+                        acl.enabled = true, default_policy = "allow"
+  install --no-acl      no acl block at all
+
+With ACL on, install runs 'consul acl bootstrap' and writes the management
+token to {target_token_file()} (mode 0600):
+
+  source {target_token_file()}
+  consul members
+
+If bootstrap was skipped or failed:
+  {CONSUL_MANAGER_CMD} acl bootstrap
+
+Consul only allows one bootstrap per cluster. A second attempt reports that the
+ACL system has already been bootstrapped; recover the existing token instead.
+""",
+    "nomad": f"""Connect Nomad to this Consul.
+
+With ACL enabled, Nomad needs two things on the Consul side:
+  1. a JWT auth method plus binding rules, so tasks can exchange their workload
+     identity for a Consul token
+  2. an ACL token for the Nomad agent itself
+
+Both are created by:
+  {CONSUL_MANAGER_CMD} nomad-jwt apply
+
+Then on the Nomad side:
+  nomad-manager consul setup-local
+
+Without ACL, none of that applies:
+  nomad-manager consul enable --no-workload-identity
+
+Verify:
+  {CONSUL_MANAGER_CMD} doctor --integrations
+  nomad-manager consul doctor
+""",
+    "troubleshoot": f"""Troubleshooting:
+
+  systemctl status consul
+  journalctl -u consul -n 100 --no-pager
+  {BIN_PATH} validate {CONFIG_DIR}
+  {CONSUL_MANAGER_CMD} doctor --integrations
+
+No leader after install:
+  check bind_addr reachability and 'consul info' raft state
+
+403 Permission denied:
+  the token is missing or lacks rights; source {target_token_file()}
+
+Nomad tasks fail to register services:
+  confirm the JWT auth method exists
+  {CONSUL_MANAGER_CMD} nomad-jwt status
+""",
+}
+
+
+def cmd_tutor(args: argparse.Namespace) -> int:
+    topic = args.topic or "overview"
+    if topic not in TUTOR_TOPICS:
+        raise CLIError(f"Unknown tutor topic: {topic}. Available: {', '.join(sorted(TUTOR_TOPICS))}")
+    print(TUTOR_TOPICS[topic])
+    return 0
+
+
+def add_client_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--address", help=f"Consul HTTP address (default: {CONSUL_ADDR})")
+    parser.add_argument("--token", default="", help="Consul ACL token")
+    parser.add_argument("--token-file", default="", help=f"File holding a Consul ACL token (default: {target_token_file()})")
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = CLIArgumentParser(
+        prog=CONSUL_MANAGER_CMD,
+        description="Install and manage a single-node Consul setup.",
+        epilog=f"""Examples:
+  {CONSUL_MANAGER_CMD} quickstart
+  {CONSUL_MANAGER_CMD} install --version latest
+  {CONSUL_MANAGER_CMD} install --no-acl
+  {CONSUL_MANAGER_CMD} doctor
+  {CONSUL_MANAGER_CMD} nomad-jwt apply
+  {CONSUL_MANAGER_CMD} uninstall --dry-run
+""",
+    )
+    sub = parser.add_subparsers(dest="command")
+    parser.set_defaults(func=lambda _: missing_subcommand(parser, CONSUL_MANAGER_CMD))
+
+    install = sub.add_parser(
+        "install",
+        help="Install Consul",
+        description="Install Consul, write managed config and start consul.service.\n"
+        "\n"
+        "ACL is enabled by default with default_policy deny; install bootstraps it and saves\n"
+        "the management token to ~/consul.acl (mode 0600). Pass --no-acl for a node with no\n"
+        "authentication at all, which also makes the Nomad JWT setup unnecessary.\n"
+        "\n"
+        "bind_addr and client_addr default to 127.0.0.1. Widen them only when another host\n"
+        "must reach this Consul, and keep ACL enabled when you do.\n"
+        "\n"
+        "Re-running install reuses the existing gossip encryption key, so it does not break\n"
+        "an already running node.",
+    )
+    install.add_argument("version_pos", nargs="?", help="Consul version, for example 1.21.0 or latest")
+    install.add_argument("--version", dest="version_opt", help="Consul version; overrides the positional version")
+    install.add_argument("--datacenter", default=DEFAULT_DATACENTER, help=f"Consul datacenter (default: {DEFAULT_DATACENTER})")
+    install.add_argument("--bind", default=DEFAULT_BIND_ADDR, help=f"Consul bind address (default: {DEFAULT_BIND_ADDR})")
+    install.add_argument("--client", default=DEFAULT_CLIENT_ADDR, help=f"Consul client address (default: {DEFAULT_CLIENT_ADDR})")
+    install.add_argument("--log-level", default="INFO", help="Consul log level (default: INFO)")
+    install.add_argument("--http-port", type=int, default=DEFAULT_HTTP_PORT, help=f"Consul HTTP port (default: {DEFAULT_HTTP_PORT})")
+    install.add_argument("--grpc-port", type=int, default=DEFAULT_GRPC_PORT, help=f"Consul gRPC port used by Connect (default: {DEFAULT_GRPC_PORT})")
+    install.add_argument("--dns-port", type=int, default=DEFAULT_DNS_PORT, help=f"Consul DNS port (default: {DEFAULT_DNS_PORT})")
+    add_bool_argument(install, "--acl", default=True, help_text="Enable Consul ACL and bootstrap a management token", no_help="Disable Consul ACL entirely")
+    install.add_argument("--acl-default-policy", choices=("deny", "allow"), default="deny", help="ACL default policy when ACL is enabled (default: deny)")
+    install.add_argument("--no-acl-bootstrap", action="store_true", help="Skip automatic ACL bootstrap after install")
+    add_bool_argument(install, "--gossip-encrypt", default=True, help_text="Generate and use a gossip encryption key", no_help="Do not configure gossip encryption")
+    add_bool_argument(install, "--ui", default=True, help_text="Enable the Consul UI", no_help="Disable the Consul UI")
+    add_bool_argument(install, "--connect", default=True, help_text="Enable Connect and the gRPC port", no_help="Disable Connect and the gRPC port")
+    install.set_defaults(
+        func=lambda args: cmd_install(
+            argparse.Namespace(
+                version=args.version_opt or args.version_pos,
+                datacenter=args.datacenter,
+                bind=args.bind,
+                client=args.client,
+                log_level=args.log_level,
+                http_port=args.http_port,
+                grpc_port=args.grpc_port,
+                dns_port=args.dns_port,
+                acl=args.acl,
+                acl_default_policy=args.acl_default_policy,
+                no_acl_bootstrap=args.no_acl_bootstrap,
+                gossip_encrypt=args.gossip_encrypt,
+                ui=args.ui,
+                connect=args.connect,
+            )
+        )
+    )
+
+    uninstall = sub.add_parser(
+        "uninstall",
+        help="Uninstall Consul",
+        description="Stop Consul and remove runtime files after showing a removal plan.\n"
+        "\n"
+        "Run --dry-run first: the real uninstall deletes the data directory, which destroys\n"
+        "the KV store, the service catalog and every ACL token. Installed tools and audit\n"
+        "logs are preserved unless --remove-tools or --purge is given.",
+    )
+    uninstall.add_argument("--remove-tools", action="store_true", help="Also remove consul-manager from the managed install")
+    uninstall.add_argument("--purge", action="store_true", help="Remove runtime files, tools, metadata and audit logs")
+    uninstall.add_argument("--dry-run", action="store_true", help="Print the uninstall plan without changing files")
+    uninstall.add_argument("--yes", action="store_true", help="Skip the interactive confirmation")
+    uninstall.set_defaults(func=cmd_uninstall)
+
+    doctor = sub.add_parser(
+        "doctor",
+        help="Run node and integration checks",
+        description="Check the managed Consul install, service status, ACL state and Nomad integration.\n"
+        "\n"
+        "Read-only. ACL and Nomad checks adapt to the ACL mode recorded at install time, so a\n"
+        "node installed with --no-acl is not reported as broken.",
+    )
+    add_client_args(doctor)
+    doctor.add_argument("--integrations", action="store_true", help="Run Nomad integration checks even when no agent token file exists")
+    doctor.set_defaults(func=cmd_doctor)
+
+    status = sub.add_parser("status", help="Show members, raft peers and install metadata")
+    add_client_args(status)
+    status.set_defaults(func=cmd_status)
+
+    quickstart = sub.add_parser("quickstart", help="Show a copyable setup workflow")
+    quickstart.set_defaults(func=cmd_quickstart)
+
+    tools = sub.add_parser("tools", help="Manage installed tool files")
+    tools_sub = tools.add_subparsers(dest="tools_command")
+    tools.set_defaults(func=lambda _: missing_subcommand(tools, f"{CONSUL_MANAGER_CMD} tools"))
+    tools_update = tools_sub.add_parser(
+        "update",
+        help="Update consul-manager files only",
+        description="Update the installed consul-manager and consul_tools package without changing the Consul binary, config or service state.",
+    )
+    tools_update.add_argument("--consul-version", help="Consul version recorded in tool metadata; defaults to existing metadata")
+    tools_update.set_defaults(func=cmd_tools_update)
+
+    acl = sub.add_parser(
+        "acl",
+        help="Manage Consul ACL bootstrap",
+        description="Bootstrap the Consul ACL system and save the management token.\n"
+        "\n"
+        "install already does this when ACL is enabled, so run it only when the bootstrap was\n"
+        "skipped or failed. Consul allows one bootstrap per cluster; a second attempt reports\n"
+        "that the system is already bootstrapped rather than issuing a new token.",
+    )
+    acl_sub = acl.add_subparsers(dest="acl_command")
+    acl.set_defaults(func=lambda _: missing_subcommand(acl, f"{CONSUL_MANAGER_CMD} acl"))
+    acl_bootstrap = acl_sub.add_parser("bootstrap", help="Bootstrap Consul ACL and save the management token")
+    acl_bootstrap.add_argument("--address", help=f"Consul HTTP address (default: {CONSUL_ADDR})")
+    acl_bootstrap.set_defaults(func=cmd_acl_bootstrap)
+
+    ui = sub.add_parser("ui", description="Manage the Consul UI. enable and disable rewrite 35-ui.hcl and restart consul.service;\nreset removes the managed file entirely.", help="Manage the Consul UI config")
+    ui_sub = ui.add_subparsers(dest="ui_command")
+    ui.set_defaults(func=lambda _: missing_subcommand(ui, f"{CONSUL_MANAGER_CMD} ui"))
+    ui_enable = ui_sub.add_parser("enable", help="Write managed UI config")
+    ui_enable.add_argument("--metrics-provider", default="", help="UI metrics provider, for example prometheus")
+    ui_enable.add_argument("--metrics-proxy-base-url", default="", help="Base URL proxied for UI metrics")
+    ui_enable.add_argument("--dashboard-url-template", default="", help="Service dashboard URL template")
+    ui_enable.set_defaults(func=cmd_ui_enable)
+    ui_disable = ui_sub.add_parser("disable", help="Disable the Consul UI")
+    ui_disable.set_defaults(func=cmd_ui_disable)
+    ui_reset = ui_sub.add_parser("reset", help="Remove managed UI config")
+    ui_reset.set_defaults(func=lambda _: remove_managed_file(UI_CONFIG) or 0)
+
+    tls = sub.add_parser("tls", description="Manage the managed TLS config. enable and disable rewrite 30-tls.hcl and restart\nconsul.service.\n\nCertificates are not generated here; point the options at files that already exist.", help="Manage TLS config")
+    tls_sub = tls.add_subparsers(dest="tls_command")
+    tls.set_defaults(func=lambda _: missing_subcommand(tls, f"{CONSUL_MANAGER_CMD} tls"))
+    tls_enable = tls_sub.add_parser("enable", help="Write managed TLS config")
+    tls_enable.add_argument("--ca-file", required=True, help="Consul CA certificate file")
+    tls_enable.add_argument("--cert-file", required=True, help="Consul certificate file")
+    tls_enable.add_argument("--key-file", required=True, help="Consul private key file")
+    add_bool_argument(tls_enable, "--verify-incoming", default=False, help_text="Verify incoming TLS connections", no_help="Do not verify incoming TLS connections")
+    add_bool_argument(tls_enable, "--verify-outgoing", default=True, help_text="Verify outgoing TLS connections", no_help="Do not verify outgoing TLS connections")
+    add_bool_argument(tls_enable, "--verify-server-hostname", default=True, help_text="Verify server hostnames for internal RPC", no_help="Do not verify server hostnames for internal RPC")
+    add_bool_argument(tls_enable, "--auto-encrypt", default=False, help_text="Allow auto_encrypt TLS distribution to clients", no_help="Disable auto_encrypt TLS distribution")
+    tls_enable.set_defaults(func=cmd_tls_enable)
+    tls_disable = tls_sub.add_parser("disable", help="Remove managed TLS config")
+    tls_disable.set_defaults(func=lambda _: remove_managed_file(TLS_CONFIG) or 0)
+
+    telemetry = sub.add_parser("telemetry", description="Manage the managed telemetry config. enable and disable rewrite 40-telemetry.hcl and\nrestart consul.service.", help="Manage telemetry config")
+    telemetry_sub = telemetry.add_subparsers(dest="telemetry_command")
+    telemetry.set_defaults(func=lambda _: missing_subcommand(telemetry, f"{CONSUL_MANAGER_CMD} telemetry"))
+    telemetry_enable = telemetry_sub.add_parser("enable", help="Write managed telemetry config")
+    telemetry_enable.add_argument("--retention", default="24h", help="Prometheus retention time (default: 24h)")
+    add_bool_argument(telemetry_enable, "--disable-hostname", default=True, help_text="Disable hostname labels in telemetry", no_help="Keep hostname labels in telemetry", no_option="--keep-hostname")
+    telemetry_enable.set_defaults(func=cmd_telemetry_enable)
+    telemetry_disable = telemetry_sub.add_parser("disable", help="Remove managed telemetry config")
+    telemetry_disable.set_defaults(func=lambda _: remove_managed_file(TELEMETRY_CONFIG) or 0)
+
+    dns = sub.add_parser("dns", description="Manage Consul DNS behaviour in 50-dns.hcl, including upstream recursors. Both commands\nrestart consul.service.", help="Manage DNS config")
+    dns_sub = dns.add_subparsers(dest="dns_command")
+    dns.set_defaults(func=lambda _: missing_subcommand(dns, f"{CONSUL_MANAGER_CMD} dns"))
+    dns_enable = dns_sub.add_parser("enable", help="Write managed DNS config")
+    dns_enable.add_argument("--recursor", action="append", default=[], help="Upstream DNS recursor; repeatable")
+    add_bool_argument(dns_enable, "--allow-stale", default=True, help_text="Allow stale DNS reads", no_help="Require leader-consistent DNS reads")
+    add_bool_argument(dns_enable, "--enable-truncate", default=True, help_text="Set the truncate bit on large DNS responses", no_help="Do not set the truncate bit")
+    add_bool_argument(dns_enable, "--only-passing", default=False, help_text="Return only passing services from DNS", no_help="Return warning services from DNS as well")
+    dns_enable.set_defaults(func=cmd_dns_enable)
+    dns_disable = dns_sub.add_parser("disable", help="Remove managed DNS config")
+    dns_disable.set_defaults(func=lambda _: remove_managed_file(DNS_CONFIG) or 0)
+
+    nomad_jwt = sub.add_parser(
+        "nomad-jwt",
+        help="Configure the Consul side for Nomad workload identity",
+        description="Create the Consul JWT auth method, binding rules and Nomad agent token, so\n"
+        "Nomad tasks can exchange their workload identity for a Consul token.\n"
+        "\n"
+        "This touches the Consul side only; wire the Nomad side afterwards with\n"
+        "'nomad-manager consul setup-local'. Needs a Consul management token and a Nomad\n"
+        "build that has 'nomad setup consul'.\n"
+        "\n"
+        "When Consul ACL is disabled none of this is needed, so apply prints a note and\n"
+        "exits successfully instead of failing.",
+    )
+    jwt_sub = nomad_jwt.add_subparsers(dest="nomad_jwt_command")
+    nomad_jwt.set_defaults(func=lambda _: missing_subcommand(nomad_jwt, f"{CONSUL_MANAGER_CMD} nomad-jwt"))
+    jwt_plan = jwt_sub.add_parser("plan", help="Preview the Consul side changes")
+    add_client_args(jwt_plan)
+    jwt_plan.add_argument("--nomad-addr", help=f"Nomad HTTP address (default: {DEFAULT_NOMAD_ADDR})")
+    jwt_plan.set_defaults(func=cmd_nomad_jwt_plan)
+    jwt_apply = jwt_sub.add_parser("apply", help="Apply the Consul side changes")
+    add_client_args(jwt_apply)
+    jwt_apply.add_argument("--nomad-addr", help=f"Nomad HTTP address (default: {DEFAULT_NOMAD_ADDR})")
+    jwt_apply.add_argument("--force", action="store_true", help="Recreate the Nomad agent token even when the existing one is valid")
+    jwt_apply.set_defaults(func=cmd_nomad_jwt_apply)
+    jwt_status = jwt_sub.add_parser("status", help="Check the Consul side of the Nomad integration")
+    add_client_args(jwt_status)
+    jwt_status.set_defaults(func=cmd_nomad_jwt_status)
+
+    tutor = sub.add_parser("tutor", help="Show short workflow guidance")
+    tutor.add_argument("topic", nargs="?", help=f"Topic name: {', '.join(sorted(TUTOR_TOPICS))}")
+    tutor.set_defaults(func=cmd_tutor)
+    return parser
+
+
+def dispatch(argv: list[str]) -> int:
+    parser = build_parser()
+    if argv and argv[0] == "help":
+        argv = ["--help", *argv[1:]]
+    args = parser.parse_args(argv)
+    return int(args.func(args))
+
+
+def main(argv: list[str] | None = None) -> int:
+    ensure_default_path()
+    config = AuditConfig("consul-manager", AUDIT_LOG_FILE, {"tool_dir": str(TOOL_DIR)})
+    return run_with_audit(config, sys.argv[1:] if argv is None else argv, dispatch)
