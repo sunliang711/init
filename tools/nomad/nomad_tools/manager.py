@@ -1898,6 +1898,9 @@ def vault_jwt_preflight(data: dict[str, Any]) -> int:
         doctor_check("FAIL", f"Nomad JWKS not reachable: {data['nomad_jwks_url']}")
         doctor_check("INFO", f"Nomad may be down, or --nomad-addr may be wrong: {data['nomad_addr']}")
         failures += 1
+    if data["nomad_jwks_url"] != derived_jwks_url(data["nomad_addr"]):
+        doctor_check("INFO", "This JWKS URL was probed from this host, but Vault is the one that fetches it")
+        doctor_check("INFO", f"Confirm from the Vault server: curl {data['nomad_jwks_url']}")
 
     print("\nVault state:")
     has_cli = command_exists("vault")
@@ -1971,6 +1974,12 @@ def vault_jwt_preflight(data: dict[str, Any]) -> int:
             doctor_check("FAIL", "Vault token lookup failed; set VAULT_TOKEN or use a token with management permissions")
             failures += 1
 
+    print("\nSecret paths:")
+    if reachable:
+        failures += doctor_secret_mounts(data)
+    else:
+        doctor_check("WARN", "Skipped: Vault must be reachable and unsealed to list secrets engines")
+
     print("\nLocal inputs:")
     policy_file = data.get("policy_file")
     if policy_file and not Path(policy_file).is_file():
@@ -1981,6 +1990,78 @@ def vault_jwt_preflight(data: dict[str, Any]) -> int:
     else:
         doctor_check("OK", "Vault policy will be generated")
 
+    return failures
+
+
+def vault_path_matches(pattern: str, path: str) -> bool:
+    """Match a path against a Vault policy path.
+
+    Vault's globbing is not fnmatch: `*` is a wildcard only as the final
+    character, and `+` matches exactly one path segment. A `*` anywhere else is
+    a literal character.
+    """
+    prefix = pattern.endswith("*")
+    core = pattern[:-1] if prefix else pattern
+    segments = ["[^/]+" if segment == "+" else re.escape(segment) for segment in core.split("/")]
+    return bool(re.fullmatch("/".join(segments) + (".*" if prefix else ""), path))
+
+
+def secret_path_mount(secret_path: str) -> str:
+    """The mount a policy path lives under, i.e. its first segment."""
+    return secret_path.split("/", 1)[0]
+
+
+def vault_secret_mounts(data: dict[str, Any]) -> dict[str, Any]:
+    result = vault_cmd(data, ["secrets", "list", "-format=json"], capture=True, check=False)
+    if result.returncode != 0:
+        return {}
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def doctor_secret_mounts(data: dict[str, Any]) -> int:
+    """Vault accepts a policy for a mount that does not exist.
+
+    Writing the policy succeeds, doctor sees every object in place, and the job
+    only fails when a template tries to read the secret. Check the mounts here
+    instead.
+    """
+    failures = 0
+    if data.get("policy_file"):
+        doctor_check("INFO", "Using a policy file; its paths are not checked against Vault mounts")
+        return failures
+    mounts = vault_secret_mounts(data)
+    if not mounts:
+        doctor_check("WARN", "Cannot list Vault secrets engines; skipping secret path checks")
+        return failures
+    for secret_path in data["secret_paths"]:
+        mount = secret_path_mount(secret_path)
+        entry = mounts.get(f"{mount}/")
+        if not isinstance(entry, dict):
+            doctor_check("FAIL", f"No secrets engine mounted at {mount}/ for {secret_path}")
+            doctor_check("INFO", f"Enable it with: vault secrets enable -path={mount} kv-v2")
+            failures += 1
+            continue
+        engine = str(entry.get("type", ""))
+        version = str((entry.get("options") or {}).get("version", ""))
+        if engine == "kv" and version == "2":
+            if "/data/" in secret_path:
+                doctor_check("OK", f"{secret_path} matches the kv-v2 mount at {mount}/")
+            else:
+                doctor_check("FAIL", f"{mount}/ is kv-v2, so the path needs a /data/ segment: {secret_path}")
+                doctor_check("INFO", f"For secret {mount}/app/config the policy path is {mount}/data/app/config")
+                failures += 1
+        elif engine == "kv":
+            if "/data/" in secret_path:
+                doctor_check("FAIL", f"{mount}/ is kv v1, which has no /data/ segment: {secret_path}")
+                failures += 1
+            else:
+                doctor_check("OK", f"{secret_path} matches the kv v1 mount at {mount}/")
+        else:
+            doctor_check("INFO", f"{mount}/ is a {engine} engine; path structure is not checked")
     return failures
 
 
@@ -2171,6 +2252,16 @@ def vault_jwt_status_impl(profile: str) -> int:
         note("policy", "OK", f"Vault policy {data['policy']} exists")
     else:
         note("policy", "FAIL", f"Vault policy {data['policy']} missing")
+    if not data.get("policy_file"):
+        mounts = vault_secret_mounts(data)
+        for secret_path in data["secret_paths"]:
+            mount = secret_path_mount(secret_path)
+            if isinstance(mounts.get(f"{mount}/"), dict):
+                note("policy", "OK", f"Secrets engine mounted at {mount}/")
+            elif mounts:
+                note("policy", "FAIL",
+                     f"No secrets engine at {mount}/; enable it with "
+                     f"vault secrets enable -path={mount} kv-v2")
 
     print(profile_header(data))
     print()
@@ -2187,9 +2278,30 @@ def cmd_vault_jwt_doctor(args: argparse.Namespace) -> int:
     return 1
 
 
+def require_secret_is_granted(data: dict[str, Any], secret: str) -> None:
+    """The generated job would deploy fine and fail at render time otherwise.
+
+    The policy grants specific paths; a template reading anything else gets a
+    403 from Vault, several steps after the mistake was made.
+    """
+    if data.get("policy_file"):
+        log_warn(f"Profile {data['profile']} uses a policy file; {secret} is not checked against it")
+        return
+    if any(vault_path_matches(pattern, secret) for pattern in data["secret_paths"]):
+        return
+    granted = ", ".join(data["secret_paths"])
+    raise CLIError(
+        f"Secret {secret} is not granted by profile {data['profile']}.\n"
+        f"  The policy grants: {granted}\n"
+        f"  Either read a granted path, or widen the policy:\n"
+        f"    {NOMAD_MANAGER_CMD} vault jwt apply --profile {data['profile']} --secret-path {shlex.quote(secret)}"
+    )
+
+
 def cmd_vault_jwt_job_example(args: argparse.Namespace) -> int:
     data = load_profile(args.profile)
     validate_name(args.job, "job name")
+    require_secret_is_granted(data, args.secret)
     content = f"""# Generated by nomad-manager vault jwt job-example
 job {hcl_string(args.job)} {{
   type        = "service"
@@ -3439,7 +3551,8 @@ def build_parser() -> argparse.ArgumentParser:
     jwt_job = jwt_sub.add_parser("job-example", help="Generate an example job using Vault JWT")
     jwt_job.add_argument("--profile", required=True, help="Local profile name")
     jwt_job.add_argument("--job", required=True, help="Example Nomad job name")
-    jwt_job.add_argument("--secret", required=True, help="Vault secret path used by the example")
+    jwt_job.add_argument("--secret", required=True,
+                         help="(required) Vault secret path the job reads; must be granted by the profile policy")
     jwt_job.add_argument("--out", default="-", help="Output HCL path, or '-' for stdout")
     jwt_job.add_argument("--image", default="alpine:3.20", help="Example Docker image")
     jwt_job.add_argument("--force", action="store_true", help="Overwrite an existing output file")

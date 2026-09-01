@@ -201,6 +201,25 @@ setup() {
     [ "${status}" -eq 0 ]
 }
 
+@test "vault jwt job-example refuses a secret the policy does not grant" {
+    profile_dir="$(mktemp -d)"
+    cat >"${profile_dir}/narrow.json" <<'JSON'
+{"profile":"narrow","vault_addr":"http://127.0.0.1:8200","vault_namespace":"","nomad_addr":"http://127.0.0.1:4646","nomad_jwks_url":"http://127.0.0.1:4646/.well-known/jwks.json","auth_path":"jwt-nomad","role":"nomad-workloads","policy":"nomad-workloads","aud":"vault.io","ttl":"1h","secret_paths":["kv/data/app/*"],"policy_file":""}
+JSON
+
+    VAULT_JWT_PROFILE_DIR="${profile_dir}" run "${REPO_ROOT}/tools/nomad/nomad-manager" \
+        vault jwt job-example --profile narrow --job web --secret kv/data/other/config --out -
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"not granted by profile"* ]]
+
+    VAULT_JWT_PROFILE_DIR="${profile_dir}" run "${REPO_ROOT}/tools/nomad/nomad-manager" \
+        vault jwt job-example --profile narrow --job web --secret kv/data/app/config --out -
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"kv/data/app/config"* ]]
+
+    rm -rf "${profile_dir}"
+}
+
 @test "vault jwt apply help groups its flags" {
     run "${REPO_ROOT}/tools/nomad/nomad-manager" vault jwt apply --help
 

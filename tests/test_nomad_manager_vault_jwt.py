@@ -262,5 +262,127 @@ class ConsistencyCheckTest(unittest.TestCase):
         self.assertIn("profile says jwt-nomad", output)
 
 
+class VaultPathGlobTest(unittest.TestCase):
+    """Vault 的 glob 不是 fnmatch：* 只在末尾是通配符，+ 匹配单个层级。"""
+
+    def test_trailing_star_is_a_prefix_match(self) -> None:
+        self.assertTrue(manager.vault_path_matches("kv/data/app/*", "kv/data/app/config"))
+        self.assertTrue(manager.vault_path_matches("kv/data/app/*", "kv/data/app/a/b"))
+        self.assertFalse(manager.vault_path_matches("kv/data/app/*", "kv/data/other/config"))
+
+    def test_trailing_star_does_not_match_the_prefix_itself(self) -> None:
+        self.assertFalse(manager.vault_path_matches("kv/data/app/*", "kv/data/app"))
+
+    def test_star_in_the_middle_is_literal(self) -> None:
+        """fnmatch 会判 True，Vault 不会。"""
+        self.assertFalse(manager.vault_path_matches("kv/*/config", "kv/data/config"))
+
+    def test_plus_matches_exactly_one_segment(self) -> None:
+        self.assertTrue(manager.vault_path_matches("kv/data/+/config", "kv/data/app/config"))
+        self.assertFalse(manager.vault_path_matches("kv/data/+/config", "kv/data/a/b/config"))
+
+    def test_exact_path_needs_an_exact_match(self) -> None:
+        self.assertTrue(manager.vault_path_matches("kv/data/app/config", "kv/data/app/config"))
+        self.assertFalse(manager.vault_path_matches("kv/data/app/config", "kv/data/app/config2"))
+
+    def test_star_after_text_is_a_prefix_match(self) -> None:
+        self.assertTrue(manager.vault_path_matches("kv/data/ap*", "kv/data/application"))
+
+    def test_mount_is_the_first_segment(self) -> None:
+        self.assertEqual(manager.secret_path_mount("kv/data/app/*"), "kv")
+        self.assertEqual(manager.secret_path_mount("secret/data/x"), "secret")
+
+
+class JobExampleSecretGuardTest(unittest.TestCase):
+    """job-example 生成的 job 会部署成功，然后在 template 渲染时 403。"""
+
+    def test_granted_path_passes(self) -> None:
+        manager.require_secret_is_granted(profile(secret_paths=["kv/data/app/*"]), "kv/data/app/config")
+
+    def test_ungranted_path_raises_with_the_fix(self) -> None:
+        with self.assertRaises(manager.CLIError) as caught:
+            manager.require_secret_is_granted(profile(secret_paths=["kv/data/app/*"]), "kv/data/other/config")
+
+        message = str(caught.exception)
+        self.assertIn("not granted by profile", message)
+        self.assertIn("kv/data/app/*", message)
+        self.assertIn("--secret-path kv/data/other/config", message)
+
+    def test_any_of_several_granted_paths_is_enough(self) -> None:
+        data = profile(secret_paths=["kv/data/app/*", "kv/data/shared/*"])
+
+        manager.require_secret_is_granted(data, "kv/data/shared/ca")
+
+    def test_a_policy_file_skips_the_check(self) -> None:
+        """外部 policy 文件的授权路径工具无从得知，只能放行并提示。"""
+        manager.require_secret_is_granted(profile(policy_file="/tmp/policy.hcl"), "kv/data/anything")
+
+
+class SecretMountTest(unittest.TestCase):
+    """Vault 允许为不存在的挂载写 policy，所以要单独查挂载。"""
+
+    def setUp(self) -> None:
+        self._saved = manager.vault_secret_mounts
+        self.addCleanup(lambda: setattr(manager, "vault_secret_mounts", self._saved))
+
+    @staticmethod
+    def _capture(func, *args) -> tuple[int, str]:
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            result = func(*args)
+        return result, buffer.getvalue()
+
+    def _mounts(self, mounts: dict) -> None:
+        manager.vault_secret_mounts = lambda data: mounts
+
+    def test_missing_mount_fails_with_the_enable_command(self) -> None:
+        self._mounts({"cubbyhole/": {"type": "cubbyhole"}})
+
+        failures, output = self._capture(manager.doctor_secret_mounts, profile(secret_paths=["kv/data/app/*"]))
+
+        self.assertEqual(failures, 1)
+        self.assertIn("No secrets engine mounted at kv/", output)
+        self.assertIn("vault secrets enable -path=kv kv-v2", output)
+
+    def test_kv_v2_mount_with_data_segment_passes(self) -> None:
+        self._mounts({"kv/": {"type": "kv", "options": {"version": "2"}}})
+
+        failures, _ = self._capture(manager.doctor_secret_mounts, profile(secret_paths=["kv/data/app/*"]))
+
+        self.assertEqual(failures, 0)
+
+    def test_kv_v2_without_data_segment_fails(self) -> None:
+        self._mounts({"kv/": {"type": "kv", "options": {"version": "2"}}})
+
+        failures, output = self._capture(manager.doctor_secret_mounts, profile(secret_paths=["kv/app/*"]))
+
+        self.assertEqual(failures, 1)
+        self.assertIn("needs a /data/ segment", output)
+
+    def test_kv_v1_with_data_segment_fails(self) -> None:
+        self._mounts({"kv/": {"type": "kv", "options": {"version": "1"}}})
+
+        failures, output = self._capture(manager.doctor_secret_mounts, profile(secret_paths=["kv/data/app/*"]))
+
+        self.assertEqual(failures, 1)
+        self.assertIn("kv v1", output)
+
+    def test_other_engine_types_are_not_judged(self) -> None:
+        self._mounts({"db/": {"type": "database"}})
+
+        failures, output = self._capture(manager.doctor_secret_mounts, profile(secret_paths=["db/creds/app"]))
+
+        self.assertEqual(failures, 0)
+        self.assertIn("database engine", output)
+
+    def test_policy_file_skips_the_check(self) -> None:
+        self._mounts({})
+
+        failures, output = self._capture(manager.doctor_secret_mounts, profile(policy_file="/tmp/p.hcl"))
+
+        self.assertEqual(failures, 0)
+        self.assertIn("not checked against Vault mounts", output)
+
+
 if __name__ == "__main__":
     unittest.main()
