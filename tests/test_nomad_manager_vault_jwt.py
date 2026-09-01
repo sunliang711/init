@@ -81,6 +81,57 @@ class ApplyCommandTest(unittest.TestCase):
         self.assertEqual(args.auth_path, "jwt-prod")
 
 
+class FlagStatusTest(unittest.TestCase):
+    """argparse 在 usage 里对必选和可选的标注一模一样，所以状态必须写进每条描述。"""
+
+    STATUS_PREFIXES = ("(required", "(optional)", "(default:")
+
+    @staticmethod
+    def _jwt_parsers():
+        import argparse as ap
+
+        parser = manager.build_parser()
+        vault = next(a for a in parser._actions if isinstance(a, ap._SubParsersAction)).choices["vault"]
+        jwt = next(a for a in vault._actions if isinstance(a, ap._SubParsersAction)).choices["jwt"]
+        sub = next(a for a in jwt._actions if isinstance(a, ap._SubParsersAction))
+        return {name: sub.choices[name] for name in ("plan", "apply")}
+
+    def test_every_flag_states_required_or_optional(self) -> None:
+        import argparse as ap
+
+        for name, parser in self._jwt_parsers().items():
+            for action in parser._actions:
+                if isinstance(action, ap._HelpAction) or not action.option_strings:
+                    continue
+                with self.subTest(command=name, flag=action.option_strings[0]):
+                    self.assertTrue(
+                        (action.help or "").startswith(self.STATUS_PREFIXES),
+                        f"{action.option_strings[0]} help must start with one of {self.STATUS_PREFIXES}: "
+                        f"{action.help!r}",
+                    )
+
+    def test_defaults_in_help_match_the_defaults_table(self) -> None:
+        """help 里写的默认值和 PROFILE_DEFAULTS 必须一致，否则文档会骗人。"""
+        parser = self._jwt_parsers()["apply"]
+        by_flag = {a.option_strings[0]: (a.help or "") for a in parser._actions if a.option_strings}
+
+        for flag, key in (("--auth-path", "auth_path"), ("--role", "role"),
+                          ("--policy", "policy"), ("--aud", "aud"), ("--ttl", "ttl")):
+            with self.subTest(flag=flag):
+                self.assertIn(f"(default: {manager.PROFILE_DEFAULTS[key]})", by_flag[flag])
+        self.assertIn(f"(default: {manager.PROFILE_DEFAULTS['secret_paths'][0]})", by_flag["--secret-path"])
+
+    def test_optional_flags_keep_argparse_default_none(self) -> None:
+        """默认值只能写在 help 文本里：真加到 argparse 上会让二次 apply 覆盖已存 profile。"""
+        parser = self._jwt_parsers()["apply"]
+
+        for action in parser._actions:
+            flag = action.option_strings[0] if action.option_strings else ""
+            if flag in ("--auth-path", "--role", "--policy", "--aud", "--ttl", "--secret-path"):
+                with self.subTest(flag=flag):
+                    self.assertIsNone(action.default, f"{flag} must stay None so the profile wins")
+
+
 class WiringDiagramTest(unittest.TestCase):
     def test_every_stage_and_flag_appears(self) -> None:
         diagram = manager.jwt_wiring_diagram(profile(secret_paths=["kv/data/app/*"]))

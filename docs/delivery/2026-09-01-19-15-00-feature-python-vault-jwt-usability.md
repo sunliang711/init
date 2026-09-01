@@ -83,6 +83,11 @@
 what gets created in Vault / what the workloads may do / advanced，每组带一句说明，
 help 文本标出默认值。
 
+每条参数描述都以状态开头 —— `(required)` / `(required on first run)` /
+`(optional)` / `(default: X)`。因为 argparse 在 usage 行里对必选和可选的标注**完全一样**
+（都是方括号），只看 usage 分不出 `--vault-addr` 首次必须给、而 `--nomad-jwks-url`
+从来不必给。状态写进描述才扫得出来。
+
 **注意**：默认值只写进 help 文本，**不能加到 argparse 的 `default=`**。
 `prepare_profile()` 依赖「值为 None」来区分「用户没传」与「用户传了」，
 以便回落到已存 profile；加了 argparse default 会让二次 `apply` 把 profile 里的
@@ -108,6 +113,9 @@ Local inputs 四段，连通性最先跑，缺 CLI 只记一个 FAIL 并把依�
     纯默认 profile 可渲染
   - 一致性检查 5 条：全部一致时 0 failure；Vault 里 JWKS 指向旧地址、
     audience 不一致、role 指向别的 policy、Nomad 配置 auth path 不一致，各报 1 failure
+  - 参数状态 3 条：`plan` 与 `apply` 的每一条参数描述都以状态开头；
+    help 里写的默认值与 `PROFILE_DEFAULTS` 一致；这些参数在 argparse 上仍是 `default=None`
+- 参数状态用例做了反向验证：注入一条没有状态前缀的参数后，`plan` 和 `apply` 两处均被检出
 - 全部 6 份 Python 测试在 `-W error::ResourceWarning` 下通过
 - `tests/cli-smoke.bats` 新增 3 条：Python 用例调用、help 分组与默认值、tutor 链路图
 - 删除已无引用的 `profile_summary()`；无未使用 import

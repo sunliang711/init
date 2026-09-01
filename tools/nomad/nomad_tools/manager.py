@@ -3153,34 +3153,37 @@ def add_common_vault_jwt_args(parser: argparse.ArgumentParser) -> None:
     given" to fall back to the stored profile, so a real argparse default would
     silently overwrite a customised profile on the next run.
     """
-    parser.add_argument("--profile", required=True, help="Local profile name; stores everything below")
+    # Every flag states its own status, because argparse brackets required and
+    # optional options identically in the usage line.
+    parser.add_argument("--profile", required=True, help="(required) Local profile name; stores everything below")
 
     connection = parser.add_argument_group(
         "connection", "Set these the first time. Later runs read them back from the profile."
     )
-    connection.add_argument("--vault-addr", help="Vault address, for example http://127.0.0.1:8200")
-    connection.add_argument("--nomad-addr", help="Nomad address; the JWKS URL is derived from it")
-    connection.add_argument("--vault-namespace", help="Vault Enterprise namespace (default: none)")
+    connection.add_argument("--vault-addr", help="(required on first run) Vault address, for example http://127.0.0.1:8200")
+    connection.add_argument("--nomad-addr", help="(required on first run) Nomad address; the JWKS URL is derived from it")
+    connection.add_argument("--vault-namespace", help="(optional) Vault Enterprise namespace; none by default")
 
     created = parser.add_argument_group(
         "what gets created in Vault", "The defaults are fine unless they clash with something you already have."
     )
-    created.add_argument("--auth-path", help=f"JWT auth mount path (default: {PROFILE_DEFAULTS['auth_path']})")
-    created.add_argument("--role", help=f"Vault role name (default: {PROFILE_DEFAULTS['role']})")
-    created.add_argument("--policy", help=f"Vault policy name (default: {PROFILE_DEFAULTS['policy']})")
+    created.add_argument("--auth-path", help=f"(default: {PROFILE_DEFAULTS['auth_path']}) JWT auth mount path")
+    created.add_argument("--role", help=f"(default: {PROFILE_DEFAULTS['role']}) Vault role name")
+    created.add_argument("--policy", help=f"(default: {PROFILE_DEFAULTS['policy']}) Vault policy name")
 
     granted = parser.add_argument_group(
         "what the workloads may do", "This is the part worth reviewing: it decides which secrets tasks can read."
     )
     granted.add_argument("--secret-path", action="append",
-                         help=f"Secret path the generated policy grants; repeatable (default: {PROFILE_DEFAULTS['secret_paths'][0]})")
-    granted.add_argument("--aud", help=f"Comma-separated JWT audiences; must match on both sides (default: {PROFILE_DEFAULTS['aud']})")
-    granted.add_argument("--ttl", help=f"TTL of the tokens Vault issues (default: {PROFILE_DEFAULTS['ttl']})")
-    granted.add_argument("--policy-file", help="Use an existing policy HCL file instead of generating one")
+                         help=f"(default: {PROFILE_DEFAULTS['secret_paths'][0]}) Secret path the generated policy grants; repeatable")
+    granted.add_argument("--aud", help=f"(default: {PROFILE_DEFAULTS['aud']}) Comma-separated JWT audiences; must match on both sides")
+    granted.add_argument("--ttl", help=f"(default: {PROFILE_DEFAULTS['ttl']}) TTL of the tokens Vault issues")
+    granted.add_argument("--policy-file", help="(optional) Use an existing policy HCL file; one is generated when omitted")
 
     advanced = parser.add_argument_group("advanced")
-    advanced.add_argument("--nomad-jwks-url", help="Override the JWKS URL derived from --nomad-addr")
-    advanced.add_argument("--force", action="store_true", help="Replace an existing profile with different values")
+    advanced.add_argument("--nomad-jwks-url",
+                          help="(optional) Override the JWKS URL; defaults to <nomad-addr>/.well-known/jwks.json")
+    advanced.add_argument("--force", action="store_true", help="(optional) Replace an existing profile with different values")
 
 
 COMMAND_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
