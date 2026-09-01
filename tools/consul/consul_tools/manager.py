@@ -93,6 +93,7 @@ DEFAULT_DNS_PORT = 8600
 NOMAD_AUTH_METHOD = "nomad-workloads"
 NOMAD_AGENT_POLICY = "nomad-agent"
 NOMAD_AGENT_TOKEN_DESCRIPTION = "Nomad agent token managed by consul-manager"
+LOCAL_ADDRESSES = {"", "127.0.0.1", "localhost", "::1", "[::1]"}
 
 
 def normalize_version(version: str) -> str:
@@ -687,9 +688,14 @@ def doctor_base_configuration() -> int:
         failures += 1
     if values["acl_enabled"] == "true" and values["acl_default_policy"] == "allow":
         doctor_check("WARN", "ACL default_policy is allow; tokens are issued but nothing is denied")
-    if values["bind_addr"] not in {"127.0.0.1", "", "localhost"} and values["acl_enabled"] != "true":
-        doctor_check("FAIL", f"Consul binds {values['bind_addr']} with ACL disabled; the API is open to that network")
+    # the HTTP API and the UI listen on client_addr; bind_addr is cluster traffic
+    acl_off = values["acl_enabled"] != "true"
+    if values["client_addr"] not in LOCAL_ADDRESSES and acl_off:
+        doctor_check("FAIL", f"HTTP API and UI listen on {values['client_addr']} with ACL disabled")
+        doctor_check("INFO", "Anyone who can reach the port can read and write the KV store and the catalog")
         failures += 1
+    if values["bind_addr"] not in LOCAL_ADDRESSES and acl_off:
+        doctor_check("WARN", f"Cluster traffic binds {values['bind_addr']} with ACL disabled")
     return failures
 
 

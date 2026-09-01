@@ -102,15 +102,33 @@ class ConsulDoctorTest(unittest.TestCase):
         self.assertEqual(failures, 1)
         self.assertIn("Connect is enabled but the gRPC port is disabled", output)
 
-    def test_public_bind_without_acl_fails(self) -> None:
-        manager.write_consul_config(install_args(acl=False, bind="0.0.0.0"), "")
+    def test_public_client_addr_without_acl_fails(self) -> None:
+        """暴露的是 client_addr 上的 HTTP API 和 UI，不是 bind_addr。"""
+        manager.write_consul_config(install_args(acl=False, client="0.0.0.0"), "")
 
         failures, output = self._capture(manager.doctor_base_configuration)
 
         self.assertEqual(failures, 1)
-        self.assertIn("with ACL disabled", output)
+        self.assertIn("HTTP API and UI listen on 0.0.0.0", output)
 
-    def test_local_bind_without_acl_is_not_a_failure(self) -> None:
+    def test_public_client_addr_with_acl_is_fine(self) -> None:
+        """开放 UI 的正确做法就是 client_addr 放开 + 保留 ACL。"""
+        manager.write_consul_config(install_args(client="0.0.0.0"), "")
+
+        failures, _ = self._capture(manager.doctor_base_configuration)
+
+        self.assertEqual(failures, 0)
+
+    def test_public_bind_addr_without_acl_only_warns(self) -> None:
+        """bind_addr 是集群通信，多节点集群里放开是正常的，不该判 FAIL。"""
+        manager.write_consul_config(install_args(acl=False, bind="10.0.0.5"), "")
+
+        failures, output = self._capture(manager.doctor_base_configuration)
+
+        self.assertEqual(failures, 0)
+        self.assertIn("Cluster traffic binds 10.0.0.5", output)
+
+    def test_local_addresses_without_acl_are_not_a_failure(self) -> None:
         manager.write_consul_config(install_args(acl=False), "")
 
         failures, _ = self._capture(manager.doctor_base_configuration)
