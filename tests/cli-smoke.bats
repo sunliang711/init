@@ -59,6 +59,16 @@ setup() {
     [[ "${output}" == *"token"* ]]
 }
 
+@test "nomad-manager install exposes the job GC threshold" {
+    run "${REPO_ROOT}/tools/nomad/nomad-manager" install --help
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"--job-gc-threshold"* ]]
+    [[ "${output}" == *"87600h"* ]]
+
+    run python3 "${REPO_ROOT}/tests/test_nomad_manager_install_config.py"
+    [ "${status}" -eq 0 ]
+}
+
 @test "nomad-manager help groups commands by usage stage" {
     run "${REPO_ROOT}/tools/nomad/nomad-manager" --help
 

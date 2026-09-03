@@ -90,6 +90,8 @@ AUDIT_LOG_FILE = TOOL_LOG_DIR / "manager.audit.log"
 DATA_POINTER_FILE = DATA_DIR / ".managed-by-nomad-init-tools"
 RELEASE_INDEX_URL = "https://releases.hashicorp.com/nomad/"
 NOMAD_ADDR = "http://127.0.0.1:4646"
+# Nomad garbage-collects dead jobs after 4h by default; keep their history instead
+DEFAULT_JOB_GC_THRESHOLD = "87600h"
 DEFAULT_VAULT_ADDR = "http://127.0.0.1:8200"
 LOCAL_NO_PROXY = "127.0.0.1,localhost,::1"
 MANAGED_MARKER = "# Managed by tools/nomad/nomad-manager"
@@ -2567,7 +2569,17 @@ WantedBy=multi-user.target
     install_text(SYSTEMD_SERVICE, content, mode="0644")
 
 
-def write_nomad_config() -> None:
+GO_DURATION_PATTERN = re.compile(r"^[0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h)([0-9]+(\.[0-9]+)?(ns|us|ms|s|m|h))*$")
+
+
+def validate_go_duration(value: str, label: str) -> str:
+    if not GO_DURATION_PATTERN.match(value):
+        raise CLIError(f"Invalid {label}: {value}. Use a Go duration such as 4h, 30m or 87600h")
+    return value
+
+
+def write_nomad_config(job_gc_threshold: str = DEFAULT_JOB_GC_THRESHOLD) -> None:
+    validate_go_duration(job_gc_threshold, "job GC threshold")
     content = f"""datacenter = "dc1"
 data_dir   = "{NOMAD_AGENT_DATA_DIR}"
 bind_addr  = "0.0.0.0"
@@ -2576,6 +2588,7 @@ log_level  = "INFO"
 server {{
   enabled          = true
   bootstrap_expect = 1
+  job_gc_threshold = "{job_gc_threshold}"
 }}
 
 client {{
@@ -2907,7 +2920,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         ensure_nomad_user()
         install_directories()
         write_systemd_service()
-        write_nomad_config()
+        write_nomad_config(args.job_gc_threshold)
         write_default_managed_configs()
         script_dir = current_script_dir(__file__).parent
         if running_from_installed_copy(script_dir):
@@ -3475,7 +3488,10 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--no-acl-bootstrap", action="store_true", help="Skip automatic ACL bootstrap after install")
     install.add_argument("--enable-cni", action="store_true", help="Install and configure CNI plugins after Nomad install")
     install.add_argument("--cni-version", default=DEFAULT_CNI_PLUGIN_VERSION, help=f"CNI plugins version (default: {DEFAULT_CNI_PLUGIN_VERSION})")
-    install.set_defaults(func=lambda args: cmd_install(argparse.Namespace(version=args.version_opt or args.version_pos, no_acl_bootstrap=args.no_acl_bootstrap, enable_cni=args.enable_cni, cni_version=args.cni_version)))
+    install.add_argument("--job-gc-threshold", default=DEFAULT_JOB_GC_THRESHOLD,
+                         help=f"How long dead jobs are kept before the server garbage-collects them "
+                              f"(default: {DEFAULT_JOB_GC_THRESHOLD}; Nomad's own default is 4h)")
+    install.set_defaults(func=lambda args: cmd_install(argparse.Namespace(version=args.version_opt or args.version_pos, no_acl_bootstrap=args.no_acl_bootstrap, enable_cni=args.enable_cni, cni_version=args.cni_version, job_gc_threshold=args.job_gc_threshold)))
 
     doctor = sub.add_parser("doctor", description="Check the managed Nomad install, service status and detected integrations.\n"
         "\n"
