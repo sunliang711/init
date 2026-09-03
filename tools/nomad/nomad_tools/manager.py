@@ -24,6 +24,8 @@ from .common import (
     CLIArgumentParser,
     CLIError,
     add_bool_argument,
+    adopt_versioned_binary_layout,
+    atomic_symlink,
     atomic_write_text,
     command_exists,
     color_text,
@@ -38,6 +40,8 @@ from .common import (
     hcl_string,
     http_status,
     install_text,
+    kept_binary_versions,
+    linked_binary_path,
     log_error,
     log_info,
     log_success,
@@ -45,6 +49,7 @@ from .common import (
     missing_subcommand,
     parse_bool,
     parse_csv,
+    prune_binary_versions,
     require_command,
     require_linux,
     run,
@@ -56,6 +61,8 @@ from .common import (
     terminal_supports_checkmark,
     validate_hcl_key,
     validate_name,
+    version_tuple,
+    versioned_binary_path,
     wait_http,
     with_default_scheme,
 )
@@ -69,6 +76,7 @@ NOMAD_ROOT_DIR = Path("/opt/nomad")
 HOST_VOLUME_DIR = NOMAD_ROOT_DIR / "volumes"
 BIN_DIR = NOMAD_ROOT_DIR / "bin"
 BIN_PATH = BIN_DIR / "nomad"
+BINARY_VERSION_DIR = BIN_DIR / "versions"
 BIN_ENTRY = Path("/usr/local/bin/nomad")
 CONFIG_DIR = NOMAD_ROOT_DIR / "etc" / "nomad.d"
 NOMAD_CONFIG_FILE = CONFIG_DIR / "nomad.hcl"
@@ -138,6 +146,19 @@ def normalize_version(version: str) -> str:
     return value
 
 
+def parse_binary_version(output: str) -> str:
+    """The version a nomad binary reports, or "" when the output is unexpected."""
+    match = re.search(r"Nomad v([0-9]+[.][0-9]+[.][0-9]+)", output)
+    return match.group(1) if match else ""
+
+
+def installed_binary_version() -> str:
+    """What the binary on this node reports, which upgrade trusts over metadata."""
+    if not BIN_PATH.is_file():
+        return ""
+    return parse_binary_version(run([str(BIN_PATH), "version"], capture=True, check=False).stdout or "")
+
+
 def fetch_latest_version() -> str:
     html = fetch_url(RELEASE_INDEX_URL, timeout=60).decode("utf-8", errors="replace")
     match = re.search(r'href="/nomad/([0-9]+\.[0-9]+\.[0-9]+)/"', html)
@@ -156,6 +177,26 @@ def resolve_version(requested: str | None) -> str:
     except Exception:
         log_warn(f"Failed to resolve latest Nomad version, fallback to {DEFAULT_NOMAD_VERSION}")
         return DEFAULT_NOMAD_VERSION
+
+
+def resolve_upgrade_target(requested: str) -> str:
+    """Resolve what to upgrade to, failing rather than guessing.
+
+    resolve_version falls back to the pinned default when the release index is
+    unreachable. That is fine for a fresh install, but here it would move a
+    running node onto a version nobody asked for.
+    """
+    if requested and requested != "latest":
+        return normalize_version(requested)
+    try:
+        latest = fetch_latest_version()
+    except CLIError:
+        raise
+    except Exception as exc:
+        raise CLIError(f"Cannot resolve the latest Nomad version: {exc}. "
+                       f"Pass --version to pick one explicitly") from exc
+    log_success(f"Resolved latest Nomad version: {latest}")
+    return latest
 
 
 def is_managed_file(path: Path) -> bool:
@@ -1458,16 +1499,12 @@ def doctor_node_runtime() -> int:
     recorded = read_installed_nomad_version()
     doctor_info(f"recorded version = {recorded}")
     doctor_info(f"tool revision    = {read_installed_tool_revision()}")
-    if BIN_PATH.is_file():
-        result = nomad_cli(["version"])
-        actual = ""
-        match = re.search(r"Nomad v([0-9]+\.[0-9]+\.[0-9]+)", result.stdout or "")
-        if match:
-            actual = match.group(1)
-        if actual:
-            doctor_info(f"binary version   = {actual}")
-            if recorded not in {"unknown", actual}:
-                doctor_check("WARN", f"Binary version {actual} differs from recorded {recorded}; run tools update")
+    actual = installed_binary_version()
+    if actual:
+        doctor_info(f"binary version   = {actual}")
+        if recorded not in {"unknown", actual}:
+            doctor_check("WARN", f"Binary version {actual} differs from recorded {recorded}; "
+                                 f"run {NOMAD_MANAGER_CMD} upgrade to install a known release")
     token_file = target_token_file()
     token = read_nomad_token()
     if token_file.is_file():
@@ -1649,9 +1686,14 @@ def cmd_status(_: argparse.Namespace) -> int:
     print("Install:")
     status_line("recorded version", read_installed_nomad_version())
     if BIN_PATH.is_file():
-        match = re.search(r"Nomad v([0-9]+\.[0-9]+\.[0-9]+)", nomad_cli(["version"]).stdout or "")
-        status_line("binary version", match.group(1) if match else "unknown")
+        status_line("binary version", installed_binary_version() or "unknown")
     status_line("binary", str(BIN_PATH) if BIN_PATH.is_file() else "<not installed>")
+    linked = linked_binary_path(BIN_PATH)
+    if linked:
+        status_line("binary release", str(linked))
+    kept = [path.name for path in kept_binary_versions(BINARY_VERSION_DIR, "nomad")]
+    if kept:
+        status_line("kept releases", ", ".join(kept))
     status_line("config dir", str(CONFIG_DIR))
     status_line("data dir", str(DATA_DIR))
     status_line("tool dir", str(TOOL_DIR) if TOOL_DIR.is_dir() else "<not installed>")
@@ -2712,10 +2754,26 @@ def write_default_managed_configs() -> None:
     install_text(DOCKER_CONFIG, docker, mode="0644")
 
 
-def install_binary(tmpdir: Path) -> None:
-    log_info(f"Installing binary: {BIN_PATH}")
+def stage_binary(tmpdir: Path, version: str) -> Path:
+    """Put one release in place under its version and check it runs.
+
+    The release is checked here, before anything points at it, so a bad archive
+    fails while the running binary is still the one in use.
+    """
+    target = versioned_binary_path(BINARY_VERSION_DIR, "nomad", version)
+    log_info(f"Installing binary: {target}")
     run_root(["install", "-d", "-m", "0755", "-o", "root", "-g", "root", str(BIN_DIR)])
-    run_root(["install", "-m", "0755", "-o", "root", "-g", "root", str(tmpdir / "extract" / "nomad"), str(BIN_PATH)])
+    run_root(["install", "-d", "-m", "0755", "-o", "root", "-g", "root", str(BINARY_VERSION_DIR)])
+    run_root(["install", "-m", "0755", "-o", "root", "-g", "root", str(tmpdir / "extract" / "nomad"), str(target)])
+    reported = parse_binary_version(run([str(target), "version"], capture=True, check=False).stdout or "")
+    if reported != version:
+        raise CLIError(f"Installed binary reports version {reported or 'unknown'}, expected {version}")
+    return target
+
+
+def install_binary(tmpdir: Path, version: str) -> None:
+    target = stage_binary(tmpdir, version)
+    atomic_symlink(target, BIN_PATH)
     run_root(["install", "-d", "-m", "0755", "-o", "root", "-g", "root", str(BIN_ENTRY.parent)])
     run_root(["ln", "-sfn", str(BIN_PATH), str(BIN_ENTRY)])
     log_success(f"Nomad binary entry installed: {BIN_ENTRY}")
@@ -2982,7 +3040,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     tmpdir = create_install_tmpdir("nomad-install")
     try:
         download_nomad(version, arch, tmpdir)
-        install_binary(tmpdir)
+        install_binary(tmpdir, version)
         ensure_nomad_user()
         install_directories()
         write_systemd_service()
@@ -3008,6 +3066,156 @@ def cmd_install(args: argparse.Namespace) -> int:
     return 0
 
 
+def read_install_metadata_as_root() -> dict[str, Any]:
+    """install.json sits in a root-only directory, so a sudoer can only read it through sudo."""
+    result = run_root(["cat", str(INSTALL_METADATA_FILE)], capture=True, check=False)
+    if result.returncode != 0:
+        return {}
+    try:
+        data = json.loads(result.stdout or "")
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def record_tool_version_file(version: str) -> None:
+    """doctor and status fall back to this file when install.json cannot be read."""
+    key = "nomad_version="
+    try:
+        lines = TOOL_VERSION_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    if not any(line.startswith(key) for line in lines):
+        return
+    install_text(
+        TOOL_VERSION_FILE,
+        "\n".join(f"{key}{version}" if line.startswith(key) else line for line in lines) + "\n",
+        mode="0644",
+    )
+
+
+def record_upgrade_metadata(previous: str, version: str) -> None:
+    """Move the recorded version forward without rewriting the whole install record."""
+    metadata = read_install_metadata() or read_install_metadata_as_root()
+    if not metadata:
+        log_warn(f"Install metadata not readable: {INSTALL_METADATA_FILE}; the recorded version was not updated")
+        return
+    metadata["nomad_version"] = version
+    metadata["previous_nomad_version"] = previous
+    metadata["upgraded_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    run_root(["install", "-d", "-m", "0750", "-o", "root", "-g", "root", str(TOOL_STATE_DIR)])
+    install_text(INSTALL_METADATA_FILE, json.dumps(metadata, indent=2, sort_keys=True) + "\n", mode="0644")
+    record_tool_version_file(version)
+
+
+def upgrade_plan_lines(current: str, target: str, keep: int) -> list[str]:
+    lines = [
+        "Nomad upgrade plan:",
+        f"  Current version:  {current}",
+        f"  Target version:   {target}",
+        f"  Download:         https://releases.hashicorp.com/nomad/{target}/nomad_{target}_linux_{detect_arch()}.zip",
+        f"  Install release:  {versioned_binary_path(BINARY_VERSION_DIR, 'nomad', target)}",
+        f"  Switch symlink:   {BIN_PATH}",
+        "  Restart service:  nomad.service",
+        f"  Keep releases:    {keep} (older ones are removed once the new one is running)",
+        "  Left untouched:   config, data directory, ACL state and the installed tool files",
+        "",
+        "  The HTTP API is unavailable while the agent restarts. Allocations already",
+        "  running on a client stay up; a server rejoins the raft peers and an election",
+        "  may follow. A restart that fails is rolled back to the current release.",
+    ]
+    if version_tuple(target) < version_tuple(current):
+        lines.extend([
+            "",
+            f"  Downgrade: {current} may have written raft state that {target} cannot read,",
+            "  so the older release can fail to start even though the binary is restored.",
+        ])
+    return lines
+
+
+def warn_on_version_span(current: str, target: str) -> None:
+    """Nomad supports one minor version at a time; larger jumps are the user's call."""
+    cur = version_tuple(current)
+    tgt = version_tuple(target)
+    if tgt[0] != cur[0]:
+        log_warn(f"Major version change {current} -> {target}; read the upgrade guide first")
+    elif tgt[1] - cur[1] > 1:
+        log_warn(f"{current} -> {target} skips {tgt[1] - cur[1] - 1} minor release(s); "
+                 "Nomad expects one minor version at a time")
+
+
+def confirm_upgrade(assume_yes: bool) -> None:
+    if assume_yes:
+        return
+    try:
+        answer = input("Proceed with the upgrade? Type yes to continue: ")
+    except EOFError as exc:
+        raise CLIError("Upgrade requires confirmation. Re-run with --yes for non-interactive use") from exc
+    if answer != "yes":
+        raise CLIError("Upgrade cancelled")
+
+
+def cmd_upgrade(args: argparse.Namespace) -> int:
+    require_linux()
+    for command in ("install", "systemctl"):
+        require_command(command)
+    if args.keep < 1:
+        raise CLIError("--keep must be at least 1")
+    if not BIN_PATH.exists():
+        raise CLIError(f"Nomad is not installed at {BIN_PATH}; run {NOMAD_MANAGER_CMD} install first")
+    current = installed_binary_version() or read_installed_nomad_version()
+    if not current or current == "unknown":
+        raise CLIError(f"Cannot determine the installed Nomad version from {BIN_PATH}")
+    target = resolve_upgrade_target(args.version)
+    if target == current:
+        log_success(f"Nomad {current} is already installed; nothing to upgrade")
+        recorded = read_installed_nomad_version()
+        if recorded != current:
+            # doctor sends the operator here when the two disagree, so settle it instead of only reporting it
+            log_info(f"Recording the installed version over {recorded}")
+            record_upgrade_metadata(recorded, current)
+        return 0
+    if version_tuple(target) < version_tuple(current) and not args.allow_downgrade:
+        raise CLIError(f"Refusing to downgrade Nomad {current} to {target}; re-run with --allow-downgrade")
+    print("\n".join(upgrade_plan_lines(current, target, args.keep)))
+    warn_on_version_span(current, target)
+    if args.dry_run:
+        return 0
+    confirm_upgrade(args.yes)
+    arch = detect_arch()
+    previous = linked_binary_path(BIN_PATH)
+    if previous is None:
+        log_info(f"Moving the installed binary into {BINARY_VERSION_DIR}")
+        previous = adopt_versioned_binary_layout(BIN_PATH, BINARY_VERSION_DIR, "nomad", current)
+    tmpdir = create_install_tmpdir("nomad-upgrade")
+    try:
+        download_nomad(target, arch, tmpdir)
+        staged = stage_binary(tmpdir, target)
+        log_info(f"Switching {BIN_PATH} to {staged.name}")
+        atomic_symlink(staged, BIN_PATH)
+        try:
+            log_info("Restarting Nomad on the new binary")
+            restart_nomad_service()
+        except (CLIError, subprocess.CalledProcessError) as exc:
+            log_error(f"Nomad did not come back on {target}: {exc}")
+            log_warn(f"Rolling back to {previous.name}")
+            atomic_symlink(previous, BIN_PATH)
+            try:
+                restart_nomad_service()
+            except (CLIError, subprocess.CalledProcessError) as rollback_error:
+                raise CLIError(f"Upgrade to {target} failed and the rollback to {current} also failed: "
+                               f"{rollback_error}") from exc
+            raise CLIError(f"Upgrade to {target} failed and was rolled back to {current}") from exc
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    record_upgrade_metadata(current, target)
+    for removed in prune_binary_versions(BINARY_VERSION_DIR, "nomad", keep=args.keep, current=staged):
+        log_info(f"Removed old release: {removed}")
+    log_success(f"Nomad upgraded: {current} -> {target}")
+    print(f"\nVerify with: {NOMAD_MANAGER_CMD} doctor")
+    return 0
+
+
 def remove_tool_snapshot() -> None:
     log_info("Removing Nomad init tools")
     for path in uninstall_tool_paths():
@@ -3022,7 +3230,7 @@ def purge_tool_state() -> None:
 
 
 def uninstall_runtime_paths() -> list[Path]:
-    return [SYSTEMD_SERVICE, BIN_ENTRY, BIN_PATH, CONFIG_DIR, DATA_DIR]
+    return [SYSTEMD_SERVICE, BIN_ENTRY, BIN_PATH, BINARY_VERSION_DIR, CONFIG_DIR, DATA_DIR]
 
 
 def uninstall_tool_paths() -> list[Path]:
@@ -3476,6 +3684,7 @@ COMMAND_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         "Maintain and remove",
         "",
         [
+            ("upgrade", "Install another Nomad release and restart the agent"),
             ("tools", "Update the installed nomad-manager and nomad-job files"),
             ("uninstall", "Remove Nomad, after showing a removal plan"),
         ],
@@ -3909,6 +4118,25 @@ The host volume data directory is preserved unless --purge is given.
     export.add_argument("--force", action="store_true", help="Overwrite existing exported files")
     export.set_defaults(func=cmd_export)
 
+    upgrade = sub.add_parser(
+        "upgrade",
+        help="Install another Nomad release and restart the agent",
+        description="Replace the Nomad binary with another release and restart nomad.service.\n"
+        "\n"
+        "Only the binary changes: config, the data directory, ACL state and the installed\n"
+        "tool files are left alone. The replaced release stays on disk, so an agent that\n"
+        "fails to come back is switched to it again automatically.\n"
+        "\n"
+        "Run --dry-run first to see the plan.",
+    )
+    upgrade.add_argument("--version", default="latest", help="Target Nomad version, or latest (default: latest)")
+    upgrade.add_argument("--keep", type=int, default=2, metavar="N",
+                         help="Releases to keep on disk, including the running one (default: 2)")
+    upgrade.add_argument("--allow-downgrade", action="store_true", help="Allow installing an older release than the running one")
+    upgrade.add_argument("--dry-run", action="store_true", help="Print the upgrade plan without changing anything")
+    upgrade.add_argument("--yes", action="store_true", help="Skip the interactive confirmation")
+    upgrade.set_defaults(func=cmd_upgrade)
+
     tools = sub.add_parser("tools")
     tools_sub = tools.add_subparsers(dest="tools_command")
     tools.set_defaults(func=lambda _: missing_subcommand(tools, f"{NOMAD_MANAGER_CMD} tools"))
@@ -3922,7 +4150,9 @@ The host volume data directory is preserved unless --purge is given.
         f"a source checkout. Running the installed {TOOL_ENTRY} would copy\n"
         "the node's own copy onto itself and change nothing.",
     )
-    tools_update.add_argument("--nomad-version", help="Nomad version recorded in tool metadata; defaults to existing metadata")
+    tools_update.add_argument("--nomad-version",
+                              help="Nomad version recorded in tool metadata; defaults to existing metadata. "
+                                   "This only records a version, it does not change the binary: use upgrade for that")
     tools_update.set_defaults(func=cmd_tools_update)
 
     uninstall = sub.add_parser("uninstall", description="Stop Nomad and remove runtime files after showing a removal plan.\n"

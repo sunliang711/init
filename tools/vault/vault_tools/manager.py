@@ -21,6 +21,8 @@ from .common import (
     COLOR_YELLOW,
     CLIArgumentParser,
     CLIError,
+    adopt_versioned_binary_layout,
+    atomic_symlink,
     atomic_write_text,
     command_exists,
     color_text,
@@ -33,11 +35,14 @@ from .common import (
     hcl_string,
     http_status,
     install_text,
+    kept_binary_versions,
+    linked_binary_path,
     log_error,
     log_info,
     log_success,
     log_warn,
     missing_subcommand,
+    prune_binary_versions,
     require_command,
     require_linux,
     run,
@@ -46,6 +51,8 @@ from .common import (
     safe_remove_path,
     sha256_file,
     terminal_status_prefix,
+    version_tuple,
+    versioned_binary_path,
     with_default_scheme,
 )
 
@@ -57,6 +64,7 @@ VAULT_GROUP = "vault"
 VAULT_ROOT_DIR = Path("/opt/vault")
 BIN_DIR = VAULT_ROOT_DIR / "bin"
 BIN_PATH = BIN_DIR / "vault"
+BINARY_VERSION_DIR = BIN_DIR / "versions"
 BIN_ENTRY = Path("/usr/local/bin/vault")
 CONFIG_DIR = VAULT_ROOT_DIR / "etc" / "vault.d"
 CONFIG_FILE = CONFIG_DIR / "config.hcl"
@@ -104,6 +112,19 @@ def normalize_version(version: str) -> str:
     return value
 
 
+def parse_binary_version(output: str) -> str:
+    """The version a vault binary reports, or "" when the output is unexpected."""
+    match = re.search(r"Vault v([0-9]+[.][0-9]+[.][0-9]+)", output)
+    return match.group(1) if match else ""
+
+
+def installed_binary_version() -> str:
+    """What the binary on this node reports, which upgrade trusts over metadata."""
+    if not BIN_PATH.is_file():
+        return ""
+    return parse_binary_version(run([str(BIN_PATH), "version"], capture=True, check=False).stdout or "")
+
+
 def fetch_latest_version() -> str:
     html = fetch_url(RELEASE_INDEX_URL, timeout=60).decode("utf-8", errors="replace")
     versions = re.findall(r'href="/vault/([0-9]+\.[0-9]+\.[0-9]+)/"', html)
@@ -122,6 +143,26 @@ def resolve_version(requested: str | None) -> str:
     except Exception:
         log_warn(f"Failed to resolve latest Vault version, fallback to {DEFAULT_VAULT_VERSION}")
         return DEFAULT_VAULT_VERSION
+
+
+def resolve_upgrade_target(requested: str) -> str:
+    """Resolve what to upgrade to, failing rather than guessing.
+
+    resolve_version falls back to the pinned default when the release index is
+    unreachable. That is fine for a fresh install, but here it would move a
+    running node onto a version nobody asked for.
+    """
+    if requested and requested != "latest":
+        return normalize_version(requested)
+    try:
+        latest = fetch_latest_version()
+    except CLIError:
+        raise
+    except Exception as exc:
+        raise CLIError(f"Cannot resolve the latest Vault version: {exc}. "
+                       f"Pass --version to pick one explicitly") from exc
+    log_success(f"Resolved latest Vault version: {latest}")
+    return latest
 
 
 def is_managed_file(path: Path) -> bool:
@@ -468,10 +509,26 @@ def install_directories() -> None:
         run_root(["install", "-d", "-m", mode, "-o", owner, "-g", group, str(path)])
 
 
-def install_binary(tmpdir: Path) -> None:
-    log_info(f"Installing binary: {BIN_PATH}")
+def stage_binary(tmpdir: Path, version: str) -> Path:
+    """Put one release in place under its version and check it runs.
+
+    The release is checked here, before anything points at it, so a bad archive
+    fails while the running binary is still the one in use.
+    """
+    target = versioned_binary_path(BINARY_VERSION_DIR, "vault", version)
+    log_info(f"Installing binary: {target}")
     run_root(["install", "-d", "-m", "0755", "-o", "root", "-g", "root", str(BIN_DIR)])
-    run_root(["install", "-m", "0755", "-o", "root", "-g", "root", str(tmpdir / "extract" / "vault"), str(BIN_PATH)])
+    run_root(["install", "-d", "-m", "0755", "-o", "root", "-g", "root", str(BINARY_VERSION_DIR)])
+    run_root(["install", "-m", "0755", "-o", "root", "-g", "root", str(tmpdir / "extract" / "vault"), str(target)])
+    reported = parse_binary_version(run([str(target), "version"], capture=True, check=False).stdout or "")
+    if reported != version:
+        raise CLIError(f"Installed binary reports version {reported or 'unknown'}, expected {version}")
+    return target
+
+
+def install_binary(tmpdir: Path, version: str) -> None:
+    target = stage_binary(tmpdir, version)
+    atomic_symlink(target, BIN_PATH)
     run_root(["install", "-d", "-m", "0755", "-o", "root", "-g", "root", str(BIN_ENTRY.parent)])
     run_root(["ln", "-sfn", str(BIN_PATH), str(BIN_ENTRY)])
     log_success(f"Vault binary entry installed: {BIN_ENTRY}")
@@ -871,7 +928,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     tmpdir = create_install_tmpdir("vault-install")
     try:
         download_vault(version, arch, tmpdir)
-        install_binary(tmpdir)
+        install_binary(tmpdir, version)
         ensure_vault_user()
         install_directories()
         if settings.mode == "auto":
@@ -903,6 +960,169 @@ def cmd_install(args: argparse.Namespace) -> int:
     return 0
 
 
+def restart_vault_service(client: VaultClient) -> None:
+    run_root(["systemctl", "restart", "vault"])
+    time.sleep(2)
+    if run_root(["systemctl", "is-active", "--quiet", "vault"], check=False).returncode != 0:
+        if command_exists("journalctl"):
+            run_root(["journalctl", "-u", "vault", "-n", "80", "--no-pager"], check=False)
+        raise CLIError("Vault service failed to start")
+    wait_for_vault_api(client)
+
+
+def read_install_metadata_as_root() -> dict[str, Any]:
+    """install.json sits in a root-only directory, so a sudoer can only read it through sudo."""
+    result = run_root(["cat", str(INSTALL_METADATA_FILE)], capture=True, check=False)
+    if result.returncode != 0:
+        return {}
+    try:
+        data = json.loads(result.stdout or "")
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def record_tool_version_file(version: str) -> None:
+    """doctor and status fall back to this file when install.json cannot be read."""
+    key = "vault_version="
+    try:
+        lines = TOOL_VERSION_FILE.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    if not any(line.startswith(key) for line in lines):
+        return
+    install_text(
+        TOOL_VERSION_FILE,
+        "\n".join(f"{key}{version}" if line.startswith(key) else line for line in lines) + "\n",
+        mode="0644",
+    )
+
+
+def record_upgrade_metadata(previous: str, version: str) -> None:
+    """Move the recorded version forward without rewriting the whole install record."""
+    metadata = read_install_metadata() or read_install_metadata_as_root()
+    if not metadata:
+        log_warn(f"Install metadata not readable: {INSTALL_METADATA_FILE}; the recorded version was not updated")
+        return
+    metadata["vault_version"] = version
+    metadata["previous_vault_version"] = previous
+    metadata["upgraded_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    run_root(["install", "-d", "-m", "0750", "-o", "root", "-g", "root", str(TOOL_STATE_DIR)])
+    install_text(INSTALL_METADATA_FILE, json.dumps(metadata, indent=2, sort_keys=True) + "\n", mode="0644")
+    record_tool_version_file(version)
+
+
+def upgrade_plan_lines(current: str, target: str, keep: int) -> list[str]:
+    lines = [
+        "Vault upgrade plan:",
+        f"  Current version:  {current}",
+        f"  Target version:   {target}",
+        f"  Download:         https://releases.hashicorp.com/vault/{target}/vault_{target}_linux_{detect_arch()}.zip",
+        f"  Install release:  {versioned_binary_path(BINARY_VERSION_DIR, 'vault', target)}",
+        f"  Switch symlink:   {BIN_PATH}",
+        "  Restart service:  vault.service",
+        f"  Keep releases:    {keep} (older ones are removed once the new one is running)",
+        "  Left untouched:   config, TLS material, the raft store, the init output and the tool files",
+        "",
+        "  Restarting Vault seals it. Every secret stays unreachable until the node is",
+        f"  unsealed again, so have the unseal keys at hand ({DEFAULT_INIT_FILE} by",
+        "  default). A restart that fails is rolled back to the current release.",
+    ]
+    if version_tuple(target) < version_tuple(current):
+        lines.extend([
+            "",
+            f"  Downgrade: {current} may have written storage state that {target} cannot read.",
+            "  Vault does not support downgrades; restoring the binary may not be enough.",
+        ])
+    return lines
+
+
+def warn_on_version_span(current: str, target: str) -> None:
+    """Vault supports one minor version at a time; larger jumps are the user's call."""
+    cur = version_tuple(current)
+    tgt = version_tuple(target)
+    if tgt[0] != cur[0]:
+        log_warn(f"Major version change {current} -> {target}; read the upgrade guide first")
+    elif tgt[1] - cur[1] > 1:
+        log_warn(f"{current} -> {target} skips {tgt[1] - cur[1] - 1} minor release(s); "
+                 "Vault expects one minor version at a time")
+
+
+def confirm_upgrade(assume_yes: bool) -> None:
+    if assume_yes:
+        return
+    try:
+        answer = input("Proceed with the upgrade? Type yes to continue: ")
+    except EOFError as exc:
+        raise CLIError("Upgrade requires confirmation. Re-run with --yes for non-interactive use") from exc
+    if answer != "yes":
+        raise CLIError("Upgrade cancelled")
+
+
+def cmd_upgrade(args: argparse.Namespace) -> int:
+    require_linux()
+    for command in ("install", "systemctl"):
+        require_command(command)
+    if args.keep < 1:
+        raise CLIError("--keep must be at least 1")
+    if not BIN_PATH.exists():
+        raise CLIError(f"Vault is not installed at {BIN_PATH}; run {VAULT_MANAGER_CMD} install first")
+    current = installed_binary_version() or read_installed_vault_version()
+    if not current or current == "unknown":
+        raise CLIError(f"Cannot determine the installed Vault version from {BIN_PATH}")
+    target = resolve_upgrade_target(args.version)
+    if target == current:
+        log_success(f"Vault {current} is already installed; nothing to upgrade")
+        recorded = read_installed_vault_version()
+        if recorded != current:
+            # doctor sends the operator here when the two disagree, so settle it instead of only reporting it
+            log_info(f"Recording the installed version over {recorded}")
+            record_upgrade_metadata(recorded, current)
+        return 0
+    if version_tuple(target) < version_tuple(current) and not args.allow_downgrade:
+        raise CLIError(f"Refusing to downgrade Vault {current} to {target}; re-run with --allow-downgrade")
+    print("\n".join(upgrade_plan_lines(current, target, args.keep)))
+    warn_on_version_span(current, target)
+    if args.dry_run:
+        return 0
+    confirm_upgrade(args.yes)
+    client = VaultClient(args)
+    arch = detect_arch()
+    previous = linked_binary_path(BIN_PATH)
+    if previous is None:
+        log_info(f"Moving the installed binary into {BINARY_VERSION_DIR}")
+        previous = adopt_versioned_binary_layout(BIN_PATH, BINARY_VERSION_DIR, "vault", current)
+    tmpdir = create_install_tmpdir("vault-upgrade")
+    try:
+        download_vault(target, arch, tmpdir)
+        staged = stage_binary(tmpdir, target)
+        log_info(f"Switching {BIN_PATH} to {staged.name}")
+        atomic_symlink(staged, BIN_PATH)
+        try:
+            log_info("Restarting Vault on the new binary")
+            restart_vault_service(client)
+        except (CLIError, subprocess.CalledProcessError) as exc:
+            log_error(f"Vault did not come back on {target}: {exc}")
+            log_warn(f"Rolling back to {previous.name}")
+            atomic_symlink(previous, BIN_PATH)
+            try:
+                restart_vault_service(client)
+            except (CLIError, subprocess.CalledProcessError) as rollback_error:
+                raise CLIError(f"Upgrade to {target} failed and the rollback to {current} also failed: "
+                               f"{rollback_error}") from exc
+            raise CLIError(f"Upgrade to {target} failed and was rolled back to {current}") from exc
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    record_upgrade_metadata(current, target)
+    for removed in prune_binary_versions(BINARY_VERSION_DIR, "vault", keep=args.keep, current=staged):
+        log_info(f"Removed old release: {removed}")
+    log_success(f"Vault upgraded: {current} -> {target}")
+    print("\nVault is sealed after the restart. Next steps:")
+    print(f"  1. {VAULT_MANAGER_CMD} unseal --keys-file {DEFAULT_INIT_FILE}")
+    print(f"  2. {VAULT_MANAGER_CMD} doctor")
+    return 0
+
+
 def print_install_next_steps() -> None:
     print("\nNext steps:")
     print(f"  1. {VAULT_MANAGER_CMD} init --key-shares 5 --key-threshold 3")
@@ -912,7 +1132,7 @@ def print_install_next_steps() -> None:
 
 
 def uninstall_runtime_paths() -> list[Path]:
-    return [SYSTEMD_SERVICE, BIN_ENTRY, BIN_PATH, CONFIG_DIR]
+    return [SYSTEMD_SERVICE, BIN_ENTRY, BIN_PATH, BINARY_VERSION_DIR, CONFIG_DIR]
 
 
 def uninstall_tool_paths() -> list[Path]:
@@ -1243,12 +1463,12 @@ def doctor_node_runtime() -> int:
     recorded = read_installed_vault_version()
     doctor_info(f"recorded version = {recorded}")
     doctor_info(f"tool revision    = {read_installed_tool_revision()}")
-    if BIN_PATH.is_file():
-        match = re.search(r"Vault v([0-9]+\.[0-9]+\.[0-9]+)", (run([str(BIN_PATH), "version"], capture=True, check=False).stdout or ""))
-        if match:
-            doctor_info(f"binary version   = {match.group(1)}")
-            if recorded not in {"unknown", match.group(1)}:
-                doctor_check("WARN", f"Binary version {match.group(1)} differs from recorded {recorded}; run tools update")
+    actual = installed_binary_version()
+    if actual:
+        doctor_info(f"binary version   = {actual}")
+        if recorded not in {"unknown", actual}:
+            doctor_check("WARN", f"Binary version {actual} differs from recorded {recorded}; "
+                                 f"run {VAULT_MANAGER_CMD} upgrade to install a known release")
     for path, label, required in ((DATA_DIR, "Raft data directory", True), (TOOL_DIR, "Tool copy", False)):
         if path.is_dir():
             doctor_check("OK", f"{label} exists: {path}")
@@ -1369,9 +1589,14 @@ def cmd_status(args: argparse.Namespace) -> int:
     print("Install:")
     status_line("recorded version", read_installed_vault_version())
     if BIN_PATH.is_file():
-        match = re.search(r"Vault v([0-9]+\.[0-9]+\.[0-9]+)", (run([str(BIN_PATH), "version"], capture=True, check=False).stdout or ""))
-        status_line("binary version", match.group(1) if match else "unknown")
+        status_line("binary version", installed_binary_version() or "unknown")
     status_line("binary", str(BIN_PATH) if BIN_PATH.is_file() else "<not installed>")
+    linked = linked_binary_path(BIN_PATH)
+    if linked:
+        status_line("binary release", str(linked))
+    kept = [item.name for item in kept_binary_versions(BINARY_VERSION_DIR, "vault")]
+    if kept:
+        status_line("kept releases", ", ".join(kept))
     status_line("config file", str(CONFIG_FILE))
     status_line("raft data", str(DATA_DIR))
     status_line("init output", str(INIT_DIR))
@@ -1650,6 +1875,7 @@ COMMAND_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         "Maintain and remove",
         "",
         [
+            ("upgrade", "Install another Vault release and restart the server"),
             ("tools", "Update the installed vault-manager files"),
             ("uninstall", "Remove Vault, after showing a removal plan"),
         ],
@@ -1870,6 +2096,27 @@ def build_parser() -> argparse.ArgumentParser:
     add_client_args(policy_delete)
     policy_delete.set_defaults(func=cmd_policy_delete)
 
+    upgrade = sub.add_parser(
+        "upgrade",
+        help="Install another Vault release and restart the server",
+        description="Replace the Vault binary with another release and restart vault.service.\n"
+        "\n"
+        "Only the binary changes: config, TLS material, the raft store, the init output and\n"
+        "the installed tool files are left alone. The replaced release stays on disk, so a\n"
+        "server that fails to come back is switched to it again automatically.\n"
+        "\n"
+        "The restart seals Vault, so have the unseal keys at hand. Run --dry-run first to\n"
+        "see the plan.",
+    )
+    add_client_args(upgrade)
+    upgrade.add_argument("--version", default="latest", help="Target Vault version, or latest (default: latest)")
+    upgrade.add_argument("--keep", type=int, default=2, metavar="N",
+                         help="Releases to keep on disk, including the running one (default: 2)")
+    upgrade.add_argument("--allow-downgrade", action="store_true", help="Allow installing an older release than the running one")
+    upgrade.add_argument("--dry-run", action="store_true", help="Print the upgrade plan without changing anything")
+    upgrade.add_argument("--yes", action="store_true", help="Skip the interactive confirmation")
+    upgrade.set_defaults(func=cmd_upgrade)
+
     tools = sub.add_parser(
         "tools",
         description="Manage the installed vault-manager files without touching the Vault binary,\n"
@@ -1886,7 +2133,9 @@ def build_parser() -> argparse.ArgumentParser:
         f"a source checkout. Running the installed {TOOL_ENTRY} would copy\n"
         "the node's own copy onto itself and change nothing, so that is refused.",
     )
-    tools_update.add_argument("--vault-version", help="Vault version recorded in tool metadata; defaults to existing metadata")
+    tools_update.add_argument("--vault-version",
+                              help="Vault version recorded in tool metadata; defaults to existing metadata. "
+                                   "This only records a version, it does not change the binary: use upgrade for that")
     tools_update.set_defaults(func=cmd_tools_update)
 
     uninstall = sub.add_parser(

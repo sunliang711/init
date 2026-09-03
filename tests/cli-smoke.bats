@@ -279,6 +279,24 @@ JSON
     [[ "${output}" == *"--secret-path"* ]]
 }
 
+@test "every manager documents upgrade as binary-only" {
+    for manager in nomad/nomad-manager consul/consul-manager vault/vault-manager; do
+        run "${REPO_ROOT}/tools/${manager}" upgrade --help
+
+        [ "${status}" -eq 0 ]
+        [[ "${output}" == *"--dry-run"* ]]
+        [[ "${output}" == *"--allow-downgrade"* ]]
+        [[ "${output}" == *"Only the binary changes"* ]]
+    done
+}
+
+@test "vault-manager upgrade warns about the seal in its help" {
+    run "${REPO_ROOT}/tools/vault/vault-manager" upgrade --help
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"seals Vault"* ]]
+}
+
 @test "vault-manager logic tests pass" {
     run python3 "${REPO_ROOT}/tests/test_vault_manager.py"
 

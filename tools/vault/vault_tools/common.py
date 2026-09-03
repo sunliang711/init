@@ -314,6 +314,84 @@ def safe_remove_path(path: str | Path) -> None:
         run_root(["rm", "-rf", "--", value])
 
 
+BINARY_VERSION_PATTERN = re.compile(r"^.+-[0-9]+[.][0-9]+[.][0-9]+$")
+
+
+def version_tuple(version: str) -> tuple[int, int, int]:
+    """Parse MAJOR.MINOR.PATCH so two releases can be compared."""
+    match = re.match(r"^v?([0-9]+)[.]([0-9]+)[.]([0-9]+)$", version.strip())
+    if not match:
+        raise CLIError(f"Invalid version: {version}")
+    return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+
+def atomic_symlink(target: str | Path, link: str | Path) -> None:
+    """Repoint link at target in a single step.
+
+    ln -sfn removes the old entry before creating the new one, so the path is
+    briefly missing and anything starting in that window fails. Renaming a
+    staged symlink over the old one replaces it atomically instead.
+    """
+    link_path = Path(link)
+    staged = link_path.with_name(f".{link_path.name}.new")
+    run_root(["ln", "-sfn", str(target), str(staged)])
+    run_root(["mv", "-Tf", str(staged), str(link_path)])
+
+
+def versioned_binary_path(version_dir: str | Path, name: str, version: str) -> Path:
+    """Where one release of a managed binary is kept."""
+    return Path(version_dir) / f"{name}-{version}"
+
+
+def linked_binary_path(bin_path: str | Path) -> Path | None:
+    """The release the entry symlink points at, or None when it is a plain file."""
+    path = Path(bin_path)
+    if not path.is_symlink():
+        return None
+    target = Path(os.readlink(path))
+    return target if target.is_absolute() else path.parent / target
+
+
+def kept_binary_versions(version_dir: str | Path, name: str) -> list[Path]:
+    """Releases kept for name, most recently installed first."""
+    directory = Path(version_dir)
+    if not directory.is_dir():
+        return []
+    found = [
+        path
+        for path in directory.iterdir()
+        if path.is_file()
+        and not path.is_symlink()
+        and path.name.startswith(f"{name}-")
+        and BINARY_VERSION_PATTERN.match(path.name)
+    ]
+    return sorted(found, key=lambda path: path.stat().st_mtime, reverse=True)
+
+
+def prune_binary_versions(version_dir: str | Path, name: str, *, keep: int, current: Path) -> list[Path]:
+    """Remove the oldest kept releases, never the one currently linked."""
+    removed: list[Path] = []
+    others = [path for path in kept_binary_versions(version_dir, name) if path != current]
+    for path in others[max(keep - 1, 0):]:
+        safe_remove_path(path)
+        removed.append(path)
+    return removed
+
+
+def adopt_versioned_binary_layout(bin_path: str | Path, version_dir: str | Path, name: str, version: str) -> Path:
+    """Move a plain binary into the versioned layout, leaving a symlink behind.
+
+    Older installs wrote the binary as a regular file. Upgrades switch a symlink
+    and keep the replaced release on disk so a failed restart can go back to it,
+    so the first upgrade on such a node converts the layout before anything else.
+    """
+    target = versioned_binary_path(version_dir, name, version)
+    run_root(["install", "-d", "-m", "0755", "-o", "root", "-g", "root", str(Path(version_dir))])
+    run_root(["mv", "-Tf", str(bin_path), str(target)])
+    atomic_symlink(target, bin_path)
+    return target
+
+
 def sha256_file(path: str | Path) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
