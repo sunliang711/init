@@ -71,6 +71,7 @@ BIN_DIR = NOMAD_ROOT_DIR / "bin"
 BIN_PATH = BIN_DIR / "nomad"
 BIN_ENTRY = Path("/usr/local/bin/nomad")
 CONFIG_DIR = NOMAD_ROOT_DIR / "etc" / "nomad.d"
+NOMAD_CONFIG_FILE = CONFIG_DIR / "nomad.hcl"
 DATA_DIR = NOMAD_ROOT_DIR / "data" / "nomad"
 NOMAD_AGENT_DATA_DIR = DATA_DIR / "agent"
 SYSTEMD_SERVICE = Path("/etc/systemd/system/nomad.service")
@@ -92,6 +93,7 @@ RELEASE_INDEX_URL = "https://releases.hashicorp.com/nomad/"
 NOMAD_ADDR = "http://127.0.0.1:4646"
 # Nomad garbage-collects dead jobs after 4h by default; keep their history instead
 DEFAULT_JOB_GC_THRESHOLD = "87600h"
+LOCAL_ADDRESSES = {"", "127.0.0.1", "localhost", "::1", "[::1]"}
 DEFAULT_VAULT_ADDR = "http://127.0.0.1:8200"
 LOCAL_NO_PROXY = "127.0.0.1,localhost,::1"
 MANAGED_MARKER = "# Managed by tools/nomad/nomad-manager"
@@ -1047,6 +1049,57 @@ def unset_label(value: str) -> str:
     return value if value else "<unset>"
 
 
+def read_base_config_text() -> str:
+    """The base config carries no managed marker; install owns it outright."""
+    try:
+        return NOMAD_CONFIG_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def base_config_values() -> dict[str, str]:
+    text = read_base_config_text()
+    if not text:
+        return {}
+    server = hcl_block_body(text, "server")
+    client = hcl_block_body(text, "client")
+    return {
+        "datacenter": hcl_text_value(text, "datacenter"),
+        "data_dir": hcl_text_value(text, "data_dir"),
+        "bind_addr": hcl_text_value(text, "bind_addr"),
+        "log_level": hcl_text_value(text, "log_level"),
+        "server": hcl_text_value(server, "enabled"),
+        "bootstrap_expect": hcl_text_value(server, "bootstrap_expect"),
+        "job_gc_threshold": hcl_text_value(server, "job_gc_threshold"),
+        "client": hcl_text_value(client, "enabled"),
+        "acl": hcl_text_value(hcl_block_body(text, "acl"), "enabled"),
+    }
+
+
+def doctor_base_configuration() -> int:
+    values = base_config_values()
+    if not values:
+        doctor_check("FAIL", f"Base config not readable: {NOMAD_CONFIG_FILE}")
+        return 1
+    failures = 0
+    doctor_info(f"datacenter       = {unset_label(values['datacenter'])}")
+    doctor_info(f"bind_addr        = {unset_label(values['bind_addr'])}")
+    doctor_info(f"data_dir         = {unset_label(values['data_dir'])}")
+    doctor_info(f"roles            = server {values['server'] or 'false'}, client {values['client'] or 'false'}")
+    doctor_info(f"job_gc_threshold = {unset_label(values['job_gc_threshold'])}"
+                + ("  (Nomad default 4h)" if not values["job_gc_threshold"] else ""))
+    doctor_info(f"acl              = {values['acl'] or 'false'}")
+    acl_off = values["acl"] != "true"
+    # Nomad serves the HTTP API on bind_addr, unlike Consul where it is client_addr
+    if values["bind_addr"] not in LOCAL_ADDRESSES and acl_off:
+        doctor_check("FAIL", f"HTTP API binds {values['bind_addr']} with ACL disabled")
+        doctor_check("INFO", "Anyone who can reach the port can submit and stop jobs")
+        failures += 1
+    if values["server"] == "true" and values["bootstrap_expect"] not in {"1", ""}:
+        doctor_check("WARN", f"bootstrap_expect is {values['bootstrap_expect']}; this tool manages single-node installs")
+    return failures
+
+
 def docker_config_values() -> dict[str, str]:
     config = hcl_block_body(read_config_text(DOCKER_CONFIG), "config")
     if not config:
@@ -1564,6 +1617,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         failures += 1
     print("\nNode runtime:")
     failures += doctor_node_runtime()
+    print("\nBase configuration:")
+    failures += doctor_base_configuration()
     print("\nNode configuration:")
     failures += doctor_node_configuration()
     print("\nHost volumes:")
@@ -1606,6 +1661,17 @@ def cmd_status(_: argparse.Namespace) -> int:
         status_line("service", (active.stdout or "").strip() or "unknown")
     status_line("api", f"{NOMAD_ADDR} ({http_status(f'{NOMAD_ADDR}/v1/status/leader')})")
     status_line("acl token file", str(target_token_file()) if target_token_file().is_file() else "<absent>")
+
+    print("\nBase configuration:")
+    base = base_config_values()
+    if not base:
+        print(f"  <not readable: {NOMAD_CONFIG_FILE}>")
+    else:
+        status_line("datacenter", unset_label(base["datacenter"]))
+        status_line("bind_addr", unset_label(base["bind_addr"]))
+        status_line("roles", f"server {base['server'] or 'false'}, client {base['client'] or 'false'}")
+        status_line("job_gc_threshold", unset_label(base["job_gc_threshold"]))
+        status_line("acl", base["acl"] or "false")
 
     print("\nManaged configuration:")
     docker = docker_config_values()
@@ -2600,9 +2666,9 @@ acl {{
   enabled = true
 }}
 """
-    log_info(f"Installing Nomad config: {CONFIG_DIR / 'nomad.hcl'}")
-    install_text(CONFIG_DIR / "nomad.hcl", content, mode="0644")
-    run_root(["chown", f"{NOMAD_USER}:{NOMAD_GROUP}", str(CONFIG_DIR / "nomad.hcl")])
+    log_info(f"Installing Nomad config: {NOMAD_CONFIG_FILE}")
+    install_text(NOMAD_CONFIG_FILE, content, mode="0644")
+    run_root(["chown", f"{NOMAD_USER}:{NOMAD_GROUP}", str(NOMAD_CONFIG_FILE)])
 
 
 def write_default_managed_configs() -> None:
