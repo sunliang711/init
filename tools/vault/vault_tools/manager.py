@@ -78,6 +78,8 @@ DATA_DIR = STATE_DIR / "raft"
 INIT_DIR = VAULT_ROOT_DIR / "init"
 DEFAULT_INIT_FILE = INIT_DIR / "vault-init.json"
 SYSTEMD_SERVICE = Path("/etc/systemd/system/vault.service")
+UNSEAL_SERVICE_NAME = "vault-unseal.service"
+UNSEAL_SERVICE = Path("/etc/systemd/system") / UNSEAL_SERVICE_NAME
 TOOL_DIR = VAULT_ROOT_DIR / "lib" / "vault-init-tools"
 TOOL_STATE_DIR = VAULT_ROOT_DIR / "data" / "vault-init-tools"
 TOOL_LOG_DIR = VAULT_ROOT_DIR / "log" / "vault-init-tools"
@@ -695,6 +697,103 @@ WantedBy=multi-user.target
     install_text(SYSTEMD_SERVICE, content, mode="0644")
 
 
+def unseal_service_content(keys_file: Path) -> str:
+    return f"""[Unit]
+Description=Unseal Vault after vault.service starts
+Documentation=https://developer.hashicorp.com/vault/docs/concepts/seal
+Requires=vault.service
+After=vault.service
+PartOf=vault.service
+ConditionPathExists={keys_file}
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=root
+Group=root
+ExecStart={TOOL_ENTRY} unseal --wait --keys-file {keys_file}
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=180
+
+[Install]
+WantedBy=vault.service
+"""
+
+
+def write_unseal_service(keys_file: Path) -> None:
+    """Install the unit that unseals Vault whenever vault.service starts.
+
+    Four directives carry the weight. WantedBy=vault.service, not
+    multi-user.target, so a plain restart — which upgrade and every config
+    change do — unseals again instead of leaving the node sealed; PartOf plus
+    RemainAfterExit make that restart reach a oneshot that already finished;
+    and ConditionPathExists keeps a node that has not run init yet from
+    retrying every RestartSec forever, since install enables this before the
+    keys exist.
+    """
+    log_info(f"Installing systemd service: {UNSEAL_SERVICE}")
+    install_text(UNSEAL_SERVICE, unseal_service_content(keys_file), mode="0644")
+
+
+def unseal_service_keys_file() -> Path | None:
+    """The keys file the installed unit reads, which need not be the default."""
+    try:
+        text = UNSEAL_SERVICE.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    match = re.search(r"(?m)^ConditionPathExists=(.+)$", text)
+    return Path(match.group(1).strip()) if match else None
+
+
+def keys_file_present(path: Path) -> bool | None:
+    """True, False, or None when the answer is not knowable.
+
+    Path.is_file() raises on EACCES instead of returning False, and the init
+    directory is 0700 root, so every read-only command would abort for a sudoer.
+    """
+    try:
+        return path.is_file()
+    except OSError:
+        return None
+
+
+def auto_unseal_enabled() -> bool:
+    if not command_exists("systemctl"):
+        return UNSEAL_SERVICE.is_file()
+    return run(["systemctl", "is-enabled", "--quiet", UNSEAL_SERVICE_NAME], check=False).returncode == 0
+
+
+def auto_unseal_will_run() -> bool:
+    """Enabled is not the whole answer: ConditionPathExists decides whether it does anything."""
+    if not auto_unseal_enabled():
+        return False
+    return keys_file_present(unseal_service_keys_file() or DEFAULT_INIT_FILE) is True
+
+
+def enable_auto_unseal(keys_file: Path, *, start: bool) -> None:
+    write_unseal_service(keys_file)
+    run_root(["systemctl", "daemon-reload"])
+    run_root(["systemctl", "enable", UNSEAL_SERVICE_NAME])
+    log_warn(f"Vault now unseals itself from {keys_file} on every start; while those keys sit on "
+             "this host the seal protects nothing at rest")
+    if keys_file_present(keys_file) is False:
+        log_info(f"The unit stays dormant until {keys_file} exists; {VAULT_MANAGER_CMD} init writes it")
+        return
+    if start:
+        run_root(["systemctl", "start", UNSEAL_SERVICE_NAME], check=False)
+
+
+def disable_auto_unseal() -> None:
+    if command_exists("systemctl"):
+        run_root(["systemctl", "disable", "--now", UNSEAL_SERVICE_NAME], check=False)
+    safe_remove_path(UNSEAL_SERVICE)
+    if command_exists("systemctl"):
+        run_root(["systemctl", "daemon-reload"])
+
+
 def wait_for_vault_api(client: VaultClient) -> None:
     url = client.health_url()
     log_info("Waiting for Vault HTTP API")
@@ -951,12 +1050,19 @@ def cmd_install(args: argparse.Namespace) -> int:
         log_info("Enabling Vault service")
         run_root(["systemctl", "daemon-reload"])
         run_root(["systemctl", "enable", "vault"])
+        if args.auto_unseal:
+            # the keys file does not exist until init runs, so the unit is enabled dormant
+            enable_auto_unseal(DEFAULT_INIT_FILE, start=False)
+        elif UNSEAL_SERVICE.is_file():
+            # install is re-runnable, and the flag has to be able to turn an enabled unit off
+            log_info(f"Removing {UNSEAL_SERVICE_NAME}: --no-auto-unseal was given")
+            disable_auto_unseal()
         run_root(["systemctl", "restart", "vault"])
         wait_for_vault_api(VaultClient(argparse.Namespace(addr=settings.api_addr, ca_cert=settings.tls_ca_cert_file)))
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     log_success("Vault installation completed")
-    print_install_next_steps()
+    print_install_next_steps(args.auto_unseal)
     return 0
 
 
@@ -1028,6 +1134,8 @@ def upgrade_plan_lines(current: str, target: str, keep: int) -> list[str]:
         f"  unsealed again, so have the unseal keys at hand ({DEFAULT_INIT_FILE} by",
         "  default). A restart that fails is rolled back to the current release.",
     ]
+    if auto_unseal_will_run():
+        lines.append(f"  {UNSEAL_SERVICE_NAME} is enabled, so the restart unseals it again.")
     if version_tuple(target) < version_tuple(current):
         lines.extend([
             "",
@@ -1117,22 +1225,36 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     for removed in prune_binary_versions(BINARY_VERSION_DIR, "vault", keep=args.keep, current=staged):
         log_info(f"Removed old release: {removed}")
     log_success(f"Vault upgraded: {current} -> {target}")
-    print("\nVault is sealed after the restart. Next steps:")
-    print(f"  1. {VAULT_MANAGER_CMD} unseal --keys-file {DEFAULT_INIT_FILE}")
-    print(f"  2. {VAULT_MANAGER_CMD} doctor")
+    if auto_unseal_will_run():
+        print(f"\n{UNSEAL_SERVICE_NAME} unseals Vault on every start, so it should already be back.")
+        print(f"Confirm with: {VAULT_MANAGER_CMD} doctor")
+    else:
+        if auto_unseal_enabled():
+            keys_file = unseal_service_keys_file() or DEFAULT_INIT_FILE
+            log_warn(f"{UNSEAL_SERVICE_NAME} is enabled but {keys_file} is not there, so it was skipped")
+        print("\nVault is sealed after the restart. Next steps:")
+        print(f"  1. {VAULT_MANAGER_CMD} unseal --keys-file {DEFAULT_INIT_FILE}")
+        print(f"  2. {VAULT_MANAGER_CMD} doctor")
     return 0
 
 
-def print_install_next_steps() -> None:
+def print_install_next_steps(auto_unseal: bool) -> None:
     print("\nNext steps:")
     print(f"  1. {VAULT_MANAGER_CMD} init --key-shares 5 --key-threshold 3")
     print(f"  2. {VAULT_MANAGER_CMD} unseal --keys-file {DEFAULT_INIT_FILE}")
     print("  3. source ~/vault.acl")
     print(f"  4. {VAULT_MANAGER_CMD} doctor")
+    if auto_unseal:
+        print(f"\nStep 1 writes the keys file {UNSEAL_SERVICE_NAME} waits for; from then on every")
+        print(f"start of vault.service unseals itself. Turn that off with "
+              f"{VAULT_MANAGER_CMD} auto-unseal disable.")
+    else:
+        print(f"\nAuto-unseal is off on this node, so step 2 is needed again after every restart.")
+        print(f"Turn it on later with {VAULT_MANAGER_CMD} auto-unseal enable.")
 
 
 def uninstall_runtime_paths() -> list[Path]:
-    return [SYSTEMD_SERVICE, BIN_ENTRY, BIN_PATH, BINARY_VERSION_DIR, CONFIG_DIR]
+    return [SYSTEMD_SERVICE, UNSEAL_SERVICE, BIN_ENTRY, BIN_PATH, BINARY_VERSION_DIR, CONFIG_DIR]
 
 
 def uninstall_tool_paths() -> list[Path]:
@@ -1143,6 +1265,7 @@ def print_uninstall_plan(args: argparse.Namespace) -> None:
     print("Vault uninstall plan:")
     print("  Stop and disable service:")
     print("    - vault.service")
+    print(f"    - {UNSEAL_SERVICE_NAME}")
     print("  Remove runtime paths:")
     for path in uninstall_runtime_paths():
         print(f"    - {path}")
@@ -1193,6 +1316,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     require_linux()
     require_command("systemctl")
     log_info("Stopping Vault service")
+    run_root(["systemctl", "disable", "--now", UNSEAL_SERVICE_NAME], check=False)
     run_root(["systemctl", "stop", "vault"], check=False)
     run_root(["systemctl", "disable", "vault"], check=False)
     log_info("Removing Vault service, binary and config")
@@ -1278,6 +1402,9 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_unseal(args: argparse.Namespace) -> int:
     client = VaultClient(args)
     keys_file = Path(args.keys_file)
+    if getattr(args, "wait", False):
+        # vault.service is Type=simple, so the unit that runs us starts before the listener binds
+        wait_for_vault_api(client)
     status = client.status_json()
     if status.get("sealed") is False:
         log_success("Vault is already unsealed")
@@ -1296,6 +1423,43 @@ def cmd_unseal(args: argparse.Namespace) -> int:
             log_success("Vault unsealed")
             return 0
     raise CLIError("Vault is still sealed after applying keys")
+
+
+def cmd_auto_unseal_enable(args: argparse.Namespace) -> int:
+    require_linux()
+    require_command("systemctl")
+    keys_file = Path(args.keys_file) if args.keys_file else DEFAULT_INIT_FILE
+    if not keys_file.is_absolute():
+        raise CLIError(f"--keys-file must be an absolute path, systemd resolves it with no "
+                       f"working directory: {keys_file}")
+    enable_auto_unseal(keys_file, start=True)
+    log_success(f"Auto-unseal enabled: {UNSEAL_SERVICE}")
+    return 0
+
+
+def cmd_auto_unseal_disable(_: argparse.Namespace) -> int:
+    require_linux()
+    disable_auto_unseal()
+    log_success(f"Auto-unseal disabled; Vault stays sealed until {VAULT_MANAGER_CMD} unseal runs")
+    return 0
+
+
+def cmd_auto_unseal_status(_: argparse.Namespace) -> int:
+    if not UNSEAL_SERVICE.is_file():
+        print(f"Auto-unseal is not installed ({UNSEAL_SERVICE} absent)")
+        print(f"Install it with: {VAULT_MANAGER_CMD} auto-unseal enable")
+        return 0
+    keys_file = unseal_service_keys_file() or DEFAULT_INIT_FILE
+    status_line("unit", str(UNSEAL_SERVICE))
+    status_line("enabled", "yes" if auto_unseal_enabled() else "no")
+    present = keys_file_present(keys_file)
+    status_line("keys file", f"{keys_file}"
+                + ("" if present is True else
+                   "   <-- missing, the unit is skipped" if present is False else "   <-- not readable from here"))
+    if command_exists("systemctl"):
+        state = (run(["systemctl", "is-active", UNSEAL_SERVICE_NAME], check=False, capture=True).stdout or "").strip()
+        status_line("state", state or "unknown")
+    return 0
 
 
 def auth_type_at_path(client: VaultClient, path: str) -> str:
@@ -1458,6 +1622,30 @@ def doctor_init_output() -> int:
     return failures
 
 
+def doctor_auto_unseal() -> int:
+    """State only: unsealing from a local key file is a deliberate trade-off, not a fault."""
+    if not UNSEAL_SERVICE.is_file():
+        doctor_info(f"not installed; {VAULT_MANAGER_CMD} unseal is needed after every restart")
+        return 0
+    failures = 0
+    keys_file = unseal_service_keys_file() or DEFAULT_INIT_FILE
+    if auto_unseal_enabled():
+        doctor_check("OK", f"{UNSEAL_SERVICE_NAME} is enabled; every start of vault.service unseals")
+        doctor_info(f"unseal keys  = {keys_file}, on this host, so the seal protects nothing at rest")
+    else:
+        doctor_check("WARN", f"{UNSEAL_SERVICE_NAME} is installed but not enabled; Vault stays sealed after a restart")
+    present = keys_file_present(keys_file)
+    if present is False:
+        doctor_check("WARN", f"Keys file missing: {keys_file}; the unit is skipped until it exists")
+    elif present is None:
+        doctor_info(f"keys file    = {keys_file}, not readable from here; re-run as root to check it")
+    if command_exists("systemctl"):
+        if run(["systemctl", "is-failed", "--quiet", UNSEAL_SERVICE_NAME], check=False).returncode == 0:
+            doctor_check("FAIL", f"{UNSEAL_SERVICE_NAME} is in failed state; see journalctl -u {UNSEAL_SERVICE_NAME}")
+            failures += 1
+    return failures
+
+
 def doctor_node_runtime() -> int:
     failures = 0
     recorded = read_installed_vault_version()
@@ -1559,6 +1747,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print("\nInit output:")
     failures += doctor_init_output()
 
+    print("\nAuto-unseal:")
+    failures += doctor_auto_unseal()
+
     print("\nVault state:")
     url = client.health_url()
     code = http_status(url, cafile=client.ca_cert)
@@ -1582,6 +1773,17 @@ def status_line(key: str, value: str) -> None:
     print(f"  {key:<22} {value}")
 
 
+def print_auto_unseal_status_line() -> None:
+    if not UNSEAL_SERVICE.is_file():
+        status_line("auto-unseal", "<not installed>")
+        return
+    keys_file = unseal_service_keys_file() or DEFAULT_INIT_FILE
+    state = "enabled" if auto_unseal_enabled() else "installed, not enabled"
+    if keys_file_present(keys_file) is False:
+        state += ", keys file missing"
+    status_line("auto-unseal", f"{state} ({keys_file})")
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     """Show what is configured. doctor answers whether it is healthy."""
     client = VaultClient(args)
@@ -1600,6 +1802,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     status_line("config file", str(CONFIG_FILE))
     status_line("raft data", str(DATA_DIR))
     status_line("init output", str(INIT_DIR))
+    print_auto_unseal_status_line()
     status_line("tool dir", str(TOOL_DIR) if TOOL_DIR.is_dir() else "<not installed>")
     status_line("tool revision", read_installed_tool_revision())
     if command_exists("systemctl"):
@@ -1651,6 +1854,8 @@ def cmd_quickstart(_: argparse.Namespace) -> int:
      {VAULT_MANAGER_CMD} init --key-shares 5 --key-threshold 3
      {VAULT_MANAGER_CMD} unseal --keys-file {DEFAULT_INIT_FILE}
      source {target_acl_file()}
+
+   Later restarts unseal themselves; {VAULT_MANAGER_CMD} auto-unseal status says so.
 
 3. Configure Vault
      {VAULT_MANAGER_CMD} auth enable jwt --path jwt-nomad
@@ -1766,6 +1971,13 @@ the API answers 503 until you unseal it again.
 
 The command applies keys from the init JSON one at a time and stops as soon as
 Vault reports itself unsealed. It is a no-op when Vault is already unsealed.
+
+install enables {UNSEAL_SERVICE_NAME} to run exactly this on every start of
+vault.service, which is why a reboot normally comes back unsealed. It costs what
+it sounds like it costs: the unseal keys sit on the machine that unseals with
+them, so the seal no longer protects anything at rest, and the same file is what
+someone with disk access needs. {VAULT_MANAGER_CMD} auto-unseal disable removes
+it, at the price of unsealing by hand after every restart.
 """,
     "auth": f"""Manage auth methods.
 
@@ -1861,6 +2073,7 @@ COMMAND_GROUPS: list[tuple[str, str, list[tuple[str, str]]]] = [
         [
             ("init", "Generate the unseal keys and root token, once"),
             ("unseal", "Unseal Vault, needed again after every restart"),
+            ("auto-unseal", "Unseal on every service start, from the keys on this host"),
         ],
     ),
     (
@@ -1950,6 +2163,10 @@ def build_parser() -> argparse.ArgumentParser:
         "\n"
         "Vault comes up uninitialized and sealed; that is expected. Run init and unseal next.\n"
         "\n"
+        f"install also enables {UNSEAL_SERVICE_NAME}, which unseals Vault on every start once\n"
+        "init has written the keys file. That trades the seal for surviving a reboot unattended:\n"
+        "the keys stay readable on this host. Use --no-auto-unseal to keep unsealing by hand.\n"
+        "\n"
         "install also copies this tool itself into the node: vault-manager and the vault_tools\n"
         f"package go to {TOOL_DIR},\n"
         f"linked onto PATH as {TOOL_ENTRY}.\n"
@@ -1972,6 +2189,8 @@ def build_parser() -> argparse.ArgumentParser:
     install.add_argument("--tls-dns", action="append", default=[], help="Extra DNS SAN for --tls-auto; repeatable")
     install.add_argument("--tls-ip", action="append", default=[], help="Extra IP SAN for --tls-auto; repeatable")
     install.add_argument("--tls-common-name", default="vault-server", help="Certificate common name for --tls-auto (default: vault-server)")
+    install.add_argument("--no-auto-unseal", action="store_true",
+                         help=f"Do not install {UNSEAL_SERVICE_NAME}, which unseals Vault whenever vault.service starts")
     install.set_defaults(func=lambda args: cmd_install(argparse.Namespace(
         version=args.version_opt or args.version_pos,
         listen_address=args.listen_address, cluster_address=args.cluster_address,
@@ -1979,6 +2198,7 @@ def build_parser() -> argparse.ArgumentParser:
         no_tls=args.no_tls, tls_auto=args.tls_auto, tls_cert_file=args.tls_cert_file,
         tls_key_file=args.tls_key_file, tls_ca_cert_file=args.tls_ca_cert_file,
         tls_dns=args.tls_dns, tls_ip=args.tls_ip, tls_common_name=args.tls_common_name,
+        auto_unseal=not args.no_auto_unseal,
     )))
 
     doctor = sub.add_parser(
@@ -2025,13 +2245,38 @@ def build_parser() -> argparse.ArgumentParser:
         "unseal",
         description="Unseal Vault using the keys in the init JSON.\n"
         "\n"
-        "Vault seals itself on every restart, so this is needed again after a reboot.\n"
+        f"Vault seals itself on every restart, so this is needed again after a reboot unless\n"
+        f"{UNSEAL_SERVICE_NAME} is enabled; see {VAULT_MANAGER_CMD} auto-unseal.\n"
         "Applies keys one at a time and stops as soon as Vault reports itself unsealed.\n"
         "A no-op when Vault is already unsealed.",
     )
     unseal.add_argument("--keys-file", required=True, help="Init JSON holding the unseal keys")
+    unseal.add_argument("--wait", action="store_true",
+                        help=f"Wait for the Vault API first; {UNSEAL_SERVICE_NAME} uses this because "
+                             "vault.service reports started before the listener binds")
     add_client_args(unseal)
     unseal.set_defaults(func=cmd_unseal)
+
+    auto_unseal = sub.add_parser(
+        "auto-unseal",
+        help="Manage the unit that unseals Vault when vault.service starts",
+        description=f"Manage {UNSEAL_SERVICE_NAME}, which runs unseal every time vault.service starts,\n"
+        "including the restarts that upgrade and config changes cause.\n"
+        "\n"
+        "install enables it by default. It stays dormant until init writes the keys file, and\n"
+        "reads that file as root at every start, so while those keys are on this host the seal\n"
+        "is only a formality: anyone who can read the disk can bring Vault up.",
+    )
+    auto_unseal_sub = auto_unseal.add_subparsers(dest="auto_unseal_command")
+    auto_unseal.set_defaults(func=lambda _: missing_subcommand(auto_unseal, f"{VAULT_MANAGER_CMD} auto-unseal"))
+    auto_unseal_enable = auto_unseal_sub.add_parser("enable", help="Install and enable the unit")
+    auto_unseal_enable.add_argument("--keys-file", default="",
+                                    help=f"Init JSON the unit reads (default: {DEFAULT_INIT_FILE})")
+    auto_unseal_enable.set_defaults(func=cmd_auto_unseal_enable)
+    auto_unseal_disable = auto_unseal_sub.add_parser("disable", help="Disable and remove the unit")
+    auto_unseal_disable.set_defaults(func=cmd_auto_unseal_disable)
+    auto_unseal_status = auto_unseal_sub.add_parser("status", help="Show whether the unit is installed and enabled")
+    auto_unseal_status.set_defaults(func=cmd_auto_unseal_status)
 
     auth = sub.add_parser(
         "auth",

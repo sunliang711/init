@@ -297,6 +297,29 @@ JSON
     [[ "${output}" == *"seals Vault"* ]]
 }
 
+@test "vault-manager install documents the auto-unseal opt-out" {
+    run "${REPO_ROOT}/tools/vault/vault-manager" install --help
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"--no-auto-unseal"* ]]
+    [[ "${output}" == *"vault-unseal.service"* ]]
+}
+
+@test "vault-manager auto-unseal spells out where the keys live" {
+    run "${REPO_ROOT}/tools/vault/vault-manager" auto-unseal --help
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"enable"* ]]
+    [[ "${output}" == *"disable"* ]]
+    [[ "${output}" == *"the seal"* ]]
+}
+
+@test "vault-manager auto-unseal logic tests pass" {
+    run python3 "${REPO_ROOT}/tests/test_vault_manager_auto_unseal.py"
+
+    [ "${status}" -eq 0 ]
+}
+
 @test "vault-manager logic tests pass" {
     run python3 "${REPO_ROOT}/tests/test_vault_manager.py"
 

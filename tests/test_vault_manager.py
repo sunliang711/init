@@ -266,7 +266,7 @@ class InitExampleDefaultsTest(unittest.TestCase):
             "root epilog": manager.build_parser().format_help(),
             "quickstart": self._capture(lambda: manager.cmd_quickstart(argparse.Namespace())),
             "tutor init": manager.TUTOR_TOPICS["init"],
-            "install next steps": self._capture(manager.print_install_next_steps),
+            "install next steps": self._capture(lambda: manager.print_install_next_steps(True)),
             "seal hints": " ".join(fix for _, fix in manager.SEAL_HINTS.values()),
         }
 

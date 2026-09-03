@@ -4780,6 +4780,67 @@ EOF
   tmuxp load "$config_file"
 }
 
+# ---- 内部：列出 job 的 alloc，默认只要 running，按创建时间倒序 ----
+# 输出 tab 分隔：ID  GROUP  STATUS  NODE
+_nomad_alloc_list() {
+    nomad job allocs -t \
+'{{range .}}{{.ID}}{{"\t"}}{{.TaskGroup}}{{"\t"}}{{.ClientStatus}}{{"\t"}}{{.NodeName}}{{"\t"}}{{.CreateTime}}{{"\n"}}{{end}}' \
+        "$1" | awk -F'\t' -v all="$2" 'all == "1" || $3 == "running"' \
+         | sort -t$'\t' -k5,5nr | cut -f1-4
+}
+
+# nalloc [-a] <job>   列出 allocation（-a 含非 running）
+nalloc() {
+    local all=""
+    [ "$1" = "-a" ] && { all=1; shift; }
+    if [ $# -ne 1 ]; then echo "usage: nalloc [-a] <job>" >&2; return 2; fi
+    local out; out=$(_nomad_alloc_list "$1" "$all") || return 1
+    if [ -z "$out" ]; then echo "job '$1': 没有匹配的 allocation" >&2; return 1; fi
+    { printf 'ID\tGROUP\tSTATUS\tNODE\n'; printf '%s\n' "$out"; } | column -t -s $'\t'
+}
+
+# nexec [-t task] [-a alloc前缀] <job> [cmd...]   默认 cmd 为 /bin/sh
+nexec() {
+    local task="" want=""
+    while [ $# -gt 0 ]; do
+        case $1 in
+            -t|--task)  task=$2; shift 2 ;;
+            -a|--alloc) want=$2; shift 2 ;;
+            --) shift; break ;;
+            -*) echo "unknown option: $1" >&2; return 2 ;;
+            *)  break ;;
+        esac
+    done
+    if [ $# -lt 1 ]; then
+        echo "usage: nexec [-t task] [-a alloc] <job> [cmd...]" >&2; return 2
+    fi
+    local job=$1; shift
+
+    local allocs; allocs=$(_nomad_alloc_list "$job") || return 1
+    [ -n "$want" ] && allocs=$(printf '%s\n' "$allocs" | awk -v p="$want" 'index($1,p)==1')
+    if [ -z "$allocs" ]; then echo "job '$job': 没有 running 的 allocation" >&2; return 1; fi
+
+    local id; id=$(printf '%s\n' "$allocs" | head -1 | cut -f1)
+    if [ "$(printf '%s\n' "$allocs" | wc -l)" -gt 1 ]; then
+        echo "有多个 running allocation，使用最新的 ${id%%-*}（用 -a 指定其它）：" >&2
+        printf '%s\n' "$allocs" | cut -f1-3 | column -t -s $'\t' >&2
+    fi
+
+    if [ -z "$task" ]; then
+        local tasks; tasks=$(nomad alloc status -t \
+            '{{range $k, $v := .TaskStates}}{{$k}}{{"\n"}}{{end}}' "$id" | grep .)
+        if [ "$(printf '%s\n' "$tasks" | wc -l)" -eq 1 ]; then
+            task=$tasks
+        else
+            echo "该 alloc 有多个 task，请用 -t 指定：" >&2
+            printf '%s\n' "$tasks" >&2; return 2
+        fi
+    fi
+
+    [ $# -eq 0 ] && set -- /bin/sh
+    nomad alloc exec -task "$task" "$id" "$@"
+}
+
 
 #END function
 
