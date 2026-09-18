@@ -36,6 +36,17 @@ class _FakePwd:
         return type("Entry", (), {"pw_uid": self.uid, "pw_gid": self.uid})()
 
 
+def _parser_help(path: list) -> str:
+    """The --help text of a nested subcommand, as the user would see it."""
+    parser = manager.build_parser()
+    for name in path:
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                parser = action.choices[name]
+                break
+    return parser.format_help()
+
+
 def fake_install_text(path, content, *, mode="0644", owner=None, group=None) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -173,6 +184,46 @@ class TargetFileTest(ManagerTestCase):
         self.capture(lambda: manager.cmd_prometheus_target_add(args))
         self.assertEqual(manager.entry_addresses(manager.read_target_entries("node")),
                          ["10.0.0.11:9100", "10.0.0.12:9100"])
+
+    def test_job_remove_drops_the_job_and_rewrites_the_config(self) -> None:
+        """target remove 刻意留下空 job,所以必须另有一条命令能真的把 job 删掉。"""
+        self.patch(manager, "component_installed", lambda component: True)
+        self.patch(manager, "check_prometheus_config", lambda: None)
+        manager.add_target_entry("node", "10.0.0.11:9100", {})
+        manager.write_target_entries("socks107", [])
+        self.capture(lambda: manager.apply_prometheus_config())
+        self.assertIn("socks107", manager.PROMETHEUS_CONFIG_FILE.read_text(encoding="utf-8"))
+
+        args = argparse.Namespace(job="socks107", force=False)
+        self.capture(lambda: manager.cmd_prometheus_job_remove(args))
+        self.assertFalse(manager.target_file("socks107").exists())
+        self.assertEqual(manager.scrape_jobs(), ["node"])
+        config = manager.PROMETHEUS_CONFIG_FILE.read_text(encoding="utf-8")
+        self.assertNotIn("socks107", config)
+        self.assertIn("  - job_name: 'node'", config)
+
+    def test_job_remove_refuses_a_job_that_still_has_targets(self) -> None:
+        """一个打错的 job 名不应该能顺手带走一整队机器。"""
+        self.patch(manager, "component_installed", lambda component: True)
+        self.patch(manager, "check_prometheus_config", lambda: None)
+        for address in ("10.0.0.11:9100", "10.0.0.12:9100"):
+            manager.add_target_entry("node", address, {})
+        with self.assertRaises(common.CLIError) as caught:
+            manager.cmd_prometheus_job_remove(argparse.Namespace(job="node", force=False))
+        self.assertIn("still holds 2 target(s)", str(caught.exception))
+        self.assertTrue(manager.target_file("node").exists())
+
+        self.capture(lambda: manager.cmd_prometheus_job_remove(
+            argparse.Namespace(job="node", force=True)))
+        self.assertFalse(manager.target_file("node").exists())
+
+    def test_job_remove_names_the_jobs_that_do_exist(self) -> None:
+        self.patch(manager, "component_installed", lambda component: True)
+        manager.add_target_entry("node", "10.0.0.11:9100", {})
+        with self.assertRaises(common.CLIError) as caught:
+            manager.cmd_prometheus_job_remove(argparse.Namespace(job="typo", force=False))
+        self.assertIn("No such scrape job: typo", str(caught.exception))
+        self.assertIn("node", str(caught.exception))
 
     def test_refuses_to_rewrite_a_foreign_target_file(self) -> None:
         """JSON 里放不下 managed marker,所以只能靠结构判断,形状不对就不碰。"""
@@ -763,6 +814,31 @@ class InstallFlowTest(ManagerTestCase):
         self.assertEqual(sorted(manager.component_records()), ["node-exporter", "prometheus"])
         manager.forget_component(manager.NODE_EXPORTER)
         self.assertEqual(sorted(manager.component_records()), ["prometheus"])
+
+
+class JobLabelGuidanceTest(ManagerTestCase):
+    """--job 被当成「哪台机器」用过一次,帮助文本必须把分工说清楚。"""
+
+    def test_the_note_reaches_help_and_tutor(self) -> None:
+        places = {
+            "target add --help": _parser_help(["prometheus", "target", "add"]),
+            "target --help": _parser_help(["prometheus", "target"]),
+            "tutor targets": manager.TUTOR_TOPICS["targets"],
+        }
+        for where, text in places.items():
+            with self.subTest(where=where):
+                self.assertIn("names the kind of target, not the machine", text)
+                self.assertIn("--label instance=", text)
+
+    def test_the_note_wraps_for_a_terminal(self) -> None:
+        for line in manager.JOB_LABEL_NOTE.split("\n"):
+            self.assertLessEqual(len(line), 79, f"too wide for help output: {line}")
+
+    def test_job_remove_is_reachable_from_the_parser(self) -> None:
+        args = manager.build_parser().parse_args(["prometheus", "job", "remove", "--job", "x"])
+        self.assertEqual(args.func, manager.cmd_prometheus_job_remove)
+        self.assertEqual(args.job, "x")
+        self.assertFalse(args.force)
 
 
 class DashboardHintTest(ManagerTestCase):

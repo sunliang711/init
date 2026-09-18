@@ -105,6 +105,14 @@ DEFAULT_GRAFANA_ADDR = "0.0.0.0"
 DEFAULT_GRAFANA_PORT = 3000
 DEFAULT_GRAFANA_DOMAIN = "localhost"
 DEFAULT_JOB = "node"
+JOB_LABEL_NOTE = (
+    "A job names the kind of target, not the machine. Every node_exporter belongs\n"
+    "in one job, and the machines are told apart by their instance label, which\n"
+    "defaults to the address. Dashboards built on these metrics, Node Exporter Full\n"
+    "among them, filter by one job at a time, so a job per machine means you can\n"
+    "only ever look at one machine at once. Give a machine a readable name with\n"
+    "--label instance=<name> instead."
+)
 # Grafana provisions the datasource but no dashboard, so a fresh install shows an
 # empty home page while the data is already there. 1860 is Node Exporter Full.
 GRAFANA_DASHBOARD_ID = 1860
@@ -1539,6 +1547,26 @@ def cmd_prometheus_target_list(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_prometheus_job_remove(args: argparse.Namespace) -> int:
+    """Drop a scrape job entirely, which target remove deliberately does not do."""
+    require_component_installed(PROMETHEUS)
+    job = validate_job(args.job)
+    path = target_file(job)
+    if not path.is_file():
+        raise CLIError(f"No such scrape job: {job}. Configured jobs: "
+                       f"{', '.join(scrape_jobs()) or '<none>'}")
+    addresses = entry_addresses(read_target_entries(job))
+    if addresses and not args.force:
+        raise CLIError(f"Job {job} still holds {len(addresses)} target(s): {', '.join(addresses)}. "
+                       f"Remove them first, or re-run with --force to drop the job and all of them")
+    run_root(["rm", "-f", "--", str(path)])
+    log_success(f"Removed scrape job: {job}" + (f" and {len(addresses)} target(s)" if addresses else ""))
+    apply_prometheus_config()
+    log_info("Series already scraped stay in the database until retention expires; "
+             "they simply stop being updated")
+    return 0
+
+
 def cmd_prometheus_reload(_: argparse.Namespace) -> int:
     require_component_installed(PROMETHEUS)
     check_prometheus_config()
@@ -2245,7 +2273,8 @@ tool refuses to touch a file it did not write.
   {MONCTL_CMD} prometheus target list
   {MONCTL_CMD} prometheus target remove --address 10.0.0.12:9100
 
-Each job is one file under {PROMETHEUS_TARGET_DIR}, referenced from
+Each job is one file under
+{PROMETHEUS_TARGET_DIR}, referenced from
 prometheus.yml through file_sd_configs. Prometheus re-reads those files on a
 timer, so adding or removing an address needs no reload and no restart, and a
 typo in one file cannot stop the service from starting.
@@ -2253,8 +2282,23 @@ typo in one file cannot stop the service from starting.
 Only a brand new job rewrites prometheus.yml, and that rewrite is checked with
 promtool before it is kept: a config promtool rejects is rolled back.
 
+{JOB_LABEL_NOTE}
+
+So this is the wrong shape:
+
+  {MONCTL_CMD} prometheus target add --address 10.0.0.11:9100 --job web-1
+  {MONCTL_CMD} prometheus target add --address 10.0.0.12:9100 --job db-1
+
+and this is the right one:
+
+  {MONCTL_CMD} prometheus target add --address 10.0.0.11:9100 --label instance=web-1
+  {MONCTL_CMD} prometheus target add --address 10.0.0.12:9100 --label instance=db-1
+
 Removing the last address of a job keeps the job and its empty file. That is
-deliberate, so the next add does not have to rewrite prometheus.yml again.
+deliberate, so the next add does not have to rewrite prometheus.yml again. When
+the job itself should go:
+
+  {MONCTL_CMD} prometheus job remove --job web-1
 """,
     "grafana": f"""Grafana: dashboards on top of Prometheus.
 
@@ -2582,7 +2626,8 @@ def build_parser() -> argparse.ArgumentParser:
     prom_install.add_argument("--external-url", default="",
                               help="Public URL when Prometheus is served behind a reverse proxy")
     prom_install.add_argument("--job", default=DEFAULT_JOB,
-                              help=f"Scrape job created for the exporters (default: {DEFAULT_JOB})")
+                              help=f"Job created for the exporters (default: {DEFAULT_JOB}); "
+                                   f"it names the kind of target, not a machine")
     prom_install.add_argument("--extra-arg", action="append", default=[], metavar="--FLAG",
                               help="Extra Prometheus flag for the unit file, repeatable")
     add_bool_argument(prom_install, "--scrape-local-node", default=True,
@@ -2607,6 +2652,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Add, remove and list scrape targets",
         description="Manage the scrape targets Prometheus reads through file_sd.\n"
         "\n"
+        f"{JOB_LABEL_NOTE}\n"
+        "\n"
         f"Each job is one JSON file under {PROMETHEUS_TARGET_DIR}.\n"
         "Prometheus watches those files, so adding or removing an address takes effect on\n"
         "its own. Only a brand new job rewrites prometheus.yml, and that rewrite is checked\n"
@@ -2614,12 +2661,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     target_sub = target.add_subparsers(dest="target_command")
     target.set_defaults(func=lambda _: missing_subcommand(target, f"{MONCTL_CMD} prometheus target"))
-    target_add = target_sub.add_parser("add", help="Add a scrape target to a job")
+    target_add = target_sub.add_parser(
+        "add",
+        help="Add a scrape target to a job",
+        description=f"Record one address for Prometheus to scrape.\n\n{JOB_LABEL_NOTE}",
+    )
     target_add.add_argument("--address", required=True, metavar="HOST:PORT",
                             help="Exporter address, for example 10.0.0.11:9100")
-    target_add.add_argument("--job", default=DEFAULT_JOB, help=f"Scrape job (default: {DEFAULT_JOB})")
+    target_add.add_argument("--job", default=DEFAULT_JOB,
+                            help=f"Kind of target, not the machine (default: {DEFAULT_JOB}). "
+                                 f"Keep every node_exporter in one job and name the machines "
+                                 f"with --label instance=<name>")
     target_add.add_argument("--label", action="append", default=[], metavar="KEY=VALUE",
-                            help="Label attached to this target, repeatable")
+                            help="Label attached to this target, repeatable. instance=<name> "
+                                 "replaces the address as the machine's name")
     target_add.set_defaults(func=cmd_prometheus_target_add)
     target_remove = target_sub.add_parser("remove", help="Remove a scrape target")
     target_remove.add_argument("--address", required=True, metavar="HOST:PORT", help="Exporter address to remove")
@@ -2627,6 +2682,30 @@ def build_parser() -> argparse.ArgumentParser:
     target_remove.set_defaults(func=cmd_prometheus_target_remove)
     target_list = target_sub.add_parser("list", help="List configured targets and their health")
     target_list.set_defaults(func=cmd_prometheus_target_list)
+    job = prom_sub.add_parser(
+        "job",
+        help="Remove a scrape job entirely",
+        description="Manage whole scrape jobs.\n"
+        "\n"
+        "'target remove' keeps the job and its empty file on purpose, so the next add does\n"
+        "not have to rewrite prometheus.yml. This is how you get rid of the job itself.",
+    )
+    job_sub = job.add_subparsers(dest="job_command")
+    job.set_defaults(func=lambda _: missing_subcommand(job, f"{MONCTL_CMD} prometheus job"))
+    job_remove = job_sub.add_parser(
+        "remove",
+        help="Remove a scrape job and its target file",
+        description="Delete a job's target file and rewrite prometheus.yml without it.\n"
+        "\n"
+        "A job that still holds targets is refused unless --force, so a typo cannot drop\n"
+        "a whole fleet. Series already scraped stay in the database until retention\n"
+        "expires; they only stop being updated.",
+    )
+    job_remove.add_argument("--job", required=True, help="Job to remove")
+    job_remove.add_argument("--force", action="store_true",
+                            help="Remove the job even when it still holds targets")
+    job_remove.set_defaults(func=cmd_prometheus_job_remove)
+
     prom_reload = prom_sub.add_parser(
         "reload",
         help="Check the config and reload Prometheus",

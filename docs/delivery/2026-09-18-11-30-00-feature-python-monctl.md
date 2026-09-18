@@ -78,7 +78,14 @@ monctl doctor|status|tools update|uninstall|quickstart|tutor
 不通过就把旧文件放回去再报错。也就是说这条路径上不存在「配置写坏了导致服务起不来」。
 
 删掉一个 job 的最后一个地址时,**保留空文件**,job 还在。这样下一次 add 不用再改
-`prometheus.yml`,也就不用 reload。
+`prometheus.yml`,也就不用 reload。真要删掉 job 本身用 `prometheus job remove --job X`,
+它还拿着目标的话要显式 `--force`,一个打错的 job 名不该能顺手带走一整队机器。
+
+`job` 是**种类**不是机器:所有 node_exporter 归一个 job,机器之间靠 `instance` 标签区分
+(默认就是地址)。这一条在 `target add --help`、`target --help` 和 `tutor targets` 里
+各写了一遍,因为真实反馈就是有人按「一台机器一个 job」来用,然后发现
+Node Exporter Full 每次只能看一台 —— 那个面板的 job 变量是单选且不支持 All,
+`nodename` 和 `instance` 两级下拉都被它过滤。
 
 `prometheus.yml` 是完全生成的,第一行是 managed marker;不是本工具写的文件一律拒绝接管
 (`--force` 才覆盖)。JSON 放不下注释行,所以目标文件靠**结构**判断:形状不对就报错不改写。
