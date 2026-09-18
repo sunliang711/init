@@ -1,4 +1,4 @@
-"""验证三个 manager 的顶层命令与各自 COMMAND_GROUPS 分组表保持一致。"""
+"""验证四个 manager 的顶层命令与各自 COMMAND_GROUPS 分组表保持一致。"""
 
 import argparse
 import sys
@@ -10,14 +10,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "tools" / "nomad"))
 sys.path.insert(0, str(REPO_ROOT / "tools" / "consul"))
 sys.path.insert(0, str(REPO_ROOT / "tools" / "vault"))
+sys.path.insert(0, str(REPO_ROOT / "tools" / "monitoring"))
 
 from consul_tools import manager as consul_manager  # noqa: E402
+from monitoring_tools import manager as monitoring_manager  # noqa: E402
 from nomad_tools import manager as nomad_manager  # noqa: E402
 from vault_tools import manager as vault_manager  # noqa: E402
 
 
 MANAGERS = (("nomad-manager", nomad_manager), ("consul-manager", consul_manager),
-            ("vault-manager", vault_manager))
+            ("vault-manager", vault_manager), ("monctl", monitoring_manager))
 
 
 class CommandGroupsTest(unittest.TestCase):

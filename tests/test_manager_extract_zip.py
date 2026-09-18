@@ -15,15 +15,17 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-for tool in ("nomad", "consul", "vault"):
+for tool in ("nomad", "consul", "vault", "monitoring"):
     sys.path.insert(0, str(REPO_ROOT / "tools" / tool))
 
 from consul_tools import common as consul_common  # noqa: E402
+from monitoring_tools import common as monitoring_common  # noqa: E402
 from nomad_tools import common as nomad_common  # noqa: E402
 from vault_tools import common as vault_common  # noqa: E402
 
 
-COMMONS = (("nomad", nomad_common), ("consul", consul_common), ("vault", vault_common))
+COMMONS = (("nomad", nomad_common), ("consul", consul_common), ("vault", vault_common),
+           ("monitoring", monitoring_common))
 
 
 class ExtractZipModeTest(unittest.TestCase):

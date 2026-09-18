@@ -1,4 +1,4 @@
-"""验证三个 manager 都拒绝从已安装的自身副本更新工具文件。
+"""验证四个 manager 都拒绝从已安装的自身副本更新工具文件。
 
 从 /opt/<product>/lib/<product>-init-tools 里跑 install 或 tools update 时，
 源目录就是目标目录，拷贝是空操作，旧代码会继续留在节点上而没有任何提示。
@@ -15,14 +15,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "tools" / "nomad"))
 sys.path.insert(0, str(REPO_ROOT / "tools" / "consul"))
 sys.path.insert(0, str(REPO_ROOT / "tools" / "vault"))
+sys.path.insert(0, str(REPO_ROOT / "tools" / "monitoring"))
 
 from consul_tools import manager as consul_manager  # noqa: E402
+from monitoring_tools import manager as monitoring_manager  # noqa: E402
 from nomad_tools import manager as nomad_manager  # noqa: E402
 from vault_tools import manager as vault_manager  # noqa: E402
 
 
 MANAGERS = (("nomad-manager", nomad_manager), ("consul-manager", consul_manager),
-            ("vault-manager", vault_manager))
+            ("vault-manager", vault_manager), ("monctl", monitoring_manager))
 
 
 class ToolSourceGuardTest(unittest.TestCase):
@@ -93,18 +95,23 @@ class ToolSourceGuardTest(unittest.TestCase):
         # each tool names its own version reader
         version_readers = {"nomad-manager": "read_installed_nomad_version",
                            "consul-manager": "read_installed_consul_version",
-                           "vault-manager": "read_installed_vault_version"}
+                           "vault-manager": "read_installed_vault_version",
+                           # monctl tracks a version per component, not one product version
+                           "monctl": ""}
         for label, module in MANAGERS:
             with self.subTest(tool=label):
                 reader = version_readers[label]
                 names = ["require_linux", "require_command", "current_script_dir",
-                         "install_tool_snapshot", "require_tool_source", reader]
+                         "install_tool_snapshot", "require_tool_source"]
+                if reader:
+                    names.append(reader)
                 saved = {name: getattr(module, name) for name in names}
                 module.require_linux = lambda: None
                 module.require_command = lambda command: None
                 module.current_script_dir = lambda file_value: checkout / "package"
                 module.require_tool_source = lambda script_dir: None
-                setattr(module, reader, lambda: "1.2.3")
+                if reader:
+                    setattr(module, reader, lambda: "1.2.3")
                 called = []
                 module.install_tool_snapshot = lambda *args: called.append(args)
                 try:

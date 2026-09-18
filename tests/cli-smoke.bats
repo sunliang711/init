@@ -332,3 +332,48 @@ JSON
     [ "${status}" -eq 0 ]
     [[ "${output}" == *"Vault manager"* ]]
 }
+
+@test "monctl help groups commands by host role" {
+    run "${REPO_ROOT}/tools/monitoring/monctl" help
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"1. Set up a machine you want to watch"* ]]
+    [[ "${output}" == *"2. Set up the monitoring host"* ]]
+    [[ "${output}" == *"node-exporter"* ]]
+    [[ "${output}" == *"prometheus"* ]]
+    [[ "${output}" == *"grafana"* ]]
+}
+
+@test "monctl node-exporter install warns about the open port" {
+    run "${REPO_ROOT}/tools/monitoring/monctl" node-exporter install --help
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"0.0.0.0:9100"* ]]
+    [[ "${output}" == *"no authentication"* ]]
+    [[ "${output}" == *"--no-install-tools"* ]]
+}
+
+@test "monctl prometheus target documents file_sd" {
+    run "${REPO_ROOT}/tools/monitoring/monctl" prometheus target --help
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"file_sd"* ]]
+    [[ "${output}" == *"add"* ]]
+    [[ "${output}" == *"remove"* ]]
+    [[ "${output}" == *"list"* ]]
+}
+
+@test "monctl uninstall dry-run keeps the data directories" {
+    run "${REPO_ROOT}/tools/monitoring/monctl" uninstall --components prometheus,grafana --dry-run
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"Monitoring uninstall plan:"* ]]
+    [[ "${output}" == *"Preserve paths:"* ]]
+    [[ "${output}" == *"/opt/monitoring/data/prometheus"* ]]
+}
+
+@test "monctl logic tests pass" {
+    run python3 "${REPO_ROOT}/tests/test_monitoring_manager.py"
+
+    [ "${status}" -eq 0 ]
+}
