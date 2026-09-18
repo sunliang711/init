@@ -246,8 +246,13 @@ Debian 13 / systemd 257 / Python 3.13 / amd64,GitHub release 直连只有 2.5 KB
   目录名带固定前缀,认得出来。
 - node_exporter 默认监听所有网卡且无认证,这是这套用法的前提;工具不会替你配防火墙,
   只在 install 和每次 doctor 提醒。
+- **没有预置 Grafana 仪表盘**。数据源配好了、数据也在采,但 Grafana 不自带任何面向这些指标的
+  面板,首页是空的 —— 真实反馈就是「装完看不到机器信息」。现在 `grafana install` 装完会打印
+  导入步骤(1860,Node Exporter Full),`quickstart` 和 `tutor grafana` 里也都写了,
+  tutor 还说明了按 ID 导入是 Grafana 服务端去 grafana.com 拉、连不上时怎么办。
+  但这仍然是每台机器的手工动作,把 JSON 随工具发出去并 provision 掉才是真正的解法,本次没做。
 - 只覆盖单机单副本:没有 Alertmanager、没有 recording/alerting rules、没有 TLS 与 basic auth、
-  没有远端存储、没有 Grafana 仪表盘预置。
+  没有远端存储。
 - 从 `tools.old/grafana/install.sh` 装出来的老机器没有自动迁移:install 会拒绝并列出冲突路径,
   停服务、删旧文件、决定 `/var/lib/prometheus` 里的数据怎么办,都还是人工动作。
 - `tools.old/grafana/` 原样保留,没有删除。

@@ -607,7 +607,7 @@ class InstallFlowTest(ManagerTestCase):
         values.update(overrides)
         self.capture(lambda: manager.cmd_prometheus_install(argparse.Namespace(**values)))
 
-    def grafana_install(self, **overrides: object) -> None:
+    def grafana_install(self, **overrides: object) -> str:
         self.stub_install(manager.GRAFANA, "13.2.2")
         source = self.root / "release" / "grafana"
         (source / "bin").mkdir(parents=True, exist_ok=True)
@@ -619,7 +619,7 @@ class InstallFlowTest(ManagerTestCase):
                                      "domain": "localhost", "root_url": "", "prometheus_url": "",
                                      "datasource": False, "force": False, "install_tools": False}
         values.update(overrides)
-        self.capture(lambda: manager.cmd_grafana_install(argparse.Namespace(**values)))
+        return self.capture(lambda: manager.cmd_grafana_install(argparse.Namespace(**values)))
 
     def test_prometheus_install_writes_config_unit_and_metadata(self) -> None:
         self.prometheus_install()
@@ -661,6 +661,13 @@ class InstallFlowTest(ManagerTestCase):
     def test_grafana_creates_its_user_before_its_directories(self) -> None:
         self.grafana_install()
         self.assert_user_created_first(manager.GRAFANA)
+
+    def test_grafana_install_points_at_a_dashboard_to_import(self) -> None:
+        """数据源配好了、数据也在采,但 Grafana 不自带面板,首页是空的。
+        装完不说这件事,用起来就像装坏了 —— 真实反馈就是这么来的。"""
+        output = self.grafana_install()
+        self.assertIn("Dashboards -> New -> Import", output)
+        self.assertIn(str(manager.GRAFANA_DASHBOARD_ID), output)
 
     def test_grafana_config_turns_off_the_startup_plugin_updater(self) -> None:
         """真机上撞出来的:它会把自带插件就地更新,写不进 root 的 release 树,
@@ -756,6 +763,29 @@ class InstallFlowTest(ManagerTestCase):
         self.assertEqual(sorted(manager.component_records()), ["node-exporter", "prometheus"])
         manager.forget_component(manager.NODE_EXPORTER)
         self.assertEqual(sorted(manager.component_records()), ["prometheus"])
+
+
+class DashboardHintTest(ManagerTestCase):
+    """导入面板这一步在三个地方都要说到:装完的提示、quickstart、tutor。"""
+
+    def test_quickstart_mentions_the_import(self) -> None:
+        output = self.capture(lambda: manager.cmd_quickstart(argparse.Namespace()))
+        self.assertIn("Dashboards -> New -> Import", output)
+        self.assertIn(str(manager.GRAFANA_DASHBOARD_ID), output)
+
+    def test_tutor_explains_the_offline_case(self) -> None:
+        """按 ID 导入是 Grafana 服务端去 grafana.com 拉,连不上的机器要换个办法。"""
+        topic = manager.TUTOR_TOPICS["grafana"]
+        self.assertIn("Dashboards -> New -> Import", topic)
+        self.assertIn("Import via dashboard JSON model", topic)
+        self.assertIn("grafana.com", topic)
+
+    def test_the_hint_wraps_to_its_context(self) -> None:
+        """提示要跟着周围文本的缩进走,不然 quickstart 里会突出来一行。"""
+        self.assertEqual(manager.dashboard_hint("  ").split("\n")[1][:2], "  ")
+        self.assertEqual(manager.dashboard_hint("     ").split("\n")[1][:5], "     ")
+        for line in manager.dashboard_hint("     ").split("\n"):
+            self.assertLessEqual(len(line), 88, "the hint must not overflow the surrounding text")
 
 
 class AddressTest(unittest.TestCase):

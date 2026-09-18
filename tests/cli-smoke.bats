@@ -372,6 +372,14 @@ JSON
     [[ "${output}" == *"/opt/monitoring/data/prometheus"* ]]
 }
 
+@test "monctl quickstart tells you to import a dashboard" {
+    run "${REPO_ROOT}/tools/monitoring/monctl" quickstart
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"Dashboards -> New -> Import"* ]]
+    [[ "${output}" == *"1860"* ]]
+}
+
 @test "monctl logic tests pass" {
     run python3 "${REPO_ROOT}/tests/test_monitoring_manager.py"
 

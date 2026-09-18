@@ -105,6 +105,18 @@ DEFAULT_GRAFANA_ADDR = "0.0.0.0"
 DEFAULT_GRAFANA_PORT = 3000
 DEFAULT_GRAFANA_DOMAIN = "localhost"
 DEFAULT_JOB = "node"
+# Grafana provisions the datasource but no dashboard, so a fresh install shows an
+# empty home page while the data is already there. 1860 is Node Exporter Full.
+GRAFANA_DASHBOARD_ID = 1860
+GRAFANA_DASHBOARD_STEPS = (
+    f"Dashboards -> New -> Import, enter {GRAFANA_DASHBOARD_ID} (Node Exporter Full),",
+    "Load, pick the Prometheus datasource, Import",
+)
+
+
+def dashboard_hint(indent: str) -> str:
+    """The import steps, wrapped to the width of whatever is printing them."""
+    return f"\n{indent}".join(GRAFANA_DASHBOARD_STEPS)
 TARGET_REFRESH_INTERVAL = "30s"
 LOCAL_ADDRESSES = {"127.0.0.1", "localhost", "::1", "[::1]"}
 
@@ -1395,6 +1407,9 @@ def cmd_grafana_install(args: argparse.Namespace) -> int:
     print(f"  Open {root_url} and sign in as admin / admin, then change that password.")
     if not datasource_url:
         print("  Add a Prometheus datasource in Connections -> Data sources.")
+    print("  Import a dashboard, because Grafana ships none for these metrics and the")
+    print("  home page stays empty until you do:")
+    print(f"    {dashboard_hint('    ')}")
     print(f"  {MONCTL_CMD} doctor")
     return 0
 
@@ -2134,6 +2149,10 @@ node_exporter, and one monitoring host runs Prometheus and Grafana.
    prometheus install picks up a node_exporter on the same host by itself, and
    grafana install provisions the local Prometheus as its default datasource.
 
+   Grafana brings no dashboard for these metrics, so its home page stays empty
+   even though the data is already being collected. Import one:
+     {dashboard_hint("     ")}
+
 3. Point Prometheus at the other machines
      {MONCTL_CMD} prometheus target add --address 10.0.0.11:9100 --label instance=web-1
      {MONCTL_CMD} prometheus target list
@@ -2253,6 +2272,21 @@ provisioning entirely with --no-datasource.
 Grafana starts with admin / admin and asks for a new password at the first
 login. This tool never sets that password, so it never ends up in a config file
 or in the audit log.
+
+What it does not bring is a dashboard. The datasource is provisioned, the data
+is being collected, and the home page is still empty until you import one:
+
+  {dashboard_hint("  ")}
+
+That import is done by the Grafana server, not your browser, so it needs to
+reach grafana.com. On a host that cannot, fetch the JSON where you do have
+access and paste it into "Import via dashboard JSON model" instead:
+
+  curl -s https://grafana.com/api/dashboards/{GRAFANA_DASHBOARD_ID}/revisions/latest/download \\
+    -o node-exporter-full.json
+
+Provisioning a dashboard from a file is not wired up here yet, so this is a
+per-host step for now.
 """,
     "upgrade": f"""Upgrades: one component at a time, always with a way back.
 
@@ -2624,6 +2658,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-datasource.\n"
         "\n"
         "The release tarball is around 450 MiB, so the download dominates the install.\n"
+        "\n"
+        "No dashboard is installed: the home page stays empty until you import one, which\n"
+        f"install prints at the end ({GRAFANA_DASHBOARD_ID}, Node Exporter Full).\n"
         "\n"
         "Grafana starts with admin / admin and asks for a new password at first login.\n"
         "This tool never sets that password, so it never lands in a config file or a log.",
