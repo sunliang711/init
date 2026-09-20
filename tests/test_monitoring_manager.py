@@ -654,7 +654,7 @@ class InstallFlowTest(ManagerTestCase):
         values: dict[str, object] = {"version": "latest", "listen": "0.0.0.0:9090", "retention": "30d",
                                      "scrape_interval": "20s", "external_url": "", "job": "node",
                                      "extra_arg": [], "scrape_local_node": True, "force": False,
-                                     "install_tools": False}
+                                     "install_tools": False, "admin_api": False}
         values.update(overrides)
         self.capture(lambda: manager.cmd_prometheus_install(argparse.Namespace(**values)))
 
@@ -752,7 +752,8 @@ class InstallFlowTest(ManagerTestCase):
                    lambda comp, ver, arch, tmp: downloads.append(ver))
         args = argparse.Namespace(version="3.14.0", listen="127.0.0.1:9090", retention="30d",
                                   scrape_interval="15s", external_url="", job="node", extra_arg=[],
-                                  scrape_local_node=False, force=False, install_tools=False)
+                                  scrape_local_node=False, force=False, install_tools=False,
+                                  admin_api=False)
         output = self.capture(lambda: manager.cmd_prometheus_install(args))
         self.assertEqual(downloads, [], "the release on disk should be reused")
         self.assertEqual(manager.component_record(manager.PROMETHEUS)["retention"], "30d")
@@ -814,6 +815,111 @@ class InstallFlowTest(ManagerTestCase):
         self.assertEqual(sorted(manager.component_records()), ["node-exporter", "prometheus"])
         manager.forget_component(manager.NODE_EXPORTER)
         self.assertEqual(sorted(manager.component_records()), ["prometheus"])
+
+
+class AdminApiTest(ManagerTestCase):
+    """删目标不删数据,所以要有条路清掉旧序列 —— 但那条路是个无认证的删库接口。"""
+
+    def unit(self, text: str) -> None:
+        path = manager.service_file(manager.PROMETHEUS)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    def test_the_flag_is_off_by_default(self) -> None:
+        self.assertNotIn("--web.enable-admin-api",
+                         manager.prometheus_flags("127.0.0.1:9090", "15d", "", []))
+        self.assertIn("--web.enable-admin-api",
+                      manager.prometheus_flags("127.0.0.1:9090", "15d", "", [], admin_api=True))
+
+    def test_it_is_read_back_from_the_unit_not_the_metadata(self) -> None:
+        """--extra-arg 也能把它打开,所以只信 unit 文件。"""
+        self.unit("[Service]\nExecStart=/opt/monitoring/bin/prometheus --config.file=x\n")
+        self.assertFalse(manager.admin_api_enabled())
+        self.unit("[Service]\nExecStart=/opt/monitoring/bin/prometheus \\\n"
+                  "  --web.enable-admin-api\n")
+        self.assertTrue(manager.admin_api_enabled())
+
+    def test_delete_refuses_and_says_how_to_enable(self) -> None:
+        self.patch(manager, "component_installed", lambda component: True)
+        self.patch(manager, "service_active", lambda component: True)
+        self.unit("[Service]\nExecStart=/opt/monitoring/bin/prometheus\n")
+        args = argparse.Namespace(match=['{job="old"}'], force=False, dry_run=True, yes=True,
+                                  keep_admin_api=False)
+        with self.assertRaises(common.CLIError) as caught:
+            manager.cmd_prometheus_series_delete(args)
+        self.assertIn("prometheus install --admin-api", str(caught.exception))
+
+    def prepare_delete(self, *, series: int, live: bool) -> list:
+        self.patch(manager, "component_installed", lambda component: True)
+        self.patch(manager, "service_active", lambda component: True)
+        self.unit("[Service]\nExecStart=/opt/monitoring/bin/prometheus --web.enable-admin-api\n")
+        self.patch(manager, "matching_series", lambda selector: series)
+        self.patch(manager, "selector_is_live", lambda selector: live)
+        posts: list = []
+        self.patch(manager, "prometheus_post",
+                   lambda path, params: (posts.append((path, params)), (200, ""))[1])
+        return posts
+
+    def test_delete_refuses_a_selector_that_is_still_being_scraped(self) -> None:
+        posts = self.prepare_delete(series=5, live=True)
+        args = argparse.Namespace(match=['{job="node"}'], force=False, dry_run=False, yes=True,
+                                  keep_admin_api=False)
+        with self.assertRaises(common.CLIError) as caught:
+            self.capture(lambda: manager.cmd_prometheus_series_delete(args))
+        self.assertIn("still have fresh samples", str(caught.exception))
+        self.assertEqual(posts, [], "nothing may be deleted while it is still being written")
+
+    def test_dry_run_counts_without_deleting(self) -> None:
+        posts = self.prepare_delete(series=603, live=False)
+        args = argparse.Namespace(match=['{job="socks107"}'], force=False, dry_run=True, yes=True,
+                                  keep_admin_api=False)
+        output = self.capture(lambda: manager.cmd_prometheus_series_delete(args))
+        self.assertIn("603 series", output)
+        self.assertIn("deletes the stored history", output)
+        self.assertEqual(posts, [])
+
+    def test_delete_posts_then_cleans_tombstones(self) -> None:
+        posts = self.prepare_delete(series=603, live=False)
+        args = argparse.Namespace(match=['{job="socks107"}'], force=False, dry_run=False, yes=True,
+                                  keep_admin_api=False)
+        self.capture(lambda: manager.cmd_prometheus_series_delete(args))
+        self.assertEqual([path for path, _ in posts],
+                         ["/api/v1/admin/tsdb/delete_series", "/api/v1/admin/tsdb/clean_tombstones"])
+        self.assertEqual(posts[0][1], [("match[]", '{job="socks107"}')])
+
+    def test_delete_admits_the_dropdown_lag(self) -> None:
+        """真机验证过:样本立刻且持久地没了,但 label 接口还列着那个名字。
+        不说这一句,跑完看下拉框没变就会以为命令没生效。"""
+        self.prepare_delete(series=603, live=False)
+        args = argparse.Namespace(match=['{job="socks107"}'], force=False, dry_run=False, yes=True,
+                                  keep_admin_api=True)
+        output = self.capture(lambda: manager.cmd_prometheus_series_delete(args))
+        del output
+        help_text = _parser_help(["prometheus", "series", "delete"])
+        self.assertIn("does not do is clear the name out of a dashboard dropdown", help_text)
+        self.assertIn("head block rolls over", help_text)
+
+    def test_nothing_matching_is_not_an_error(self) -> None:
+        posts = self.prepare_delete(series=0, live=False)
+        args = argparse.Namespace(match=['{job="gone"}'], force=False, dry_run=False, yes=True,
+                                  keep_admin_api=False)
+        result: list = []
+        output = self.capture(lambda: result.append(manager.cmd_prometheus_series_delete(args)))
+        self.assertEqual(result, [0])
+        self.assertIn("0 series", output)
+        self.assertEqual(posts, [], "an empty match must not call the admin API")
+
+    def test_doctor_warns_only_when_the_port_is_not_local(self) -> None:
+        self.unit("[Service]\nExecStart=/opt/monitoring/bin/prometheus --web.enable-admin-api\n")
+        self.patch(manager, "component_record", lambda component: {"listen": "127.0.0.1:9090"})
+        local = self.capture(manager.doctor_prometheus)
+        self.assertIn("reachable from this host only", local)
+        self.assertNotIn("with no credentials", local)
+
+        self.patch(manager, "component_record", lambda component: {"listen": "0.0.0.0:9090"})
+        public = self.capture(manager.doctor_prometheus)
+        self.assertIn("with no credentials", public)
+        self.assertIn("--no-admin-api", public)
 
 
 class JobLabelGuidanceTest(ManagerTestCase):

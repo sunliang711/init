@@ -10,6 +10,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -685,7 +688,8 @@ RestrictSUIDSGID=yes
 WantedBy=multi-user.target""")
 
 
-def prometheus_flags(listen: str, retention: str, external_url: str, extra: list[str]) -> list[str]:
+def prometheus_flags(listen: str, retention: str, external_url: str, extra: list[str],
+                    *, admin_api: bool = False) -> list[str]:
     for arg in extra:
         if not arg.startswith("--"):
             raise CLIError(f"Extra arguments must start with --: {arg}")
@@ -702,6 +706,8 @@ def prometheus_flags(listen: str, retention: str, external_url: str, extra: list
     ]
     if external_url:
         flags.append(f"--web.external-url={external_url}")
+    if admin_api:
+        flags.append("--web.enable-admin-api")
     flags.extend(extra)
     return flags
 
@@ -829,6 +835,18 @@ def render_prometheus_config(listen: str, scrape_interval: str, jobs: list[str])
             f"        refresh_interval: {TARGET_REFRESH_INTERVAL}",
         ])
     return managed_text("\n".join(lines))
+
+
+def admin_api_enabled() -> bool:
+    """Whether the unit exposes the admin API, however the flag got in there.
+
+    Read from the unit rather than the install metadata, because --extra-arg can
+    turn it on without going through --admin-api.
+    """
+    try:
+        return "--web.enable-admin-api" in service_file(PROMETHEUS).read_text(encoding="utf-8")
+    except OSError:
+        return False
 
 
 def check_prometheus_config() -> None:
@@ -980,6 +998,7 @@ def prometheus_settings() -> dict[str, Any]:
         "retention": record.get("retention") or DEFAULT_PROMETHEUS_RETENTION,
         "scrape_interval": record.get("scrape_interval") or DEFAULT_SCRAPE_INTERVAL,
         "external_url": record.get("external_url") or "",
+        "admin_api": bool(record.get("admin_api", False)),
     }
 
 
@@ -1292,7 +1311,8 @@ def cmd_prometheus_install(args: argparse.Namespace) -> int:
     require_no_legacy_install(PROMETHEUS, args.force)
     listen = validate_listen(args.listen, "listen address")
     job = validate_job(args.job)
-    flags = prometheus_flags(listen, args.retention, args.external_url, args.extra_arg)
+    flags = prometheus_flags(listen, args.retention, args.external_url, args.extra_arg,
+                             admin_api=args.admin_api)
     unit = service_file(PROMETHEUS)
     require_managed_or_absent(unit, args.force)
     require_managed_or_absent(PROMETHEUS_CONFIG_FILE, args.force)
@@ -1311,7 +1331,8 @@ def cmd_prometheus_install(args: argparse.Namespace) -> int:
     switch_binaries(PROMETHEUS, version)
     record_component(PROMETHEUS, {"version": version, "listen": listen, "retention": args.retention,
                                   "scrape_interval": args.scrape_interval,
-                                  "external_url": args.external_url, "flags": flags})
+                                  "external_url": args.external_url, "admin_api": bool(args.admin_api),
+                                  "flags": flags})
     if not target_file(job).is_file():
         # an empty job now means later target changes touch only the JSON file,
         # which Prometheus re-reads without a reload
@@ -1544,6 +1565,97 @@ def cmd_prometheus_target_list(_: argparse.Namespace) -> int:
             for address in entry.get("targets", []):
                 state = health.get((job, address), {}).get("health", "-")
                 print(f"{job:<16} {address:<28} {state:<8} {rendered}")
+    return 0
+
+
+def prometheus_post(path: str, params: list[tuple[str, str]]) -> tuple[int, str]:
+    """POST to the local Prometheus, never through a proxy."""
+    url = f"http://{reachable_address(prometheus_settings()['listen'])}{path}"
+    request = urllib.request.Request(
+        url,
+        data=urllib.parse.urlencode(params, doseq=True).encode("utf-8"),
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded",
+                 "User-Agent": "monctl/1"},
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(request, timeout=60) as response:
+            return int(response.status), response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        return int(exc.code), exc.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        raise CLIError(f"Cannot reach the Prometheus API at {url}: {exc}") from exc
+
+
+def matching_series(selector: str) -> int:
+    """How many series a selector covers over the whole retention window."""
+    query = urllib.parse.urlencode({"match[]": selector, "start": "0"})
+    data = prometheus_api(f"/api/v1/series?{query}")
+    if not isinstance(data, dict) or data.get("status") != "success":
+        message = data.get("error") if isinstance(data, dict) else "no answer"
+        raise CLIError(f"Prometheus rejected the selector {selector}: {message}")
+    series = data.get("data")
+    return len(series) if isinstance(series, list) else 0
+
+
+def selector_is_live(selector: str) -> bool:
+    """True when the selector still has fresh samples, so something is still scraping it."""
+    query = urllib.parse.urlencode({"query": f"count({selector})"})
+    data = prometheus_api(f"/api/v1/query?{query}")
+    if not isinstance(data, dict) or data.get("status") != "success":
+        return False
+    result = (data.get("data") or {}).get("result")
+    return bool(result)
+
+
+def cmd_prometheus_series_delete(args: argparse.Namespace) -> int:
+    """Delete stored series, which removing a target deliberately does not do."""
+    require_component_installed(PROMETHEUS)
+    if not service_active(PROMETHEUS):
+        raise CLIError("prometheus.service is not active; start it before deleting series")
+    if not admin_api_enabled():
+        raise CLIError(
+            "The Prometheus admin API is disabled, so nothing can be deleted. Turn it on with:\n"
+            f"    {MONCTL_CMD} prometheus install --admin-api\n"
+            "  and turn it off again afterwards with:\n"
+            f"    {MONCTL_CMD} prometheus install --no-admin-api"
+        )
+    counts = {selector: matching_series(selector) for selector in args.match}
+    total = sum(counts.values())
+    print("Series delete plan:")
+    for selector, count in counts.items():
+        live = " <-- still being scraped" if count and selector_is_live(selector) else ""
+        print(f"    {selector}   {count} series{live}")
+    if total == 0:
+        log_success("Nothing matches; no series were deleted")
+        return 0
+    live = [selector for selector, count in counts.items() if count and selector_is_live(selector)]
+    if live and not args.force:
+        raise CLIError(f"These selectors still have fresh samples, so something is still writing "
+                       f"them: {', '.join(live)}. Remove the target first, or re-run with --force")
+    print("\n  This deletes the stored history, not just the name in a dashboard dropdown.")
+    print("  Retention would drop it on its own once the data is old enough.")
+    if args.dry_run:
+        return 0
+    confirm_action(f"Delete {total} series? Type yes to continue: ", args.yes, "Delete")
+    status, body = prometheus_post("/api/v1/admin/tsdb/delete_series",
+                                   [("match[]", selector) for selector in args.match])
+    if status not in {200, 204}:
+        raise CLIError(f"delete_series failed: HTTP {status} {body.strip()}")
+    log_success(f"Deleted {total} series")
+    status, body = prometheus_post("/api/v1/admin/tsdb/clean_tombstones", [])
+    if status not in {200, 204}:
+        log_warn(f"clean_tombstones failed: HTTP {status} {body.strip()}; "
+                 "the series are gone from queries but still on disk until the next compaction")
+    else:
+        log_success("Tombstones cleaned")
+    log_info("Graphs stop showing this data at once. A dashboard dropdown reads the label API,")
+    log_info("which lists a name until the block holding its index is compacted away, so one")
+    log_info("written in the last couple of hours can linger there even though it has no data.")
+    if not args.keep_admin_api:
+        log_warn(f"The admin API is still enabled. Close it with: "
+                 f"{MONCTL_CMD} prometheus install --no-admin-api")
     return 0
 
 
@@ -1857,6 +1969,14 @@ def doctor_prometheus() -> int:
     settings = prometheus_settings()
     doctor_info(f"listen           = {settings['listen']}")
     doctor_info(f"retention        = {settings['retention']}")
+    if admin_api_enabled():
+        if listen_host(settings["listen"]) in LOCAL_ADDRESSES:
+            doctor_info("admin API        = enabled (reachable from this host only)")
+        else:
+            doctor_check("WARN", f"The admin API is enabled and Prometheus listens on "
+                                 f"{settings['listen']}; anyone who reaches that port can delete "
+                                 f"every series, with no credentials")
+            doctor_check("INFO", f"Close it with: {MONCTL_CMD} prometheus install --no-admin-api")
     url = f"http://{reachable_address(settings['listen'])}/-/healthy"
     code = http_status(url, timeout=3)
     if code == 200:
@@ -1999,6 +2119,7 @@ def status_component(component: Component) -> None:
     status_line("listen", settings["listen"])
     status_line("retention", settings["retention"])
     status_line("scrape interval", settings["scrape_interval"])
+    status_line("admin api", "enabled" if admin_api_enabled() else "disabled")
     status_line("config", str(PROMETHEUS_CONFIG_FILE))
     status_line("data dir", str(PROMETHEUS_DATA_DIR))
     jobs = scrape_jobs()
@@ -2299,6 +2420,19 @@ deliberate, so the next add does not have to rewrite prometheus.yml again. When
 the job itself should go:
 
   {MONCTL_CMD} prometheus job remove --job web-1
+
+None of this touches what was already collected. The series stay queryable until
+retention drops them, which is usually what you want and is also why a dashboard
+keeps offering a machine that is long gone. To remove them sooner:
+
+  {MONCTL_CMD} prometheus install --admin-api
+  {MONCTL_CMD} prometheus series delete --match '{{job="web-1"}}' --dry-run
+  {MONCTL_CMD} prometheus series delete --match '{{job="web-1"}}'
+  {MONCTL_CMD} prometheus install --no-admin-api
+
+The samples go immediately and for good. The name can stay in a dashboard
+dropdown for a couple of hours longer, because those read the label API and an
+index entry only disappears when its block is compacted away.
 """,
     "grafana": f"""Grafana: dashboards on top of Prometheus.
 
@@ -2576,7 +2710,9 @@ def build_parser() -> argparse.ArgumentParser:
     node_install.add_argument("--disable-collector", action="append", default=[], metavar="NAME",
                               help="Disable a collector that is on by default, repeatable")
     node_install.add_argument("--extra-arg", action="append", default=[], metavar="--FLAG",
-                              help="Extra node_exporter flag for the unit file, repeatable")
+                              help="Extra node_exporter flag for the unit file, repeatable. Write "
+                                   "it joined by '=', as --extra-arg=--flag: a value starting with "
+                                   "'--' is otherwise read as another option")
     add_install_arguments(node_install)
     node_install.set_defaults(func=lambda args: cmd_node_exporter_install(with_version(args)))
     node_upgrade = node_sub.add_parser(
@@ -2629,7 +2765,12 @@ def build_parser() -> argparse.ArgumentParser:
                               help=f"Job created for the exporters (default: {DEFAULT_JOB}); "
                                    f"it names the kind of target, not a machine")
     prom_install.add_argument("--extra-arg", action="append", default=[], metavar="--FLAG",
-                              help="Extra Prometheus flag for the unit file, repeatable")
+                              help="Extra Prometheus flag for the unit file, repeatable. Write it "
+                                   "joined by '=', as --extra-arg=--flag: a value starting with "
+                                   "'--' is otherwise read as another option")
+    add_bool_argument(prom_install, "--admin-api", default=False,
+                      help_text="Enable the admin API, which can delete stored series",
+                      no_help="Disable the admin API")
     add_bool_argument(prom_install, "--scrape-local-node", default=True,
                       help_text="Add a node_exporter installed on this host to the scrape targets",
                       no_help="Do not scrape a node_exporter installed on this host")
@@ -2705,6 +2846,49 @@ def build_parser() -> argparse.ArgumentParser:
     job_remove.add_argument("--force", action="store_true",
                             help="Remove the job even when it still holds targets")
     job_remove.set_defaults(func=cmd_prometheus_job_remove)
+
+    series = prom_sub.add_parser(
+        "series",
+        help="Delete stored series that nothing scrapes any more",
+        description="Manage the series already in the database.\n"
+        "\n"
+        "Removing a target stops the scraping; the series it already wrote stay until\n"
+        "retention drops them, which is why a dashboard dropdown keeps offering a machine\n"
+        "that is long gone. This is how to remove them sooner.",
+    )
+    series_sub = series.add_subparsers(dest="series_command")
+    series.set_defaults(func=lambda _: missing_subcommand(series, f"{MONCTL_CMD} prometheus series"))
+    series_delete = series_sub.add_parser(
+        "delete",
+        help="Delete series matching a selector",
+        description="Delete stored series through the Prometheus admin API, then clean the\n"
+        "tombstones so the space is actually reclaimed.\n"
+        "\n"
+        "This removes history, not just a name in a dropdown: the samples are gone and the\n"
+        "old graphs go with them. Retention would have dropped them on its own.\n"
+        "\n"
+        "What it does not do is clear the name out of a dashboard dropdown straight away.\n"
+        "Those read the label API, which answers from the block indexes, and an index entry\n"
+        "survives until its block is compacted away. Data older than the current head goes\n"
+        "with clean_tombstones; anything written in the last couple of hours keeps its name\n"
+        "listed, with no data behind it, until the head block rolls over.\n"
+        "\n"
+        "The admin API has no authentication and can delete everything, so it is off by\n"
+        f"default; turn it on with '{MONCTL_CMD} prometheus install --admin-api' and off again\n"
+        "afterwards. A selector that still has fresh samples is refused unless --force,\n"
+        "since something is evidently still writing it.",
+    )
+    series_delete.add_argument("--match", action="append", default=[], required=True,
+                               metavar="SELECTOR",
+                               help="Series selector, for example '{job=\"old\"}', repeatable")
+    series_delete.add_argument("--force", action="store_true",
+                               help="Delete even when the selector still has fresh samples")
+    series_delete.add_argument("--keep-admin-api", action="store_true",
+                               help="Do not remind you to close the admin API afterwards")
+    series_delete.add_argument("--dry-run", action="store_true",
+                               help="Print what matches without deleting anything")
+    series_delete.add_argument("--yes", action="store_true", help="Skip the interactive confirmation")
+    series_delete.set_defaults(func=cmd_prometheus_series_delete)
 
     prom_reload = prom_sub.add_parser(
         "reload",
