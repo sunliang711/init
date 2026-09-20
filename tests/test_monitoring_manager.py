@@ -728,6 +728,33 @@ class InstallFlowTest(ManagerTestCase):
         self.assertIn("[plugins]", config)
         self.assertIn("preinstall_disabled = true", config)
 
+    def test_grafana_config_carries_the_smtp_placeholder(self) -> None:
+        """告警邮件的配置项摆在那里,填完重启就能用,不用去查 Grafana 文档拼段落。"""
+        self.grafana_install()
+        config = manager.GRAFANA_CONFIG_FILE.read_text(encoding="utf-8")
+        smtp = config.split("[smtp]")[1]
+        for line in ("enabled = false",
+                     "host = smtp.example.com:465",
+                     "user = grafana@example.com",
+                     "password = <password>",
+                     "skip_verify = false",
+                     "from_address = grafana@example.com",
+                     "from_name = Grafana Alert"):
+            with self.subTest(line=line):
+                self.assertIn(line, smtp)
+
+    def test_the_smtp_placeholder_cannot_stop_grafana_starting(self) -> None:
+        """真机验证过两次:from_address 只要不是合法邮箱,Grafana 启动就报
+        "invalid email address for SMTP from_address config" 并进入崩溃重启循环,
+        而且这个校验跟 enabled 是不是 false 无关。"""
+        import re as _re
+        self.grafana_install()
+        smtp = manager.GRAFANA_CONFIG_FILE.read_text(encoding="utf-8").split("[smtp]")[1]
+        address = _re.search(r"(?m)^from_address\s*=\s*(\S+)", smtp).group(1)
+        self.assertRegex(address, r"^[^@<>\s]+@[^@<>\s]+\.[A-Za-z]{2,}$",
+                         "from_address must parse as an email address, placeholder or not")
+        self.assertNotIn("enabled = true", smtp)
+
     def test_grafana_creates_every_provisioning_directory(self) -> None:
         """少一个目录 Grafana 每次启动就报一条 level=error。"""
         self.grafana_install()

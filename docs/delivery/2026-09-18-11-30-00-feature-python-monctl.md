@@ -258,6 +258,17 @@ Debian 13 / systemd 257 / Python 3.13 / amd64,GitHub release 直连只有 2.5 KB
 (`clean_tombstones` 对已落盘的 block 生效,这半边我没在真机上验证过 —— 验证它要等 head
 轮转,或者删掉一段几小时前的真实数据。)
 
+### grafana.ini 里的 SMTP 占位段
+
+`grafana install` 生成的 `grafana.ini` 带一段 `[smtp]` 占位配置,填好 host/user/password、
+把 `enabled` 改成 true、重启即可发告警邮件。
+
+`from_address` 用的是 `grafana@example.com` 而不是 `<from>` 这种记号,因为真机上试出来:
+**只要 `from_address` 不能解析成邮箱,Grafana 就拒绝启动**
+(`Error: ✗ invalid email address for SMTP from_address config`),服务进入崩溃重启循环;
+而且这个校验跟 `enabled = false` 无关,关着也一样校验。`user`/`password` 不校验,
+所以 `password` 保留了 `<password>` 的占位记号。这条写进了生成文件的注释里。
+
 ## 未覆盖风险
 
 - **单机验证**。所有真机验证都在同一台 Debian 13 上做的:一台机器同时当采集端和监控端。

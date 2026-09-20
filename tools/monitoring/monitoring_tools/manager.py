@@ -918,7 +918,21 @@ check_for_updates = false
 
 [log]
 mode  = console file
-level = info"""
+level = info
+
+# Placeholder for alert mail. Fill in host, user, password and from_address,
+# set enabled = true, and restart grafana.service.
+# from_address has to parse as an email address even while enabled is false:
+# Grafana exits at startup with "invalid email address for SMTP from_address"
+# otherwise, and the service goes into a restart loop.
+[smtp]
+enabled = false
+host = smtp.example.com:465
+user = grafana@example.com
+password = <password>
+skip_verify = false
+from_address = grafana@example.com
+from_name = Grafana Alert"""
     return managed_text(body)
 
 
@@ -2414,6 +2428,11 @@ and this is the right one:
 
   {MONCTL_CMD} prometheus target add --address 10.0.0.11:9100 --label instance=web-1
   {MONCTL_CMD} prometheus target add --address 10.0.0.12:9100 --label instance=db-1
+
+A dashboard may also offer a nodename. That one is not set from here: it is a
+label on node_uname_info, carried by the exporter from the machine's own
+hostname, so it sits on that one metric rather than on all of them. Change it
+with hostnamectl on the machine, not with a label here.
 
 Removing the last address of a job keeps the job and its empty file. That is
 deliberate, so the next add does not have to rewrite prometheus.yml again. When
