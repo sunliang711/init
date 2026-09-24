@@ -23,6 +23,9 @@
 
 ## 与旧版本的差异
 
+- `remove` 支持 `--proto` / `--dport`，只删该来源下协议和端口规格都相同的那一行；
+  不带时仍按来源删除全部行，与旧版本一致。启用状态下，如果删除之后当前 SSH 会话的来源
+  再也连不上 sshd，`remove` 会拒绝执行，除非加 `--yes`。
 - nft 表里新增两条只计数的观测链 `observe_enter`（priority -99）和 `observe_exit`
   （priority 200），用于发现被下游防火墙丢掉的连接。它们不做任何判决，不改变放行结果；
   `status` 新增 `downstream_observe` 和 `observe=` 字段。iptables 后端不提供此功能。
@@ -187,7 +190,37 @@ proto=tcp  dport=443
 - 没有 `v4prefix`：IPv4 的动态地址是单个主机地址，掩成网段只会平白放宽门禁，
   需要网段直接在 `src` 里写 CIDR。
 
-`remove` 按来源匹配，会删除该来源的全部规则行；没有 `src` 的公开端口条目需要用 `edit` 手工删除。
+#### 删除条目
+
+`remove` 按来源匹配。不带端口参数时删除该来源的**全部**规则行；
+带上 `--proto` / `--dport` 时只删协议和端口规格都相同的那一行
+（端口规格规范化后比较，`443,22` 和 `22,443` 视为同一条；`v4only` 等修饰不参与匹配）：
+
+```bash
+# 只删这个来源的 7050，它的 22 端口放行保留
+sudo domain-whitelist remove office.example.com --proto tcp --dport 7050
+```
+
+按端口删除没有匹配到任何行时，会列出该来源现有的条目，方便对照。
+没有 `src` 的公开端口条目需要用 `edit` 手工删除。
+
+**防锁门**：启用状态下，如果删除之后当前 SSH 会话的来源再也连不上 sshd，`remove` 会拒绝执行，
+文件不做任何改动。门禁放行已建立的连接，所以删完当场不会断，断的是下一次登录——
+最容易在操作之后才发现，而发现时已经进不来了。
+
+```text
+ERROR Refusing to remove: afterwards 180.165.8.185, the source of the SSH session running
+      this command, could no longer open new connections to tcp/22. ...
+```
+
+判断方式和生成规则走同一套解析（域名、CIDR、家族限定、`v6prefix`、公开端口都算），
+检查的是会话实际连进来的 sshd 端口，不写死 22。当前会话来自 `SSH_CONNECTION`；
+`sudo` 默认会清掉这个变量，此时沿父进程向上从 `/proc/<pid>/environ` 里找。
+以下情况不拦：未启用（改白名单不会刷新防火墙）、不在 SSH 会话里（控制台、定时任务）、
+删除之前这个来源本来就不被放行。确有别的登录途径时加 `--yes` 跳过。
+
+这个检查只覆盖 `remove`。`edit` 和 `enable` 同样可能把自己关在门外，改完之前先确认
+自己的来源还在白名单里。
 
 ### config.env
 

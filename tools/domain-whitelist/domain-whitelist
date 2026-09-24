@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="${SCRIPT_DIR}/${SCRIPT_NAME}"
 
 # 版本号；status 会对比已安装副本与当前运行副本，多机部署时用于确认实际生效的版本。
-DWL_VERSION="2.2.0"
+DWL_VERSION="2.3.0"
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
@@ -159,8 +159,10 @@ usage() {
       --v4only / --v6only 只放行域名解析结果里的一个地址家族，默认两个都放行。
       --v6prefix 把域名解析出的 IPv6 主机地址掩成网段，用于接口标识会变的动态 IPv6。
 
-  remove <domain|ip|cidr> [domain|ip|cidr...]
-      按来源移除白名单条目，该来源的全部端口规则一并删除。启用状态下会自动刷新防火墙 set。
+  remove <domain|ip|cidr> [domain|ip|cidr...] [--proto tcp|udp --dport <spec>]
+      按来源移除白名单条目，启用状态下会自动刷新防火墙 set。
+      不带 --proto/--dport 时删除该来源的全部规则行；带上时只删协议和端口规格相同的行。
+      如果删除后当前 SSH 会话的来源再也连不上 sshd，会拒绝执行，除非加 --yes。
 
   edit
       使用 EDITOR 或 vi 编辑 ${ALLOWLIST_FILE}，保存后校验并刷新。
@@ -1273,11 +1275,13 @@ warn_shadowed_port_entries() {
 }
 
 # 读取白名单文件，忽略空行和注释，并对条目去重排序。
+# 默认读 ALLOWLIST_FILE；remove 的防锁门检查会传入「删除之后」的临时文件。
 read_allowlist_entries() {
+    local file="${1:-${ALLOWLIST_FILE}}"
     local line
     local active
 
-    [ -f "${ALLOWLIST_FILE}" ] || return 0
+    [ -f "${file}" ] || return 0
 
     ensure_tmp_dir
     : >"${TMP_DIR}/allowlist"
@@ -1287,7 +1291,7 @@ read_allowlist_entries() {
         active="$(trim "${active}")"
         [ -z "${active}" ] && continue
         parse_allowlist_line "${active}" >>"${TMP_DIR}/allowlist"
-    done <"${ALLOWLIST_FILE}"
+    done <"${file}"
 
     sort -u "${TMP_DIR}/allowlist"
 }
@@ -1426,15 +1430,22 @@ add_command() {
 }
 
 # 判断某一行是否匹配待删除来源，保留注释和非目标行。
-# 按 src 字段匹配：同一个来源可能有多行（不同协议或端口），remove 会一并删除。
+# 按 src 字段匹配：同一个来源可能有多行（不同协议或端口）。
+# proto 和 port 为空时该来源的所有行一并删除；给出时只删协议和端口规格都相同的行，
+# 两者都已规范化，所以 dport=443,22 和 dport=22,443 视为同一条。
+# 家族标志和 v6prefix 是规则的修饰，不参与匹配。
 # 没有 src 的公开端口条目不会被匹配，需要用 edit 手工删除。
 line_matches_remove_entry() {
     local line="$1"
+    local proto="$2"
+    local port="$3"
     local active
     local parsed
     local src
     local target
-    shift
+    local entry_proto
+    local entry_port
+    shift 3
 
     active="${line%%#*}"
     active="$(trim "${active}")"
@@ -1443,11 +1454,208 @@ line_matches_remove_entry() {
     src="$(entry_src_field "${parsed}")"
     [ -n "${src}" ] || return 1
 
+    if [ -n "${proto}" ]; then
+        # 全端口条目没有 proto，不会被按端口删除误伤。
+        case "${parsed}" in
+            *" proto="*) ;;
+            *) return 1 ;;
+        esac
+        entry_proto="${parsed#* proto=}"
+        entry_proto="${entry_proto%% *}"
+        entry_port="${parsed#* dport=}"
+        entry_port="${entry_port%% *}"
+        if [ "${entry_proto}" != "${proto}" ] || [ "${entry_port}" != "${port}" ]; then
+            return 1
+        fi
+    fi
+
     for target in "$@"; do
         [ "${src}" = "${target}" ] && return 0
     done
 
     return 1
+}
+
+# 判断规范化的端口规格（22,443,8000-8100）是否包含某个端口。
+port_spec_covers() {
+    local spec="$1"
+    local port="$2"
+    local item
+    local start
+    local end
+    declare -a items=()
+
+    IFS=',' read -r -a items <<<"${spec}"
+    for item in "${items[@]}"; do
+        start="${item%-*}"
+        end="${item#*-}"
+        if [ "${port}" -ge "${start}" ] && [ "${port}" -le "${end}" ]; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+# 判断地址是否落在网段里（网段也可以是单个地址）。
+# 两边家族不同直接判否：IPv4 的位串恰好是某个 IPv6 位串的前缀，不能拿来比。
+addr_contains() {
+    local net="$1"
+    local addr="$2"
+    local net_bits
+    local addr_bits
+
+    if [[ "${net}" == *:* ]] && [[ "${addr}" != *:* ]]; then
+        return 1
+    fi
+    if [[ "${net}" != *:* ]] && [[ "${addr}" == *:* ]]; then
+        return 1
+    fi
+    net_bits="$(addr_to_prefix_bits "${net}")"
+    addr_bits="$(addr_to_prefix_bits "${addr}")"
+    # 空键会是任何位串的前缀，等于「包含一切」。这里的调用都在条件上下文里，
+    # errexit 不生效，展开失败只会留下空串，必须显式判否。
+    if [ -z "${net_bits}" ] || [ -z "${addr_bits}" ]; then
+        return 1
+    fi
+
+    [ "${addr_bits:0:${#net_bits}}" = "${net_bits}" ]
+}
+
+# 判断一组规范化条目是否放行某个来源访问某个 tcp 端口。
+# 走和生成规则同一套解析（域名、家族限定、v6prefix），结论才和防火墙一致。
+allowlist_permits_tcp() {
+    local entries_file="$1"
+    local client="$2"
+    local port="$3"
+    local entry
+    local src
+    local proto
+    local spec
+    local addr
+    local v4
+    local v6
+
+    ensure_tmp_dir
+    mkdir -p "${TMP_DIR}/dns"
+    v4="${TMP_DIR}/permit.v4"
+    v6="${TMP_DIR}/permit.v6"
+
+    while IFS= read -r entry || [ -n "${entry}" ]; do
+        [ -z "${entry}" ] && continue
+        src="$(entry_src_field "${entry}")"
+        case "${entry}" in
+            *proto=*)
+                proto="${entry#*proto=}"
+                proto="${proto%% *}"
+                spec="${entry#*dport=}"
+                spec="${spec%% *}"
+                [ "${proto}" = "tcp" ] || continue
+                port_spec_covers "${spec}" "${port}" || continue
+                ;;
+        esac
+        # 公开端口条目不看来源。
+        [ -n "${src}" ] || return 0
+
+        resolve_source_to_files "${src}" "${v4}" "${v6}" \
+            "$(entry_family_field "${entry}")" "$(entry_v6prefix_field "${entry}")"
+        while IFS= read -r addr || [ -n "${addr}" ]; do
+            [ -z "${addr}" ] && continue
+            if addr_contains "${addr}" "${client}"; then
+                return 0
+            fi
+        done < <(cat "${v4}" "${v6}")
+    done <"${entries_file}"
+
+    return 1
+}
+
+# 找出当前命令所在的 SSH 会话，输出 "<客户端地址> <sshd 端口>"，不在会话里时输出空。
+# sudo 默认会清掉 SSH_CONNECTION，所以环境里没有时沿父进程往上找：
+# sudo 进程自己的 environ 里还留着调用者的原始环境。
+current_ssh_session() {
+    local conn="${SSH_CONNECTION:-}"
+    local pid="$$"
+    local depth=0
+    local env_dump
+    local stat
+    local line
+    local client
+    local server_port
+
+    while [ -z "${conn}" ] && [ "${depth}" -lt 32 ]; do
+        # 不用 tr | sed | head 的管道：head 提前退出会让上游收到 SIGPIPE，
+        # 在 pipefail 下整条管道失败，找到的值反而被丢掉。
+        env_dump="$(tr '\0' '\n' <"/proc/${pid}/environ" 2>/dev/null)" || env_dump=""
+        while IFS= read -r line; do
+            case "${line}" in
+                SSH_CONNECTION=*)
+                    conn="${line#SSH_CONNECTION=}"
+                    break
+                    ;;
+            esac
+        done <<<"${env_dump}"
+        [ -z "${conn}" ] || break
+        [ "${pid}" -gt 1 ] || break
+        stat="$(cat "/proc/${pid}/stat" 2>/dev/null)" || break
+        # 第二个字段是进程名，可能含空格和括号，取最后一个 ") " 之后的部分：state ppid ...
+        stat="${stat##*) }"
+        read -r _ pid _ <<<"${stat}"
+        depth=$((depth + 1))
+    done
+
+    [ -n "${conn}" ] || return 0
+    # SSH_CONNECTION = 客户端地址 客户端端口 服务端地址 服务端端口
+    read -r client _ _ server_port <<<"${conn}"
+    # 双栈监听的 sshd 可能报成 IPv4 映射地址，而防火墙看到的是 IPv4 包。
+    case "${client}" in
+        ::ffff:*.*.*.*)
+            client="${client#::ffff:}"
+            ;;
+    esac
+    if [ -n "${client}" ] && [ -n "${server_port}" ]; then
+        printf '%s %s\n' "${client}" "${server_port}"
+    fi
+}
+
+# 删除之后如果当前 SSH 会话的来源再也连不上 sshd，就拒绝执行。
+# 门禁放行 established，所以删完当场不会断，断的是下一次登录——
+# 最容易在操作完之后才发现，而发现的时候已经进不来了。
+guard_ssh_lockout() {
+    local new_file="$1"
+    local session
+    local client
+    local ssh_port
+    local before_file
+    local after_file
+
+    [ "${YES}" -eq 0 ] || return 0
+    # 未启用时改白名单不会触发刷新，防火墙不变，谈不上锁门。
+    load_state
+    [ "${STATE_ENABLED}" = "1" ] || return 0
+
+    session="$(current_ssh_session)"
+    if [ -z "${session}" ]; then
+        log_debug "Not inside an SSH session; skipping the lockout check"
+        return 0
+    fi
+    read -r client ssh_port <<<"${session}"
+
+    ensure_tmp_dir
+    after_file="${TMP_DIR}/lockout.after"
+    before_file="${TMP_DIR}/lockout.before"
+    read_allowlist_entries "${new_file}" >"${after_file}"
+    if allowlist_permits_tcp "${after_file}" "${client}" "${ssh_port}"; then
+        return 0
+    fi
+    # 删之前本来就不放行：当前会话不是靠白名单进来的（控制台、规则启用前建立的连接），
+    # 这次删除不改变它的处境。
+    read_allowlist_entries >"${before_file}"
+    if ! allowlist_permits_tcp "${before_file}" "${client}" "${ssh_port}"; then
+        return 0
+    fi
+
+    die "Refusing to remove: afterwards ${client}, the source of the SSH session running this command, could no longer open new connections to tcp/${ssh_port}. This session would survive but the next login would not. Keep an entry that covers it, narrow the removal with --proto/--dport, or pass --yes if you have another way in"
 }
 
 # 删除白名单条目，使用临时文件重写白名单文件并保留无关内容。
@@ -1457,27 +1665,65 @@ remove_command() {
     local line
     local changed=0
     local tmp
+    local proto=""
+    local port=""
+    local parsed
+    local target
     declare -a targets=()
+    declare -a sources=()
 
-    [ "$#" -gt 0 ] || die "Missing allowlist entry"
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --proto)
+                [ "$#" -ge 2 ] || die "Missing value for --proto"
+                proto="$2"
+                shift 2
+                ;;
+            --dport)
+                [ "$#" -ge 2 ] || die "Missing value for --dport"
+                port="$2"
+                shift 2
+                ;;
+            --port)
+                die "Unknown option: --port (destination ports use --dport)"
+                ;;
+            *)
+                sources+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    [ "${#sources[@]}" -gt 0 ] || die "Missing allowlist entry"
+    if [ -n "${proto}" ] && [ -z "${port}" ]; then
+        die "--proto requires --dport"
+    fi
+    if [ -n "${port}" ] && [ -z "${proto}" ]; then
+        die "--dport requires --proto"
+    fi
+    # 规范化之后再比：用户写的 443,22 要能匹配文件里规范化后的 22,443。
+    if [ -n "${proto}" ]; then
+        proto="$(normalize_proto "${proto}")"
+        port="$(normalize_port_spec "${port}")"
+    fi
+
     ensure_default_config
     load_config
     # 先整体校验：line_matches_remove_entry 在 if 条件上下文里运行，
     # 里面的解析 die 会被 set -e 豁免规则吞掉。带非法行的文件必须在改写之前失败，
     # 而不是打印一条 ERROR 后照常重写文件。
     validate_allowlist_file
-    backup_allowlist_file
     ensure_tmp_dir
     tmp="${TMP_DIR}/whitelist.allow.new"
 
-    for entry in "$@"; do
+    for entry in "${sources[@]}"; do
         normalized="$(normalize_allowlist_entry "${entry}")"
         targets+=("${normalized}")
     done
 
     : >"${tmp}"
     while IFS= read -r line || [ -n "${line}" ]; do
-        if line_matches_remove_entry "${line}" "${targets[@]}"; then
+        if line_matches_remove_entry "${line}" "${proto}" "${port}" "${targets[@]}"; then
             changed=1
             continue
         fi
@@ -1486,6 +1732,16 @@ remove_command() {
 
     if [ "${changed}" -eq 0 ]; then
         log_warn "No matching allowlist entry was removed"
+        # 按端口删除没匹配上，多半是端口或协议写得和文件里不一样，把这些来源现有的条目列出来。
+        if [ -n "${proto}" ]; then
+            while IFS= read -r parsed || [ -n "${parsed}" ]; do
+                for target in "${targets[@]}"; do
+                    if [ "$(entry_src_field "${parsed}")" = "${target}" ]; then
+                        log_warn "  existing entry: ${parsed}"
+                    fi
+                done
+            done < <(read_allowlist_entries)
+        fi
         return 0
     fi
 
@@ -1504,6 +1760,10 @@ remove_command() {
         fi
     fi
 
+    guard_ssh_lockout "${tmp}"
+
+    # 备份放在所有检查之后：被拒绝或什么都没删的操作不该留下备份文件。
+    backup_allowlist_file
     if [ "${DRY_RUN}" -eq 1 ]; then
         log_info "Would update allowlist: ${ALLOWLIST_FILE}"
     else
@@ -3156,6 +3416,10 @@ resolve_allowlist_to_files() {
     tmp_v4="${TMP_DIR}/entry.v4"
     tmp_v6="${TMP_DIR}/entry.v6"
     # 每个域名一次刷新只解析一次的备忘目录，以及本轮要写回的解析缓存。
+    # 备忘必须清空重建：remove 的防锁门检查会在刷新前先解析一遍域名，
+    # 备忘若沿用下来，resolve_domain_cached 就跳过了往 resolve.cache.new 写入的那一步，
+    # 保存下去的解析缓存会缺掉这些域名，DNS 故障时它们无缓存可退。
+    rm -rf "${TMP_DIR}/dns"
     mkdir -p "${TMP_DIR}/dns"
     : >"${TMP_DIR}/resolve.cache.new"
 

@@ -670,3 +670,323 @@ build_sample_ruleset() {
     [ "${status}" -eq 0 ]
     [[ "${output}" != *"Downstream firewall dropped"* ]]
 }
+
+# ── remove：按端口删除与防锁门 ─────────────────────────────────────
+# 每个用例一个独立的配置目录。refresh_after_change 桩掉：启用状态下它要求
+# Linux 和 root，而这里只关心白名单文件被改成了什么、防锁门有没有拦住。
+REMOVE_PRELUDE='
+    export DWL_CONFIG_DIR="$(mktemp -d)"
+    source "$1"
+    refresh_after_change() { echo "REFRESHED"; }
+    ensure_default_config >/dev/null 2>&1
+    grep -v "^#" "${ALLOWLIST_FILE}" | grep -v "^$" >/dev/null && exit 9
+    enable_state() { printf "ENABLED=1\nBACKEND=nft\n" >"${STATE_FILE}"; }
+    active_lines() { grep -vE "^[[:space:]]*(#|$)" "${ALLOWLIST_FILE}"; }
+'
+
+@test "remove --proto/--dport deletes only the matching port line" {
+    run bash -c "${REMOVE_PRELUDE}"'
+        printf "%s\n" "src=a.example.com proto=tcp dport=22" "src=a.example.com proto=tcp dport=7050" "a.example.com" >>"${ALLOWLIST_FILE}"
+        remove_command a.example.com --proto tcp --dport 7050 >/dev/null 2>&1
+        active_lines
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [ "${lines[0]}" = "src=a.example.com proto=tcp dport=22" ]
+    [ "${lines[1]}" = "a.example.com" ]
+    [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "remove without a port filter still drops every line of the source" {
+    run bash -c "${REMOVE_PRELUDE}"'
+        printf "%s\n" "src=a.example.com proto=tcp dport=22" "src=a.example.com proto=tcp dport=7050" "b.example.com" >>"${ALLOWLIST_FILE}"
+        remove_command a.example.com >/dev/null 2>&1
+        active_lines
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [ "${output}" = "b.example.com" ]
+}
+
+@test "remove matches the port spec after normalizing it" {
+    run bash -c "${REMOVE_PRELUDE}"'
+        printf "%s\n" "src=a.example.com proto=tcp dport=22,443" "b.example.com" >>"${ALLOWLIST_FILE}"
+        remove_command a.example.com --proto TCP --dport 443,22 >/dev/null 2>&1
+        active_lines
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [ "${output}" = "b.example.com" ]
+}
+
+@test "remove --dport without --proto is rejected" {
+    run bash -c "${REMOVE_PRELUDE}"'
+        remove_command a.example.com --dport 22
+    ' _ "${DWL}"
+
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"--dport requires --proto"* ]]
+}
+
+# 按端口删除时，全端口条目不是「那个端口的条目」，不能被连带删掉。
+@test "remove by port leaves a full-access line of the same source alone" {
+    run bash -c "${REMOVE_PRELUDE}"'
+        printf "%s\n" "a.example.com" "b.example.com" >>"${ALLOWLIST_FILE}"
+        cp "${ALLOWLIST_FILE}" "${DWL_CONFIG_DIR}/before"
+        remove_command a.example.com --proto tcp --dport 22 2>&1
+        cmp -s "${ALLOWLIST_FILE}" "${DWL_CONFIG_DIR}/before" && echo UNCHANGED
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"No matching allowlist entry was removed"* ]]
+    [[ "${output}" == *"UNCHANGED"* ]]
+}
+
+@test "remove by port lists what the source has when nothing matches" {
+    run bash -c "${REMOVE_PRELUDE}"'
+        printf "%s\n" "src=a.example.com proto=tcp dport=22" "b.example.com" >>"${ALLOWLIST_FILE}"
+        remove_command a.example.com --proto tcp --dport 7050 2>&1
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"existing entry: src=a.example.com proto=tcp dport=22"* ]]
+    [[ "${output}" != *"b.example.com"* ]]
+}
+
+# 真实事故的复现：remove 按来源整体删除，把这个来源唯一的 22 端口放行也删了，
+# 刷新之后当前会话的来源再也无法新建 SSH 连接。
+@test "remove refuses to cut off the source of the current SSH session" {
+    run bash -c "${REMOVE_PRELUDE}"'
+        enable_state
+        current_ssh_session() { echo "180.165.8.185 22"; }
+        printf "%s\n" "src=180.165.8.185 proto=tcp dport=22" "src=180.165.8.185 proto=tcp dport=7050" "src=124.77.19.119 proto=tcp dport=22" >>"${ALLOWLIST_FILE}"
+        cp "${ALLOWLIST_FILE}" "${DWL_CONFIG_DIR}/before"
+        remove_command 180.165.8.185 2>&1
+        echo "rc=$?"
+    ' _ "${DWL}"
+
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"Refusing to remove"*"180.165.8.185"*"tcp/22"* ]]
+    [[ "${output}" != *"REFRESHED"* ]]
+}
+
+@test "a refused remove leaves the file and the backup directory untouched" {
+    run bash -c "${REMOVE_PRELUDE}"'
+        enable_state
+        current_ssh_session() { echo "180.165.8.185 22"; }
+        printf "%s\n" "src=180.165.8.185 proto=tcp dport=22" "src=124.77.19.119 proto=tcp dport=22" >>"${ALLOWLIST_FILE}"
+        cp "${ALLOWLIST_FILE}" "${DWL_CONFIG_DIR}/before"
+        ( remove_command 180.165.8.185 ) >/dev/null 2>&1 || echo REFUSED
+        cmp -s "${ALLOWLIST_FILE}" "${DWL_CONFIG_DIR}/before" && echo UNCHANGED
+        ls "${BACKUP_DIR}" 2>/dev/null | wc -l | tr -d " "
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [ "${lines[0]}" = "REFUSED" ]
+    [ "${lines[1]}" = "UNCHANGED" ]
+    [ "${lines[2]}" = "0" ]
+}
+
+# 与真实事故一样用域名：放行来自解析结果，不是字面地址。
+@test "remove refuses the cut-off when the SSH source comes from a domain" {
+    run bash -c "${REMOVE_PRELUDE}"'
+        enable_state
+        current_ssh_session() { echo "180.165.8.185 22"; }
+        resolve_domain() {
+            RESOLVE_FOUND=1; RESOLVE_V4_FAILED=0; RESOLVE_V6_FAILED=0
+            case "$1" in
+                chiefsh.example.com) printf "180.165.8.185\n" >>"$2" ;;
+                sh.example.com) printf "124.77.19.119\n" >>"$2" ;;
+            esac
+        }
+        printf "%s\n" "src=chiefsh.example.com proto=tcp dport=22" "src=chiefsh.example.com proto=tcp dport=7050" "src=sh.example.com proto=tcp dport=22" >>"${ALLOWLIST_FILE}"
+        remove_command chiefsh.example.com 2>&1
+    ' _ "${DWL}"
+
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"Refusing to remove"* ]]
+}
+
+# 同一场景下改用按端口删除，只删临时的 7050，22 端口放行保住，操作放行。
+@test "remove lets a narrowed removal through when SSH access survives" {
+    run bash -c "${REMOVE_PRELUDE}"'
+        enable_state
+        current_ssh_session() { echo "180.165.8.185 22"; }
+        printf "%s\n" "src=180.165.8.185 proto=tcp dport=22" "src=180.165.8.185 proto=tcp dport=7050" >>"${ALLOWLIST_FILE}"
+        remove_command 180.165.8.185 --proto tcp --dport 7050 2>&1 | grep REFRESHED
+        active_lines
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [ "${lines[0]}" = "REFRESHED" ]
+    [ "${lines[1]}" = "src=180.165.8.185 proto=tcp dport=22" ]
+    [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "remove proceeds when another entry still covers the SSH source" {
+    run bash -c "${REMOVE_PRELUDE}"'
+        enable_state
+        current_ssh_session() { echo "180.165.8.185 22"; }
+        printf "%s\n" "src=180.165.8.185 proto=tcp dport=22" "src=180.165.8.0/24 proto=tcp dport=22" >>"${ALLOWLIST_FILE}"
+        remove_command 180.165.8.185 2>&1 | grep -c REFRESHED
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [ "${output}" = "1" ]
+}
+
+@test "remove proceeds when the SSH port is public" {
+    run bash -c "${REMOVE_PRELUDE}"'
+        enable_state
+        current_ssh_session() { echo "180.165.8.185 22"; }
+        printf "%s\n" "src=180.165.8.185 proto=tcp dport=22" "proto=tcp dport=22" >>"${ALLOWLIST_FILE}"
+        remove_command 180.165.8.185 2>&1 | grep -c REFRESHED
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [ "${output}" = "1" ]
+}
+
+# sshd 不一定在 22：检查的是会话实际连进来的那个端口。
+@test "remove checks the port the SSH session actually uses" {
+    run bash -c "${REMOVE_PRELUDE}"'
+        enable_state
+        current_ssh_session() { echo "180.165.8.185 2222"; }
+        printf "%s\n" "src=180.165.8.185 proto=tcp dport=22" "src=180.165.8.185 proto=tcp dport=2222" >>"${ALLOWLIST_FILE}"
+        ( remove_command 180.165.8.185 --proto tcp --dport 22 >/dev/null 2>&1 ) && echo "drop 22: allowed"
+        ( remove_command 180.165.8.185 --proto tcp --dport 2222 >/dev/null 2>&1 ) || echo "drop 2222: refused"
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [ "${lines[0]}" = "drop 22: allowed" ]
+    [ "${lines[1]}" = "drop 2222: refused" ]
+}
+
+@test "remove --yes overrides the lockout guard" {
+    run bash -c "${REMOVE_PRELUDE}"'
+        enable_state
+        YES=1
+        current_ssh_session() { echo "180.165.8.185 22"; }
+        printf "%s\n" "src=180.165.8.185 proto=tcp dport=22" "src=124.77.19.119 proto=tcp dport=22" >>"${ALLOWLIST_FILE}"
+        remove_command 180.165.8.185 2>&1 | grep -c REFRESHED
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [ "${output}" = "1" ]
+}
+
+# 未启用时改白名单不会刷新防火墙；不在 SSH 会话里（控制台、定时任务）没有会话可保；
+# 删之前本来就不放行的来源，这次删除也不改变它的处境。三种情况都不该拦。
+@test "remove skips the guard when disabled, outside SSH, or not allowed before" {
+    run bash -c "${REMOVE_PRELUDE}"'
+        entries() { printf "%s\n" "src=180.165.8.185 proto=tcp dport=22" "src=124.77.19.119 proto=tcp dport=22" >"${ALLOWLIST_FILE}"; }
+
+        entries; rm -f "${STATE_FILE}"
+        current_ssh_session() { echo "180.165.8.185 22"; }
+        ( remove_command 180.165.8.185 >/dev/null 2>&1 ) && echo "disabled: allowed"
+
+        entries; enable_state
+        current_ssh_session() { :; }
+        ( remove_command 180.165.8.185 >/dev/null 2>&1 ) && echo "no session: allowed"
+
+        entries; enable_state
+        current_ssh_session() { echo "198.51.100.9 22"; }
+        ( remove_command 180.165.8.185 >/dev/null 2>&1 ) && echo "not allowed before: allowed"
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [ "${lines[0]}" = "disabled: allowed" ]
+    [ "${lines[1]}" = "no session: allowed" ]
+    [ "${lines[2]}" = "not allowed before: allowed" ]
+    [ "${#lines[@]}" -eq 3 ]
+}
+
+@test "current_ssh_session reads the client and server port from SSH_CONNECTION" {
+    run bash -c '
+        source "$1"
+        SSH_CONNECTION="180.165.8.185 52136 172.26.159.151 22" current_ssh_session
+        SSH_CONNECTION="::ffff:180.165.8.185 52136 ::ffff:172.26.159.151 2222" current_ssh_session
+        SSH_CONNECTION="240e:b8f:328:a00::8c82 52136 2408:4005::1 22" current_ssh_session
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [ "${lines[0]}" = "180.165.8.185 22" ]
+    [ "${lines[1]}" = "180.165.8.185 2222" ]
+    [ "${lines[2]}" = "240e:b8f:328:a00::8c82 22" ]
+}
+
+@test "addr_contains checks prefixes and never matches across families" {
+    run bash -c '
+        source "$1"
+        check() { if addr_contains "$1" "$2"; then echo yes; else echo no; fi; }
+        check 180.165.8.0/24 180.165.8.185
+        check 180.165.8.185 180.165.8.185
+        check 180.165.9.0/24 180.165.8.185
+        check 240e:b8f:328:a00::/64 240e:b8f:328:a00::8c82
+        check 10.0.0.0/8 ::a00:1
+        check ::/1 10.0.0.1
+        check 2001:db8:::1 2001:db8::5 2>/dev/null
+    ' _ "${DWL}"
+
+    # 最后一行：畸形网段展开失败只会留下空前缀键，空键是任何位串的前缀，必须判否。
+    [ "${status}" -eq 0 ]
+    [ "${output}" = "$(printf "yes\nyes\nno\nyes\nno\nno\nno")" ]
+}
+
+@test "port_spec_covers handles single ports, lists and ranges" {
+    run bash -c '
+        source "$1"
+        check() { if port_spec_covers "$1" "$2"; then echo yes; else echo no; fi; }
+        check 22 22
+        check 22,443 443
+        check 22,8000-8100 8050
+        check 22,8000-8100 8101
+        check 2222 22
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [ "${output}" = "$(printf "yes\nyes\nyes\nno\nno")" ]
+}
+
+# 防锁门检查会在刷新之前解析一遍域名。刷新必须从干净的备忘开始，
+# 否则 resolve_domain_cached 跳过写缓存，保存下去的 resolve.cache 会缺掉这些域名。
+@test "a refresh after the lockout check still writes every domain into the cache" {
+    run bash -c '
+        source "$1"
+        resolve_domain() {
+            RESOLVE_FOUND=1; RESOLVE_V4_FAILED=0; RESOLVE_V6_FAILED=0
+            printf "180.165.8.185\n" >>"$2"
+        }
+        ensure_tmp_dir
+        ALLOWLIST_FILE="${TMP_DIR}/whitelist.allow"
+        printf "src=chiefsh.example.com proto=tcp dport=22\n" >"${ALLOWLIST_FILE}"
+        read_allowlist_entries >"${TMP_DIR}/entries"
+        allowlist_permits_tcp "${TMP_DIR}/entries" 180.165.8.185 22 && echo permitted
+        d="${TMP_DIR}/out"; mkdir -p "$d"
+        resolve_allowlist_to_files "$d/v4" "$d/v6" "$d/v4p" "$d/v6p" "$d/pt" "$d/pu" >/dev/null 2>&1
+        cat "${TMP_DIR}/resolve.cache.new"
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [ "${lines[0]}" = "permitted" ]
+    [ "${lines[1]}" = "chiefsh.example.com|4|180.165.8.185" ]
+}
+
+# 剩下的条目只放行 IPv6 时，IPv4 客户端并没有被覆盖。
+# 检查若忽略家族限定，就会误以为访问还在，放行一次锁门操作。
+@test "remove honours family flags when deciding whether SSH access survives" {
+    run bash -c "${REMOVE_PRELUDE}"'
+        enable_state
+        current_ssh_session() { echo "180.165.8.185 22"; }
+        resolve_domain() {
+            RESOLVE_FOUND=2; RESOLVE_V4_FAILED=0; RESOLVE_V6_FAILED=0
+            printf "180.165.8.185\n" >>"$2"
+            printf "240e:b8f:328:a00::8c82\n" >>"$3"
+        }
+        printf "%s\n" "src=180.165.8.185 proto=tcp dport=22" "src=chiefsh.example.com proto=tcp dport=22 v6only" >>"${ALLOWLIST_FILE}"
+        remove_command 180.165.8.185 2>&1
+    ' _ "${DWL}"
+
+    [ "${status}" -ne 0 ]
+    [[ "${output}" == *"Refusing to remove"* ]]
+}
