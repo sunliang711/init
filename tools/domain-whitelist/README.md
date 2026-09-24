@@ -209,9 +209,49 @@ proto=tcp  dport=443
 ### 与其他防火墙共存
 
 本工具的链挂在 `inet` 家族、`hook input priority -100`，早于 `iptables` 兼容层的
-filter INPUT（priority 0）。链末尾的 `drop` 是终结判决，**`ufw` 和 `firewalld`
-的放行规则不会有机会执行**。在跑这两者的机器上启用前，要把需要放行的来源和端口
-一并写进 `whitelist.allow`，不能指望原有防火墙配置继续生效。
+filter INPUT（priority 0）。和 `ufw` / `firewalld` 同机时，**两层是「逻辑与」的关系：
+一个包要进来，必须同时过本工具的来源门禁和原有防火墙的端口放行**。
+
+分两种情况，结果完全不同：
+
+- **来源不在白名单里** —— 在本工具链末尾的 `drop` 上就终结了，原有防火墙的放行规则
+  确实没有机会执行。
+- **来源在白名单里** —— 链里的判决是 `return` 而不是 `accept`。`return` 只是退出本工具
+  的链，包会继续沿 input hook 往下走，**原有防火墙的规则照常执行，它的默认 DROP 也照常
+  生效**。
+
+`iptables` 后端是同样的语义：本工具的链被插在 `INPUT` 第 1 位，命中白名单的来源
+走 `-j RETURN` 回到 `INPUT` 继续往下匹配，链尾同样是终结性的 `-j DROP`。
+
+所以「把端口写进 `whitelist.allow`」是必要条件，不是充分条件。典型的踩坑现场是这样的：
+
+```text
+# whitelist.allow：来源和端口都写了
+src=office.example.com  proto=tcp  dport=9100
+
+# 但 ufw 的放行清单里没有 9100，默认策略是 deny
+$ sudo ufw status
+22/tcp    ALLOW  Anywhere
+80/tcp    ALLOW  Anywhere
+```
+
+包顺利穿过第一层，却死在 ufw 的默认 DROP 上，表现为连接超时，而且**两边都看不出毛病**——
+`nft list ruleset` 里明明有放行规则，`ufw status` 里也没有任何针对该来源的拒绝规则。
+
+这种情况下要在原有防火墙上把端口也打开：
+
+```bash
+sudo ufw allow 9100/tcp comment 'source gated by domain-whitelist'
+```
+
+对 `ufw` 放开整个端口并不等于把服务暴露到公网：来源限制由本工具在 priority -100
+上负责，非白名单来源在 `ufw` 看到包之前就已经被丢掉了。两层各管一件事——
+本工具管「谁能进来」，原有防火墙管「哪些端口开着」。
+
+排查时记住：从本机 `telnet 127.0.0.1 <port>` 或 telnet 内网 IP **说明不了任何问题**。
+本机发往自己地址的流量走 lo，两层的第一条规则都无条件放行 lo（`iifname "lo" return`
+和 ufw 的 `-i lo -j ACCEPT`），只要服务在监听就必然能连上。要验证外部可达性，
+只能从真实来源发起，或者在本机抓包看 `IN=eth0` 的包是否被丢。
 
 ### 端口维度的后端差异
 
