@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="${SCRIPT_DIR}/${SCRIPT_NAME}"
 
 # 版本号；status 会对比已安装副本与当前运行副本，多机部署时用于确认实际生效的版本。
-DWL_VERSION="2.0.0"
+DWL_VERSION="2.1.1"
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
@@ -77,6 +77,10 @@ RESOLVE_DEGRADED=0
 RESOLVE_FOUND=0
 RESOLVE_V4_FAILED=0
 RESOLVE_V6_FAILED=0
+# ipv6_expand_groups 的结果：展开后的 8 个十六进制组。理由同上——
+# 走标准输出就多一层命令替换，而 bash 在命令替换内部不生效 errexit，
+# 展开失败时中间那层函数会带着空结果正常返回，畸形地址反而静默通过。
+declare -a IPV6_GROUPS=()
 # ip6tables 是否支持 hl 匹配，用于邻居发现的 hoplimit 255 校验。
 IPT_HL_MATCH=""
 
@@ -135,8 +139,11 @@ usage() {
       列出当前启用的白名单条目。
 
   add <domain|ip|cidr> [domain|ip|cidr...] [--proto tcp|udp --dport <spec>]
+      [--v4only|--v6only] [--v6prefix <1-128>]
       添加一个或多个域名、IPv4、IPv6 或 CIDR 网段。启用状态下会自动刷新防火墙 set。
       同时给出 --proto 和 --dport 时，这些来源只放行指定的目的端口。
+      --v4only / --v6only 只放行域名解析结果里的一个地址家族，默认两个都放行。
+      --v6prefix 把域名解析出的 IPv6 主机地址掩成网段，用于接口标识会变的动态 IPv6。
 
   remove <domain|ip|cidr> [domain|ip|cidr...]
       按来源移除白名单条目，该来源的全部端口规则一并删除。启用状态下会自动刷新防火墙 set。
@@ -202,6 +209,8 @@ usage() {
   sudo ${SCRIPT_NAME} init
   sudo ${SCRIPT_NAME} add office.example.com 203.0.113.10 192.168.1.0/24 2001:db8::/32
   sudo ${SCRIPT_NAME} add office.example.com --proto tcp --dport 22,443
+  sudo ${SCRIPT_NAME} add office.example.com --proto tcp --dport 9100 --v4only
+  sudo ${SCRIPT_NAME} add home.example.com --proto tcp --dport 22 --v6prefix 64
   sudo ${SCRIPT_NAME} config set --backend auto --interval 300
   sudo ${SCRIPT_NAME} enable
   sudo ${SCRIPT_NAME} status
@@ -385,13 +394,19 @@ allowlist_file_header() {
 # 每行一条放行规则。# 之后是注释，空行忽略。
 # 支持两种写法，可以混用：
 #   1) 裸来源      —— 整行就是一个来源，该来源全部端口放行
-#   2) key=value   —— 空格分隔的字段，可附加端口维度
+#   2) key=value   —— 空格分隔的字段，可附加端口和地址家族维度
 #
 # ── 可用字段 ────────────────────────────────────────────────
 #   src=<域名|IPv4|IPv6|CIDR>   来源。省略表示「任意来源」
 #   proto=<tcp|udp>            协议。必须与 dport 同时出现
 #   dport=<端口规格>            目的端口（本机被访问的服务端口，不是来源端口）。
 #                              必须与 proto 同时出现
+#   v6prefix=<1-128>           把域名解析出的 IPv6 主机地址掩成该长度的网段。
+#                              只能用于域名来源，且不能与 v4only 同时出现
+#
+# ── 可用标志（裸写，不带 =）─────────────────────────────────
+#   v4only / v6only            只放行该地址家族，默认两个家族都放行。
+#                              必须与 src 同时出现；与 src 的家族矛盾时报错
 #
 # 端口规格支持单个端口、逗号列表、连字符区间，可混写：
 #   dport=22           dport=22,443           dport=8000-8100
@@ -418,6 +433,16 @@ allowlist_file_header() {
 # 同一个来源可以写多行，分别限定不同协议：
 # src=10.0.0.5  proto=tcp  dport=5432
 # src=10.0.0.5  proto=udp  dport=53
+#
+# 域名同时有 A 和 AAAA，但服务只监听 IPv4 时，用 v4only 去掉无用的 IPv6 规则：
+# src=office.example.com  proto=tcp  dport=9100  v4only
+#
+# 家庭宽带这类动态 IPv6：接口标识每次拨号都变，DDNS 也可能只登记 /64 前缀，
+# 逐个 /128 放行会连不上。用 v6prefix 把解析结果收敛成整段前缀：
+# src=home.example.com  proto=tcp  dport=22  v6prefix=64
+#
+# 裸来源写法同样可以带标志：
+# office.example.com  v4only
 #
 # 省略 src 表示该端口对所有来源开放，用于 WireGuard、公网 HTTPS 等公开服务：
 # proto=udp  dport=51820      # wireguard
@@ -725,7 +750,20 @@ is_ipv6_any() {
     local ip="$1"
 
     [[ "${ip}" == *:* ]] || return 1
-    [[ "${ip}" =~ ^[0-9A-Fa-f:.]+$ ]]
+    [[ "${ip}" =~ ^[0-9A-Fa-f:.]+$ ]] || return 1
+    # 只做字符集检查会放进 2001:db8:::1、:2001:db8::1、1::2::3 这类笔误。
+    # 它们能一路走到按位展开，展开出的组数不对却不报错，最终让合法来源被
+    # prune_covered_sources 当成「被覆盖」裁掉。空组必须在这里就挡住。
+    if [[ "${ip}" == *:::* ]]; then
+        return 1
+    fi
+    # 把唯一合法的 :: 换成占位符后，再出现 : 开头、: 结尾或第二个 :: 都是空组。
+    ip="${ip//::/@}"
+    case "${ip}" in
+        *@*@* | :* | *:) return 1 ;;
+    esac
+
+    return 0
 }
 
 # 判断字符串是否是合法 IPv4 CIDR。
@@ -795,6 +833,10 @@ normalize_allowlist_entry() {
         printf '%s\n' "${entry}" | tr '[:upper:]' '[:lower:]'
         return 0
     fi
+    # 含冒号说明本意就是 IPv6，落到域名校验会报「Invalid domain」，把人引向错误的方向。
+    if [[ "${entry}" == *:* ]]; then
+        die "Invalid IPv6 address: ${raw}"
+    fi
 
     normalize_domain "${entry}"
 }
@@ -812,6 +854,24 @@ normalize_proto() {
             die "Invalid proto: $1 (expected tcp or udp)"
             ;;
     esac
+}
+
+# 规范化 v6prefix 的前缀长度。
+normalize_v6_prefix() {
+    local raw="$1"
+    local prefix
+
+    prefix="$(trim "${raw}")"
+    # 先用正则挡住非数字，再用 10# 转十进制：否则 064 这类写法会被当八进制。
+    [[ "${prefix}" =~ ^[0-9]{1,3}$ ]] || die "Invalid v6prefix: ${raw} (expected 1-128)"
+    prefix="$((10#${prefix}))"
+    # 前缀长度为 0 就是放行整个 IPv6 互联网，和 normalize_allowlist_entry 拒绝 /0 同理。
+    if [ "${prefix}" -eq 0 ]; then
+        die "Refusing v6prefix=0: this would allow every IPv6 source"
+    fi
+    [ "${prefix}" -le 128 ] || die "Invalid v6prefix: ${raw} (expected 1-128)"
+
+    printf '%s\n' "${prefix}"
 }
 
 # 规范化端口规格，支持单端口、逗号列表和连字符区间，并按起始端口排序。
@@ -900,22 +960,45 @@ append_port_range() {
     fi
 }
 
+# 判断 token 列表里有没有裸标志。裸标志的存在说明这行是结构化写法，
+# 不能再按「整行是一个来源」的旧格式解释。
+line_has_bare_flag() {
+    local token
+
+    for token in "$@"; do
+        case "$(trim "${token}" | tr '[:upper:]' '[:lower:]')" in
+            v4only|v6only)
+                return 0
+                ;;
+        esac
+    done
+
+    return 1
+}
+
 # 解析单行白名单，输出字段顺序固定的规范形式。
-# 不含 = 的行按旧格式当成裸来源，保证历史白名单文件继续可用。
+# 不含 = 也不含裸标志的行按旧格式当成裸来源，保证历史白名单文件继续可用。
 parse_allowlist_line() {
     local raw="$1"
     local token
+    local idx
     local key
     local value
     local src=""
     local proto=""
     local port=""
+    local family=""
+    local v6prefix=""
+    local out
     declare -a tokens=()
 
     raw="$(trim "${raw}")"
     [ -n "${raw}" ] || return 0
 
-    if [[ "${raw}" != *=* ]]; then
+    # 用 read -a 而不是 for ... in ${raw}，避免行内出现通配符时被文件名展开。
+    read -r -a tokens <<<"${raw}"
+
+    if [[ "${raw}" != *=* ]] && ! line_has_bare_flag "${tokens[@]}"; then
         # 不能写成 printf "$(normalize...)"：作为参数的命令替换失败不影响 printf
         # 的退出码，非法条目会静默产出 "src=" 且整体返回 0。先赋值让 set -e 能拦住。
         src="$(normalize_allowlist_entry "${raw}")"
@@ -923,10 +1006,32 @@ parse_allowlist_line() {
         return 0
     fi
 
-    # 用 read -a 而不是 for ... in ${raw}，避免行内出现通配符时被文件名展开。
-    read -r -a tokens <<<"${raw}"
-    for token in "${tokens[@]}"; do
-        [[ "${token}" == *=* ]] || die "Invalid allowlist token (expected key=value): ${token}"
+    for ((idx = 0; idx < ${#tokens[@]}; idx++)); do
+        token="${tokens[idx]}"
+        # 家族限定是裸标志而不是 key=value：它只有「有」和「没有」两种状态，
+        # 写成 v4only=1 还要再定义 0/no/false 一整套真值语法。
+        case "$(printf '%s' "${token}" | tr '[:upper:]' '[:lower:]')" in
+            v4only|v6only)
+                # 同一行出现两个家族标志，无论重复还是互斥都是写错了。
+                [ -z "${family}" ] || die "Duplicate or conflicting family flag '${token}' in line: ${raw}"
+                case "${token}" in
+                    [vV]4*) family=4 ;;
+                    *) family=6 ;;
+                esac
+                continue
+                ;;
+        esac
+
+        # 不带 = 的 token 当成来源，让 "example.com v4only" 这种写法成立：
+        # 旧格式的裸来源一旦跟上标志就不再是「整行是一个来源」，否则只能强制改写成 src=。
+        # 但只认行首：否则 "proto=tcp dport=443 example.com" 这种漏写 src= 的行
+        # 会被静默解释成限源条目，本该对全网开放的端口悄悄只剩一个来源能访问。
+        if [[ "${token}" != *=* ]]; then
+            [ "${idx}" -eq 0 ] || die "Invalid allowlist token (expected key=value, or the bare flags v4only/v6only): ${token}"
+            src="$(normalize_allowlist_entry "${token}")"
+            continue
+        fi
+
         key="$(trim "${token%%=*}")"
         value="$(trim "${token#*=}")"
         [ -n "${value}" ] || die "Empty value for key '${key}' in line: ${raw}"
@@ -943,9 +1048,20 @@ parse_allowlist_line() {
                 [ -z "${port}" ] || die "Duplicate key 'dport' in line: ${raw}"
                 port="$(normalize_port_spec "${value}")"
                 ;;
+            v6prefix)
+                [ -z "${v6prefix}" ] || die "Duplicate key 'v6prefix' in line: ${raw}"
+                v6prefix="$(normalize_v6_prefix "${value}")"
+                ;;
+            v4only|v6only)
+                die "Flag '${key}' takes no value; write it as a bare '${key}' in line: ${raw}"
+                ;;
             port)
                 # 键名固定叫 dport：挨着 src 的 port 容易被误读成源端口。
                 die "Unknown allowlist key 'port' in line: ${raw} (destination ports use 'dport')"
+                ;;
+            v4prefix)
+                # IPv4 的动态地址是单个主机地址，掩成网段只会平白放宽门禁。
+                die "Unknown allowlist key 'v4prefix' in line: ${raw} (write the network directly as a CIDR in 'src')"
                 ;;
             *)
                 die "Unknown allowlist key '${key}' in line: ${raw}"
@@ -964,13 +1080,54 @@ parse_allowlist_line() {
         die "Allowlist line has neither 'src' nor 'dport': ${raw}"
     fi
 
-    if [ -n "${src}" ] && [ -n "${port}" ]; then
-        printf 'src=%s proto=%s dport=%s\n' "${src}" "${proto}" "${port}"
-    elif [ -n "${src}" ]; then
-        printf 'src=%s\n' "${src}"
-    else
-        printf 'proto=%s dport=%s\n' "${proto}" "${port}"
+    # 没有 src 的公开端口条目对所有来源开放，两个家族共用一套端口集合，
+    # 按家族拆分要另建 set 和链，这里明确拒绝而不是静默忽略。
+    if [ -z "${src}" ]; then
+        if [ -n "${family}" ]; then
+            die "Flag 'v${family}only' requires 'src' in line: ${raw} (public port entries apply to both families)"
+        fi
+        if [ -n "${v6prefix}" ]; then
+            die "Key 'v6prefix' requires 'src' in line: ${raw}"
+        fi
     fi
+
+    # 家族标志和静态地址互斥时，这条规则一个地址都生不出来，属于写错了。
+    if [ "${family}" = "4" ] && { is_ipv6 "${src}" || is_ipv6_cidr "${src}"; }; then
+        die "Flag 'v4only' contradicts the IPv6 source in line: ${raw}"
+    fi
+    if [ "${family}" = "6" ] && { is_ipv4 "${src}" || is_ipv4_cidr "${src}"; }; then
+        die "Flag 'v6only' contradicts the IPv4 source in line: ${raw}"
+    fi
+
+    if [ -n "${v6prefix}" ]; then
+        # v6prefix 的作用是把解析出的主机地址收敛成网段。静态来源的网段范围
+        # 已经由 src 自己写明，再叠一层只会出现两种写法表达同一件事。
+        if [ -n "${src}" ] && { is_ipv4 "${src}" || is_ipv4_cidr "${src}" ||
+            is_ipv6 "${src}" || is_ipv6_cidr "${src}"; }; then
+            die "Key 'v6prefix' only applies to domain sources in line: ${raw} (write the network directly as a CIDR in 'src')"
+        fi
+        if [ "${family}" = "4" ]; then
+            die "Key 'v6prefix' contradicts 'v4only' in line: ${raw}"
+        fi
+    fi
+
+    if [ -n "${src}" ] && [ -n "${port}" ]; then
+        out="$(printf 'src=%s proto=%s dport=%s' "${src}" "${proto}" "${port}")"
+    elif [ -n "${src}" ]; then
+        out="$(printf 'src=%s' "${src}")"
+    else
+        out="$(printf 'proto=%s dport=%s' "${proto}" "${port}")"
+    fi
+
+    # 字段顺序固定：下游的 entry_*_field 和去重都依赖规范形式唯一。
+    if [ -n "${v6prefix}" ]; then
+        out="${out} v6prefix=${v6prefix}"
+    fi
+    if [ -n "${family}" ]; then
+        out="${out} v${family}only"
+    fi
+
+    printf '%s\n' "${out}"
 }
 
 # 取出规范化条目中的来源，供 remove 和遮蔽检查按来源匹配。
@@ -988,11 +1145,78 @@ entry_src_field() {
     esac
 }
 
+# 取出规范化条目里的家族限定，输出 4、6 或空行（两个家族都放行）。
+entry_family_field() {
+    local entry="$1"
+
+    case " ${entry} " in
+        *" v4only "*)
+            printf '4\n'
+            ;;
+        *" v6only "*)
+            printf '6\n'
+            ;;
+        *)
+            printf '\n'
+            ;;
+    esac
+}
+
+# 取出规范化条目里的 v6prefix，没有该字段时输出空行。
+entry_v6prefix_field() {
+    local entry="$1"
+
+    case "${entry}" in
+        *" v6prefix="*)
+            entry="${entry#* v6prefix=}"
+            printf '%s\n' "${entry%% *}"
+            ;;
+        *)
+            printf '\n'
+            ;;
+    esac
+}
+
+# 判断端口条目被同来源的全端口条目遮蔽到什么程度，输出 full、partial <家族> 或 none。
+# 判据是「覆盖」而不是「相交」：裸条目限定 v4、端口条目不限家族时，
+# 端口条目的 IPv6 半边仍在生效，报成完全遮蔽会诱导运维删掉一条活规则。
+bare_entry_shadow_kind() {
+    local src="$1"
+    local family="$2"
+    local bare_file="$3"
+    local bare_src
+    local bare_family
+    local partial_family=""
+
+    while IFS='|' read -r bare_src bare_family || [ -n "${bare_src:-}" ]; do
+        [ -z "${bare_src:-}" ] && continue
+        [ "${bare_src}" = "${src}" ] || continue
+        # 裸条目不限家族（两个都覆盖），或两边限定同一个家族：完全遮蔽。
+        if [ -z "${bare_family:-}" ] || [ "${bare_family}" = "${family}" ]; then
+            printf 'full\n'
+            return 0
+        fi
+        # 裸条目限定了家族、端口条目没限定：只遮住其中一半，另一半仍然生效。
+        if [ -z "${family}" ]; then
+            partial_family="${bare_family}"
+        fi
+    done <"${bare_file}"
+
+    if [ -n "${partial_family}" ]; then
+        printf 'partial %s\n' "${partial_family}"
+        return 0
+    fi
+
+    printf 'none\n'
+}
+
 # 同一来源既有全端口条目又有端口限定条目时，后者不起作用，这里给出警告。
 warn_shadowed_port_entries() {
     local file="$1"
     local line
     local src
+    local family
+    local kind
     local bare_file
 
     ensure_tmp_dir
@@ -1004,7 +1228,10 @@ warn_shadowed_port_entries() {
             src=*\ proto=*)
                 ;;
             src=*)
-                printf '%s\n' "${line#src=}" >>"${bare_file}"
+                # 不能直接截 src= 前缀：全端口条目后面还可能跟着 v6prefix / 家族标志。
+                printf '%s|%s\n' \
+                    "$(entry_src_field "${line}")" "$(entry_family_field "${line}")" \
+                    >>"${bare_file}"
                 ;;
         esac
     done <"${file}"
@@ -1015,9 +1242,16 @@ warn_shadowed_port_entries() {
         case "${line}" in
             src=*\ proto=*)
                 src="$(entry_src_field "${line}")"
-                if grep -Fxq "${src}" "${bare_file}"; then
-                    log_warn "Port entry is shadowed by a full-access entry for ${src}: ${line}"
-                fi
+                family="$(entry_family_field "${line}")"
+                kind="$(bare_entry_shadow_kind "${src}" "${family}" "${bare_file}")"
+                case "${kind}" in
+                    full)
+                        log_warn "Port entry is shadowed by a full-access entry for ${src}: ${line}"
+                        ;;
+                    partial\ *)
+                        log_warn "Port entry is shadowed for IPv${kind#partial } only; the other family still applies, for ${src}: ${line}"
+                        ;;
+                esac
                 ;;
         esac
     done <"${file}"
@@ -1088,11 +1322,14 @@ list_command() {
 # 添加白名单条目，保持已有注释和顺序，仅在末尾追加新条目。
 add_command() {
     local entry
+    local raw
     local normalized
     local existing
     local changed=0
     local proto=""
     local port=""
+    local family_flag=""
+    local v6prefix=""
     declare -a sources=()
 
     ensure_default_config
@@ -1108,6 +1345,16 @@ add_command() {
             --dport)
                 [ "$#" -ge 2 ] || die "Missing value for --dport"
                 port="$2"
+                shift 2
+                ;;
+            --v4only|--v6only)
+                [ -z "${family_flag}" ] || die "Duplicate or conflicting option: $1"
+                family_flag="${1#--}"
+                shift
+                ;;
+            --v6prefix)
+                [ "$#" -ge 2 ] || die "Missing value for --v6prefix"
+                v6prefix="$2"
                 shift 2
                 ;;
             --port)
@@ -1131,11 +1378,19 @@ add_command() {
     backup_allowlist_file
 
     for entry in "${sources[@]}"; do
+        # 交给 parse_allowlist_line 统一校验：字段之间的互斥关系只写一遍，
+        # 命令行和手工编辑白名单文件不会出现两套判断。
+        raw="src=${entry}"
         if [ -n "${proto}" ]; then
-            normalized="$(parse_allowlist_line "src=${entry} proto=${proto} dport=${port}")"
-        else
-            normalized="$(parse_allowlist_line "${entry}")"
+            raw="${raw} proto=${proto} dport=${port}"
         fi
+        if [ -n "${v6prefix}" ]; then
+            raw="${raw} v6prefix=${v6prefix}"
+        fi
+        if [ -n "${family_flag}" ]; then
+            raw="${raw} ${family_flag}"
+        fi
+        normalized="$(parse_allowlist_line "${raw}")"
         existing="$(read_allowlist_entries | grep -Fx "${normalized}" || true)"
         if [ -n "${existing}" ]; then
             log_info "Allowlist entry already exists: ${normalized}"
@@ -2380,24 +2635,53 @@ resolve_domain_cached() {
 }
 
 # 把单个来源展开成 IP 列表：静态地址和 CIDR 直接写入，域名走 DNS 解析。
+# family 为 4 或 6 时只保留该家族的结果；v6prefix 非空时把解析出的 IPv6
+# 主机地址掩成网段。两者都只作用于本条目，同一个域名在别的条目里不受影响。
 resolve_source_to_files() {
     local src="$1"
     local out_v4="$2"
     local out_v6="$3"
+    local family="${4:-}"
+    local v6prefix="${5:-}"
+    local before
+    local after
 
     : >"${out_v4}"
     : >"${out_v6}"
 
     if is_ipv4_cidr "${src}" || is_ipv4 "${src}"; then
-        printf '%s\n' "${src}" >>"${out_v4}"
+        if [ "${family}" != "6" ]; then
+            printf '%s\n' "${src}" >>"${out_v4}"
+        fi
         return 0
     fi
     if is_ipv6_cidr "${src}" || is_ipv6 "${src}"; then
-        printf '%s\n' "${src}" >>"${out_v6}"
+        if [ "${family}" != "4" ]; then
+            printf '%s\n' "${src}" >>"${out_v6}"
+        fi
         return 0
     fi
 
+    # 家族过滤放在解析之后而不是跳过查询：解析缓存是按域名共享的，
+    # 少查一个家族会让同一域名的另一条条目在 DNS 故障时无缓存可退。
     resolve_domain_cached "${src}" "${out_v4}" "${out_v6}"
+    if [ -n "${family}" ]; then
+        before=$(($(count_file_lines "${out_v4}") + $(count_file_lines "${out_v6}")))
+        if [ "${family}" = "4" ]; then
+            : >"${out_v6}"
+        else
+            : >"${out_v4}"
+        fi
+        after=$(($(count_file_lines "${out_v4}") + $(count_file_lines "${out_v6}")))
+        # 域名解析到了地址、却被家族限定全部滤掉：这条条目一条规则都产不出。
+        # 走 log_change 而不是 log_warn——定时刷新用 --quiet 运行，
+        # 而这种「写反了 v4only/v6only」恰恰只会在无人值守时被发现。
+        if [ "${before}" -gt 0 ] && [ "${after}" -eq 0 ]; then
+            log_change "v${family}only removed every resolved address for ${src}; this entry produces no rule"
+        fi
+    fi
+
+    apply_v6_prefix "${out_v6}" "${v6prefix}"
 }
 
 # 把 IP 列表和端口规格展开成 nft concat set 元素，一个 IP 一个区间一行。
@@ -2544,13 +2828,7 @@ addr_to_prefix_bits() {
     local bits=""
     local group
     local i
-    local left_part
-    local right_part=""
-    local pad
-    local o1 o2 o3 o4
     declare -a groups=()
-    declare -a lgroups=()
-    declare -a rgroups=()
 
     addr="${value%%/*}"
     if [[ "${value}" == */* ]]; then
@@ -2567,34 +2845,8 @@ addr_to_prefix_bits() {
         done
     else
         [ -n "${prefix}" ] || prefix=128
-        left_part="${addr%%::*}"
-        if [[ "${addr}" == *::* ]]; then
-            right_part="${addr#*::}"
-        else
-            right_part=""
-        fi
-        [ -n "${left_part}" ] && IFS=':' read -r -a lgroups <<<"${left_part}"
-        [ -n "${right_part}" ] && IFS=':' read -r -a rgroups <<<"${right_part}"
-
-        # 内嵌 IPv4 尾部（::ffff:1.2.3.4）换算成两个 16 位组。
-        if [ "${#rgroups[@]}" -gt 0 ] && [[ "${rgroups[${#rgroups[@]} - 1]}" == *.* ]]; then
-            IFS='.' read -r o1 o2 o3 o4 <<<"${rgroups[${#rgroups[@]} - 1]}"
-            unset 'rgroups[${#rgroups[@]}-1]'
-            rgroups+=("$(printf '%x' $((o1 * 256 + o2)))" "$(printf '%x' $((o3 * 256 + o4)))")
-        elif [ "${#lgroups[@]}" -gt 0 ] && [[ "${lgroups[${#lgroups[@]} - 1]}" == *.* ]]; then
-            IFS='.' read -r o1 o2 o3 o4 <<<"${lgroups[${#lgroups[@]} - 1]}"
-            unset 'lgroups[${#lgroups[@]}-1]'
-            lgroups+=("$(printf '%x' $((o1 * 256 + o2)))" "$(printf '%x' $((o3 * 256 + o4)))")
-        fi
-
-        groups=()
-        [ "${#lgroups[@]}" -gt 0 ] && groups+=("${lgroups[@]}")
-        pad=$((8 - ${#lgroups[@]} - ${#rgroups[@]}))
-        for ((i = 0; i < pad; i++)); do
-            groups+=("0")
-        done
-        [ "${#rgroups[@]}" -gt 0 ] && groups+=("${rgroups[@]}")
-
+        ipv6_expand_groups "${addr}"
+        groups=("${IPV6_GROUPS[@]}")
         for group in "${groups[@]}"; do
             group="$((16#${group}))"
             for ((i = 15; i >= 0; i--)); do
@@ -2604,6 +2856,153 @@ addr_to_prefix_bits() {
     fi
 
     printf '%s\n' "${bits:0:${prefix}}"
+}
+
+# 把 IPv6 地址展开成 8 个十六进制组，结果写入全局数组 IPV6_GROUPS。
+# 前缀换算和按位掩码都要先补齐 ::，抽出来避免两处各写一份展开逻辑。
+# 不走标准输出：那样调用方必须用命令替换，而 bash 在命令替换内部不生效
+# errexit，这里的 die 就只会结束替换子 shell，调用方带着空结果继续跑。
+ipv6_expand_groups() {
+    local addr="$1"
+    local left_part
+    local right_part=""
+    local group
+    local pad
+    local i
+    local o1 o2 o3 o4
+    declare -a lgroups=()
+    declare -a rgroups=()
+    declare -a groups=()
+
+    left_part="${addr%%::*}"
+    if [[ "${addr}" == *::* ]]; then
+        right_part="${addr#*::}"
+    fi
+    [ -n "${left_part}" ] && IFS=':' read -r -a lgroups <<<"${left_part}"
+    [ -n "${right_part}" ] && IFS=':' read -r -a rgroups <<<"${right_part}"
+
+    # 内嵌 IPv4 尾部（::ffff:1.2.3.4）换算成两个 16 位组。
+    if [ "${#rgroups[@]}" -gt 0 ] && [[ "${rgroups[${#rgroups[@]} - 1]}" == *.* ]]; then
+        IFS='.' read -r o1 o2 o3 o4 <<<"${rgroups[${#rgroups[@]} - 1]}"
+        unset 'rgroups[${#rgroups[@]}-1]'
+        rgroups+=("$(printf '%x' $((o1 * 256 + o2)))" "$(printf '%x' $((o3 * 256 + o4)))")
+    elif [ "${#lgroups[@]}" -gt 0 ] && [[ "${lgroups[${#lgroups[@]} - 1]}" == *.* ]]; then
+        IFS='.' read -r o1 o2 o3 o4 <<<"${lgroups[${#lgroups[@]} - 1]}"
+        unset 'lgroups[${#lgroups[@]}-1]'
+        lgroups+=("$(printf '%x' $((o1 * 256 + o2)))" "$(printf '%x' $((o3 * 256 + o4)))")
+    fi
+
+    [ "${#lgroups[@]}" -gt 0 ] && groups+=("${lgroups[@]}")
+    pad=$((8 - ${#lgroups[@]} - ${#rgroups[@]}))
+    for ((i = 0; i < pad; i++)); do
+        groups+=("0")
+    done
+    [ "${#rgroups[@]}" -gt 0 ] && groups+=("${rgroups[@]}")
+
+    # 组数或组内容不对就会变成一个长度错误的前缀键，让 prune_covered_sources
+    # 把合法来源当成「被覆盖」裁掉。这里必须硬失败。
+    if [ "${#groups[@]}" -ne 8 ]; then
+        die "Malformed IPv6 address: ${addr}"
+    fi
+    for group in "${groups[@]}"; do
+        [ -n "${group}" ] || die "Malformed IPv6 address: ${addr}"
+    done
+
+    IPV6_GROUPS=("${groups[@]}")
+}
+
+# 把 IPv6 主机地址按位掩到指定前缀长度，输出 <网段>/<前缀>。
+ipv6_mask_to_prefix() {
+    local addr="$1"
+    local prefix="$2"
+    local i
+    local keep
+    local value
+    local out=""
+    local best_start=-1
+    local best_len=0
+    local cur_start=-1
+    local cur_len=0
+    declare -a groups=()
+
+    ipv6_expand_groups "${addr}"
+    groups=("${IPV6_GROUPS[@]}")
+
+    for ((i = 0; i < 8; i++)); do
+        value="$((16#${groups[i]}))"
+        keep=$((prefix - i * 16))
+        if [ "${keep}" -le 0 ]; then
+            value=0
+        elif [ "${keep}" -lt 16 ]; then
+            value=$((value & ((0xffff << (16 - keep)) & 0xffff)))
+        fi
+        groups[i]="${value}"
+    done
+
+    # 找出最长的连续零组用于压缩。长度为 1 的零组不压缩，这是 RFC 5952 的要求，
+    # 也避免 1:0:2:... 这类地址出现两种等价写法、让去重和快照对比失效。
+    for ((i = 0; i < 8; i++)); do
+        if [ "${groups[i]}" -ne 0 ]; then
+            cur_start=-1
+            cur_len=0
+            continue
+        fi
+        if [ "${cur_start}" -lt 0 ]; then
+            cur_start=${i}
+        fi
+        cur_len=$((cur_len + 1))
+        if [ "${cur_len}" -gt "${best_len}" ]; then
+            best_len=${cur_len}
+            best_start=${cur_start}
+        fi
+    done
+    if [ "${best_len}" -lt 2 ]; then
+        best_start=-1
+    fi
+
+    for ((i = 0; i < 8; i++)); do
+        if [ "${i}" -eq "${best_start}" ]; then
+            out+="::"
+            # 跳过整段零组；循环自增会让下一轮落在零段之后的第一组上。
+            i=$((best_start + best_len - 1))
+            continue
+        fi
+        if [ -n "${out}" ] && [ "${out: -1}" != ":" ]; then
+            out+=":"
+        fi
+        out+="$(printf '%x' "${groups[i]}")"
+    done
+    [ -n "${out}" ] || out="::"
+
+    printf '%s/%s\n' "${out}" "${prefix}"
+}
+
+# 把文件里的 IPv6 地址按位掩到指定前缀长度并去重，原地改写。
+# 动态 IPv6 的接口标识每次拨号都可能变，DDNS 也常只登记 /64 前缀，
+# 逐个 /128 放行要么放错地址、要么第二天就失效。
+apply_v6_prefix() {
+    local file="$1"
+    local prefix="$2"
+    local line
+    local masked
+    local tmp
+
+    [ -n "${prefix}" ] || return 0
+    [ -s "${file}" ] || return 0
+
+    ensure_tmp_dir
+    tmp="${TMP_DIR}/v6prefix.masked"
+    : >"${tmp}"
+
+    while IFS= read -r line || [ -n "${line}" ]; do
+        [ -z "${line}" ] && continue
+        masked="$(ipv6_mask_to_prefix "${line}" "${prefix}")"
+        printf '%s\n' "${masked}" >>"${tmp}"
+    done <"${file}"
+
+    # 同一个 /64 下的多个地址掩完是同一条网段，不去重会给后端喂重复元素。
+    sort -u "${tmp}" -o "${tmp}"
+    cat "${tmp}" >"${file}"
 }
 
 # 去掉被更宽网段覆盖的地址和网段。
@@ -2624,7 +3023,14 @@ prune_covered_sources() {
 
     while IFS= read -r line || [ -n "${line}" ]; do
         [ -z "${line}" ] && continue
-        printf '%s %s\n' "$(addr_to_prefix_bits "${line}")" "${line}"
+        # 不能把命令替换直接当 printf 的参数：那样 addr_to_prefix_bits 里的
+        # die 不会影响 printf 的退出码，畸形地址会静默变成一个空键或短键，
+        # 反而把合法来源当成「被它覆盖」裁掉。先赋值，让 set -e 拦住。
+        bits="$(addr_to_prefix_bits "${line}")"
+        # 再兜一层：命令替换那层的 errexit 语义太微妙，空键会让后面的前缀
+        # 比较把所有来源都当成「被它覆盖」，宁可在这里显式拦住。
+        [ -n "${bits}" ] || die "Cannot derive a prefix key for allowlist source: ${line}"
+        printf '%s %s\n' "${bits}" "${line}"
     done <"${file}" | sort >"${keyed}"
 
     : >"${file}"
@@ -2665,6 +3071,8 @@ resolve_allowlist_to_files() {
     local src
     local proto
     local port
+    local family
+    local v6prefix
     local tmp_v4
     local tmp_v6
     local count
@@ -2692,6 +3100,8 @@ resolve_allowlist_to_files() {
         [ -z "${entry}" ] && continue
 
         src="$(entry_src_field "${entry}")"
+        family="$(entry_family_field "${entry}")"
+        v6prefix="$(entry_v6prefix_field "${entry}")"
         proto=""
         port=""
         case "${entry}" in
@@ -2716,7 +3126,7 @@ resolve_allowlist_to_files() {
             continue
         fi
 
-        resolve_source_to_files "${src}" "${tmp_v4}" "${tmp_v6}"
+        resolve_source_to_files "${src}" "${tmp_v4}" "${tmp_v6}" "${family}" "${v6prefix}"
 
         if [ -z "${proto}" ]; then
             cat "${tmp_v4}" >>"${v4_file}"
@@ -3652,4 +4062,8 @@ main() {
     esac
 }
 
-main "$@"
+# 只在直接执行时进入命令分发。被 source 时只加载函数定义，
+# 供单元测试直接调用解析和掩码这类纯函数。
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    main "$@"
+fi
