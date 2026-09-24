@@ -12,6 +12,8 @@
 - 支持端口维度：可把某个来源限定到指定端口，也可以开放不限来源的公开端口。
 - 支持地址家族维度：`v4only` / `v6only` 只放行域名解析结果里的一个家族，
   `v6prefix` 把解析出的 IPv6 主机地址收敛成网段，适配接口标识会变的动态 IPv6。
+- 下游放行观测（nft 后端）：在其它防火墙前后各数一次新连接，白名单放行了、
+  却被 ufw / firewalld / fail2ban 之类的下游丢掉的限源连接会自动写进日志。
 - 内置 ICMPv6 处理，默认放行邻居发现和差错报文，避免 IPv6 静默失效。
 - 规则原子提交：nft 走整表事务，iptables 链内容经 `iptables-restore` 单次 COMMIT 重填，
   提交失败时保留上一次生效的规则。
@@ -21,6 +23,9 @@
 
 ## 与旧版本的差异
 
+- nft 表里新增两条只计数的观测链 `observe_enter`（priority -99）和 `observe_exit`
+  （priority 200），用于发现被下游防火墙丢掉的连接。它们不做任何判决，不改变放行结果；
+  `status` 新增 `downstream_observe` 和 `observe=` 字段。iptables 后端不提供此功能。
 - `whitelist.allow` 新增 `v4only` / `v6only` 标志和 `v6prefix` 字段，用于按地址家族收敛
   域名的解析结果。不写这些字段时行为和旧版本一致：`A` 和 `AAAA` 都会放行。
 - 畸形 IPv6 字面量（`2001:db8:::1`、`:2001:db8::1`、`1::2::3` 这类多打或少打冒号的笔误）
@@ -238,7 +243,7 @@ $ sudo ufw status
 包顺利穿过第一层，却死在 ufw 的默认 DROP 上，表现为连接超时，而且**两边都看不出毛病**——
 `nft list ruleset` 里明明有放行规则，`ufw status` 里也没有任何针对该来源的拒绝规则。
 
-这种情况下要在原有防火墙上把端口也打开：
+nft 后端会自动发现这种情况，见下一节「下游放行观测」。修法是在原有防火墙上把端口也打开：
 
 ```bash
 sudo ufw allow 9100/tcp comment 'source gated by domain-whitelist'
@@ -252,6 +257,51 @@ sudo ufw allow 9100/tcp comment 'source gated by domain-whitelist'
 本机发往自己地址的流量走 lo，两层的第一条规则都无条件放行 lo（`iifname "lo" return`
 和 ufw 的 `-i lo -j ACCEPT`），只要服务在监听就必然能连上。要验证外部可达性，
 只能从真实来源发起，或者在本机抓包看 `IN=eth0` 的包是否被丢。
+
+### 下游放行观测
+
+nft 后端在自己的表里挂两条只计数的基础链，把所有下游防火墙夹在中间：
+
+```text
+priority -100  input_gate       门禁：非白名单来源在这里被丢掉
+priority  -99  observe_enter    计数：通过了门禁的新连接
+priority    0  ufw / firewalld / iptables / fail2ban ……（不管是什么）
+priority  200  observe_exit     计数：通过了所有下游防火墙的新连接
+```
+
+同一个 hook 上 `accept` 只结束当前基础链、包会继续进入更晚的基础链，`drop` 才是终结。
+所以**入口有、出口没有的包，就是被下游丢掉的**。这个判断不需要解析任何一种防火墙的规则，
+下游是 ufw、firewalld、fail2ban 还是 Docker 的规则都一样适用。
+
+每次刷新都会整表替换、计数归零，所以刷新在替换之前先读一次计数，读到的正好是
+「上一次刷新到现在」这个窗口。限源端口条目在窗口里有连接被下游丢掉时写进日志：
+
+```text
+INFO Downstream firewall dropped 22 of 22 new connection(s) from sh.example.com (124.77.19.119)
+     to tcp/9100 since the last refresh; domain-whitelist let them through,
+     so check ufw/firewalld/iptables for this port
+```
+
+`status` 列出当前窗口里所有有新连接的条目，交互运行时对被丢的限源连接同样给出警告：
+
+```text
+downstream_observe=[on]/off
+observe=src sh.example.com (124.77.19.119) tcp/9100 in=22 out=0
+observe=public tcp in=31 out=27
+```
+
+几点需要知道：
+
+- **只对限源端口条目告警。** 那是明确声明过的「这个来源要能访问这个端口」，被下游丢掉
+  几乎一定是两层配置没对齐。公开端口会被扫描器打到未使用的端口、再被下游丢掉，这是常态，
+  只在 `status` 里展示；来源全端口条目没有声明具体端口，同样只展示不告警。
+- **它是被动的，需要真实流量才有信号。** `add` 之后、客户端还没连之前，它什么都说不出来。
+  好在方向是有利的：被拦的客户端会反复重试，信号很强；正常工作的客户端多用长连接，
+  窗口里常常一个新连接都没有，也就不会误报。
+- **只数新连接。** TCP 只数纯 SYN，UDP 数每个新流；回环和已建立连接的后续包不计。
+- **说不出是哪一层丢的**，只能说「在本工具之后有东西丢了它」。
+- **只有 nft 后端支持。** iptables 后端的 filter 表之后没有干净的挂载点，不提供此功能，
+  `status` 显示 `downstream_observe=on/[off]`。
 
 ### 端口维度的后端差异
 

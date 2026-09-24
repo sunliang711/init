@@ -402,3 +402,271 @@ dwl_call() {
     [ "${status}" -eq 0 ]
     [ "${output}" = "src=example.com v4only" ]
 }
+
+# ── 下游放行观测 ─────────────────────────────────────────────────
+# 夹具是 nft 1.0.6（Debian 12）对观测规则的真实渲染：写进去的
+# `tcp flags & (fin|syn|rst|ack) == syn` 会被列成 `tcp flags syn / fin,syn,rst,ack`，
+# 解析只能依赖行尾的 `counter packets N bytes M comment "..."`。
+NFT_ENTER_FIXTURE='table inet domain_whitelist {
+	chain observe_enter {
+		type filter hook input priority -99; policy accept;
+		iifname "lo" return
+		ct state != new return
+		tcp dport @public_tcp tcp flags syn / fin,syn,rst,ack counter packets 31 bytes 1860 comment "pub|tcp"
+		udp dport @public_udp counter packets 0 bytes 0 comment "pub|udp"
+		ip saddr @allow_v4 counter packets 0 bytes 0 comment "full|v4"
+		ip6 saddr @allow_v6 counter packets 0 bytes 0 comment "full|v6"
+		ip saddr 124.77.19.119 tcp dport 9100 tcp flags syn / fin,syn,rst,ack counter packets 22 bytes 1320 comment "src|124.77.19.119|tcp|9100"
+		ip saddr 180.165.8.185 tcp dport 22 tcp flags syn / fin,syn,rst,ack counter packets 2 bytes 120 comment "src|180.165.8.185|tcp|22"
+		ip6 saddr 240e:b8f:29f:c200::/64 tcp dport 22 tcp flags syn / fin,syn,rst,ack counter packets 0 bytes 0 comment "src|240e:b8f:29f:c200::/64|tcp|22"
+	}
+}'
+NFT_EXIT_FIXTURE='table inet domain_whitelist {
+	chain observe_exit {
+		type filter hook input priority 200; policy accept;
+		iifname "lo" return
+		ct state != new return
+		tcp dport @public_tcp tcp flags syn / fin,syn,rst,ack counter packets 27 bytes 1620 comment "pub|tcp"
+		udp dport @public_udp counter packets 0 bytes 0 comment "pub|udp"
+		ip saddr @allow_v4 counter packets 0 bytes 0 comment "full|v4"
+		ip6 saddr @allow_v6 counter packets 0 bytes 0 comment "full|v6"
+		ip saddr 124.77.19.119 tcp dport 9100 tcp flags syn / fin,syn,rst,ack counter packets 0 bytes 0 comment "src|124.77.19.119|tcp|9100"
+		ip saddr 180.165.8.185 tcp dport 22 tcp flags syn / fin,syn,rst,ack counter packets 2 bytes 120 comment "src|180.165.8.185|tcp|22"
+		ip6 saddr 240e:b8f:29f:c200::/64 tcp dport 22 tcp flags syn / fin,syn,rst,ack counter packets 0 bytes 0 comment "src|240e:b8f:29f:c200::/64|tcp|22"
+	}
+}'
+
+# 在 source 之后用同名函数顶替 nft：按被查询的链返回对应夹具。
+# command_exists 走 command -v，函数同样算「命令存在」。
+OBSERVE_STUB='
+    nft() {
+        case "$*" in
+            *observe_enter*) printf "%s\n" "${ENTER}" ;;
+            *observe_exit*) printf "%s\n" "${EXIT}" ;;
+            *) return 1 ;;
+        esac
+    }
+'
+
+build_sample_ruleset() {
+    bash -c '
+        source "$1"
+        ensure_tmp_dir
+        d="${TMP_DIR}"
+        printf "124.77.19.119 . tcp . 9100\n10.0.0.5 . udp . 53\n" >"$d/v4p"
+        printf "240e:b8f:29f:c200::/64 . tcp . 22\n" >"$d/v6p"
+        : >"$d/v4"; : >"$d/v6"; printf "443\n" >"$d/pt"; : >"$d/pu"
+        nft_build_ruleset "$d/v4" "$d/v6" "$d/v4p" "$d/v6p" "$d/pt" "$d/pu"
+    ' _ "${DWL}"
+}
+
+@test "nft_build_ruleset brackets downstream firewalls with two observe chains" {
+    run build_sample_ruleset
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"chain observe_enter {"*"type filter hook input priority -99; policy accept;"* ]]
+    [[ "${output}" == *"chain observe_exit {"*"type filter hook input priority 200; policy accept;"* ]]
+}
+
+# 比较出入口计数的前提是两条链逐条镜像，去掉链名和优先级后必须完全一致。
+@test "nft_build_ruleset emits identical rules in both observe chains" {
+    run bash -c '
+        ruleset="$(cat)"
+        chain_body() {
+            printf "%s\n" "${ruleset}" | sed -n "/chain $1 {/,/^    }/p" | sed "1,2d"
+        }
+        [ -n "$(chain_body observe_enter)" ] || exit 2
+        [ "$(chain_body observe_enter)" = "$(chain_body observe_exit)" ]
+    ' <<<"$(build_sample_ruleset)"
+
+    [ "${status}" -eq 0 ]
+}
+
+# 观测只能计数、不能做判决：门禁链里不该出现任何观测规则，
+# 观测链里除了开头两条 return 之外也不该有 accept / drop / return。
+@test "nft_build_ruleset keeps verdicts out of the observe chains" {
+    run bash -c '
+        ruleset="$(cat)"
+        gate="$(printf "%s\n" "${ruleset}" | sed -n "/chain input_gate {/,/^    }/p")"
+        observe="$(printf "%s\n" "${ruleset}" | sed -n "/chain observe_enter {/,/^    }/p" | sed "1,4d")"
+        [[ "${gate}" != *"comment"* ]] || exit 2
+        ! printf "%s\n" "${observe}" | grep -Eq "(accept|drop|return|reject)"
+    ' <<<"$(build_sample_ruleset)"
+
+    [ "${status}" -eq 0 ]
+}
+
+@test "nft_build_ruleset counts only pure SYNs for tcp and every new udp flow" {
+    run build_sample_ruleset
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *'ip saddr 124.77.19.119 tcp dport 9100 tcp flags & (fin|syn|rst|ack) == syn counter comment "src|124.77.19.119|tcp|9100"'* ]]
+    [[ "${output}" == *'ip saddr 10.0.0.5 udp dport 53 counter comment "src|10.0.0.5|udp|53"'* ]]
+    [[ "${output}" == *'ip6 saddr 240e:b8f:29f:c200::/64 tcp dport 22 tcp flags & (fin|syn|rst|ack) == syn counter comment "src|240e:b8f:29f:c200::/64|tcp|22"'* ]]
+}
+
+@test "nft_read_observe_counters parses the real nft 1.0.6 rendering" {
+    run bash -c '
+        source "$1"
+        ENTER="$2"
+        EXIT="$3"
+        eval "$4"
+        nft_read_observe_counters observe_enter
+    ' _ "${DWL}" "${NFT_ENTER_FIXTURE}" "${NFT_EXIT_FIXTURE}" "${OBSERVE_STUB}"
+
+    [ "${status}" -eq 0 ]
+    [ "${lines[0]}" = "pub|tcp 31" ]
+    [[ "${output}" == *"src|124.77.19.119|tcp|9100 22"* ]]
+    [[ "${output}" == *"src|240e:b8f:29f:c200::/64|tcp|22 0"* ]]
+    [ "${#lines[@]}" -eq 7 ]
+}
+
+# 表不存在（未启用、iptables 后端、非 root）时 nft 会失败，读取必须静默为空，
+# 不能让 pipefail + set -e 把整个 status 或 refresh 带崩。
+@test "nft_read_observe_counters stays silent when the chain is missing" {
+    run bash -c '
+        source "$1"
+        nft() { return 1; }
+        nft_read_observe_counters observe_enter
+        echo "rc=$?"
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [ "${output}" = "rc=0" ]
+}
+
+@test "observe_rows_to_file pairs enter and exit counts and skips idle entries" {
+    run bash -c '
+        source "$1"
+        ENTER="$2"
+        EXIT="$3"
+        eval "$4"
+        ensure_tmp_dir
+        observe_rows_to_file "${TMP_DIR}/rows"
+        sort "${TMP_DIR}/rows"
+    ' _ "${DWL}" "${NFT_ENTER_FIXTURE}" "${NFT_EXIT_FIXTURE}" "${OBSERVE_STUB}"
+
+    [ "${status}" -eq 0 ]
+    [ "${lines[0]}" = "pub|tcp 31 27" ]
+    [ "${lines[1]}" = "src|124.77.19.119|tcp|9100 22 0" ]
+    [ "${lines[2]}" = "src|180.165.8.185|tcp|22 2 2" ]
+    [ "${#lines[@]}" -eq 3 ]
+}
+
+# awk 的 NR == FNR 惯用法在第一个文件为空时会把第二个文件也当成第一个吞掉。
+@test "observe_rows_to_file still reports entries when the exit chain is empty" {
+    run bash -c '
+        source "$1"
+        ENTER="$2"
+        EXIT=""
+        eval "$4"
+        ensure_tmp_dir
+        observe_rows_to_file "${TMP_DIR}/rows"
+        grep "9100" "${TMP_DIR}/rows"
+    ' _ "${DWL}" "${NFT_ENTER_FIXTURE}" "" "${OBSERVE_STUB}"
+
+    [ "${status}" -eq 0 ]
+    [ "${output}" = "src|124.77.19.119|tcp|9100 22 0" ]
+}
+
+@test "report_downstream_drops flags a source-scoped port dropped downstream" {
+    run bash -c '
+        source "$1"
+        ENTER="$2"
+        EXIT="$3"
+        eval "$4"
+        ensure_tmp_dir
+        RESOLVE_CACHE_FILE="${TMP_DIR}/resolve.cache"
+        printf "sh.example.com|4|124.77.19.119\n" >"${RESOLVE_CACHE_FILE}"
+        report_downstream_drops log_change 2>&1
+    ' _ "${DWL}" "${NFT_ENTER_FIXTURE}" "${NFT_EXIT_FIXTURE}" "${OBSERVE_STUB}"
+
+    [ "${status}" -eq 0 ]
+    [ "${#lines[@]}" -eq 1 ]
+    [[ "${output}" == *"dropped 22 of 22 new connection(s) from sh.example.com (124.77.19.119) to tcp/9100"* ]]
+}
+
+# 公开端口被扫描器打到未使用的端口、再被下游丢掉是常态，告警只会是噪音；
+# 出入口相等的限源条目也不该告警。
+@test "report_downstream_drops ignores public ports and healthy entries" {
+    run bash -c '
+        source "$1"
+        ENTER="$2"
+        EXIT="$3"
+        eval "$4"
+        ensure_tmp_dir
+        report_downstream_drops log_change 2>&1
+    ' _ "${DWL}" "${NFT_ENTER_FIXTURE}" "${NFT_EXIT_FIXTURE}" "${OBSERVE_STUB}"
+
+    # 夹具里公开端口 31 进 27 出、22 端口 2 进 2 出，都不该告警；
+    # 唯一该告警的是 9100。按条数卡死，而不是排除某几个具体字样——
+    # 误报的公开端口会被拆成「from pub to tcp/tcp」，排除式断言抓不到。
+    [ "${status}" -eq 0 ]
+    [ "$(printf '%s\n' "${output}" | grep -c "Downstream firewall dropped")" -eq 1 ]
+    [[ "${output}" == *"to tcp/9100"* ]]
+}
+
+@test "observe_tag_label renders each kind of observe key" {
+    run bash -c '
+        source "$1"
+        ensure_tmp_dir
+        RESOLVE_CACHE_FILE="${TMP_DIR}/none"
+        observe_tag_label "src|240e:b8f:29f:c200::/64|tcp|7000-8000"
+        observe_tag_label "pub|udp"
+        observe_tag_label "full|v4"
+    ' _ "${DWL}"
+
+    [ "${status}" -eq 0 ]
+    [ "${lines[0]}" = "src 240e:b8f:29f:c200::/64 tcp/7000-8000" ]
+    [ "${lines[1]}" = "public udp" ]
+    [ "${lines[2]}" = "full-access v4" ]
+}
+
+# 顺序不变量：nft 后端每次刷新都整表替换、计数归零，
+# 所以必须在 apply_firewall 之前读计数。读晚了告警永远不会触发，而且完全静默。
+# 这里把 apply_firewall 桩成「把计数清零」，读早了才能看到那 22 个被丢的连接。
+@test "refresh_now reads downstream counters before replacing the table" {
+    run bash -c '
+        source "$1"
+        ENTER="$2"
+        EXIT="$3"
+        eval "$4"
+        ZEROED="$(printf "%s\n" "${ENTER}" | sed -E "s/counter packets [0-9]+/counter packets 0/")"
+        validate_config_values() { :; }
+        allowlist_count() { echo 1; }
+        resolve_allowlist_to_files() { printf "203.0.113.1\n" >"$1"; : >"$2"; : >"$3"; : >"$4"; : >"$5"; : >"$6"; }
+        require_port_support() { :; }
+        apply_firewall() { ENTER="${ZEROED}"; EXIT="${ZEROED}"; }
+        log_resolved_delta() { :; }
+        save_resolved_snapshot() { :; }
+        save_resolve_cache() { :; }
+        ensure_tmp_dir
+        refresh_now nft 2>&1
+    ' _ "${DWL}" "${NFT_ENTER_FIXTURE}" "${NFT_EXIT_FIXTURE}" "${OBSERVE_STUB}"
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" == *"dropped 22 of 22 new connection(s)"*"to tcp/9100"* ]]
+}
+
+# iptables 后端没有观测链，refresh 不能去读 nft 计数。
+@test "refresh_now skips downstream observation on the iptables backend" {
+    run bash -c '
+        source "$1"
+        ENTER="$2"
+        EXIT="$3"
+        eval "$4"
+        validate_config_values() { :; }
+        allowlist_count() { echo 1; }
+        resolve_allowlist_to_files() { printf "203.0.113.1\n" >"$1"; : >"$2"; : >"$3"; : >"$4"; : >"$5"; : >"$6"; }
+        require_port_support() { :; }
+        apply_firewall() { :; }
+        log_resolved_delta() { :; }
+        save_resolved_snapshot() { :; }
+        save_resolve_cache() { :; }
+        ensure_tmp_dir
+        refresh_now iptables 2>&1
+    ' _ "${DWL}" "${NFT_ENTER_FIXTURE}" "${NFT_EXIT_FIXTURE}" "${OBSERVE_STUB}"
+
+    [ "${status}" -eq 0 ]
+    [[ "${output}" != *"Downstream firewall dropped"* ]]
+}

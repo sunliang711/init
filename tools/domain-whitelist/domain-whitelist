@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="${SCRIPT_DIR}/${SCRIPT_NAME}"
 
 # 版本号；status 会对比已安装副本与当前运行副本，多机部署时用于确认实际生效的版本。
-DWL_VERSION="2.1.1"
+DWL_VERSION="2.2.0"
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${PATH:-}"
 
@@ -40,6 +40,20 @@ NFT_SET_V6="allow_v6"
 NFT_SET_PUB_TCP="public_tcp"
 NFT_SET_PUB_UDP="public_udp"
 NFT_PRIORITY="-100"
+# 下游放行观测：在门禁链之后、所有下游防火墙之前各数一次新连接，再在它们之后数一次。
+# 同一个 hook 上 accept 只结束当前基础链、包会继续进入更晚的基础链，drop 才是终结，
+# 所以入口有、出口没有的包，就是被 ufw / firewalld / fail2ban 之类的下游丢掉的。
+# 这两条链只计数、不做判决，不改变任何放行结果。
+NFT_OBSERVE_ENTER_CHAIN="observe_enter"
+NFT_OBSERVE_EXIT_CHAIN="observe_exit"
+# 紧贴门禁链：此时看到的正是刚被门禁放过的包。
+NFT_OBSERVE_ENTER_PRIORITY="$((NFT_PRIORITY + 1))"
+# 晚于 filter(0)、security(50) 和 input 方向的 srcnat(100)：包走到这里，
+# 说明所有常见的下游防火墙都已经放过了它。
+NFT_OBSERVE_EXIT_PRIORITY="200"
+# 只数 TCP 的纯 SYN。conntrack 会把中途接管的非 SYN 包也标成 new，
+# 混进来就不再是「新连接尝试」的计数了。
+NFT_TCP_SYN='tcp flags & (fin|syn|rst|ack) == syn'
 
 IPTABLES_CHAIN="DOMAIN_WHITELIST"
 IPSET_V4="domain_whitelist_v4"
@@ -177,7 +191,8 @@ usage() {
       立即解析域名并刷新 nftables set 或 ipset。
 
   status
-      查看配置、启用状态和后端状态。
+      查看配置、启用状态和后端状态。nft 后端还会列出自上次刷新以来的下游放行观测：
+      通过了本工具、却被 ufw / firewalld 等下游防火墙丢掉的限源连接会给出警告。
 
   logs [--lines N] [--follow] [--systemd|--cron|--all]
       查看 domain-whitelist 的 systemd 或 cron 日志，默认显示最近 100 行。
@@ -1830,6 +1845,59 @@ nft_emit_port_rules() {
     done <"${file}"
 }
 
+# 输出观测链里与「来源 + 端口」规则一一对应的计数规则。
+# comment 是读回计数时的键：src|<地址>|<协议>|<端口区间>，地址里有冒号所以用竖线分隔。
+nft_emit_observe_port_rules() {
+    local family_keyword="$1"
+    local file="$2"
+    local line
+    local rest
+    local ip
+    local proto
+    local range
+    local syn
+
+    [ -f "${file}" ] || return 0
+
+    while IFS= read -r line || [ -n "${line}" ]; do
+        [ -z "${line}" ] && continue
+        ip="${line%% . *}"
+        rest="${line#* . }"
+        proto="${rest%% . *}"
+        range="${rest##* . }"
+        syn=""
+        if [ "${proto}" = "tcp" ]; then
+            syn=" ${NFT_TCP_SYN}"
+        fi
+        printf '        %s saddr %s %s dport %s%s counter comment "src|%s|%s|%s"\n' \
+            "${family_keyword}" "${ip}" "${proto}" "${range}" "${syn}" \
+            "${ip}" "${proto}" "${range}"
+    done <"${file}"
+}
+
+# 输出一条观测链。入口链和出口链必须逐条镜像，比较才有意义，所以由同一个函数生成。
+nft_emit_observe_chain() {
+    local chain="$1"
+    local priority="$2"
+    local v4_port_file="$3"
+    local v6_port_file="$4"
+
+    printf '    chain %s {\n' "${chain}"
+    printf '        type filter hook input priority %s; policy accept;\n' "${priority}"
+    # 只数新连接：本机回环和已建立连接的后续包与「有没有被下游拦」无关。
+    printf '        iifname "lo" return\n'
+    printf '        ct state != new return\n'
+    # 公开端口和来源全端口按集合整体计数，只用于 status 展示：公开端口本来就会被
+    # 扫描器打到未使用的端口、再被下游丢掉，对它们告警只会是持续的噪音。
+    printf '        tcp dport @%s %s counter comment "pub|tcp"\n' "${NFT_SET_PUB_TCP}" "${NFT_TCP_SYN}"
+    printf '        udp dport @%s counter comment "pub|udp"\n' "${NFT_SET_PUB_UDP}"
+    printf '        ip saddr @%s counter comment "full|v4"\n' "${NFT_SET_V4}"
+    printf '        ip6 saddr @%s counter comment "full|v6"\n' "${NFT_SET_V6}"
+    nft_emit_observe_port_rules ip "${v4_port_file}"
+    nft_emit_observe_port_rules ip6 "${v6_port_file}"
+    printf '    }\n'
+}
+
 # 输出 ICMPv6 放行规则。
 nft_emit_icmpv6_rules() {
     # ICMPv6 差错报文。packet-too-big 是 IPv6 路径 MTU 发现的唯一手段，
@@ -1901,6 +1969,12 @@ nft_build_ruleset() {
 
     printf '        counter drop\n'
     printf '    }\n'
+
+    nft_emit_observe_chain "${NFT_OBSERVE_ENTER_CHAIN}" "${NFT_OBSERVE_ENTER_PRIORITY}" \
+        "${v4_port_file}" "${v6_port_file}"
+    nft_emit_observe_chain "${NFT_OBSERVE_EXIT_CHAIN}" "${NFT_OBSERVE_EXIT_PRIORITY}" \
+        "${v4_port_file}" "${v6_port_file}"
+
     printf '}\n'
 }
 
@@ -3387,6 +3461,118 @@ save_resolve_cache() {
     atomic_write_file "${RESOLVE_CACHE_FILE}" 0644 <"${TMP_DIR}/resolve.cache.new"
 }
 
+# 读取一条观测链上每条计数规则的包数，输出 "<键> <包数>"。
+# 表或链不存在（未启用、iptables 后端、旧版本建的表、非 root 运行）时静默输出空。
+nft_read_observe_counters() {
+    local chain="$1"
+    local listing
+
+    command_exists nft || return 0
+    listing="$(nft list chain "${NFT_FAMILY}" "${NFT_TABLE}" "${chain}" 2>/dev/null)" || return 0
+    printf '%s\n' "${listing}" |
+        sed -nE 's/.*counter packets ([0-9]+) bytes [0-9]+ comment "([^"]*)".*/\2 \1/p'
+}
+
+# 把入口和出口计数按键对齐，输出 "<键> <入口> <出口>"，只保留入口大于 0 的条目。
+# 结果写进文件而不是走标准输出，调用方就不必再套一层命令替换。
+observe_rows_to_file() {
+    local out_file="$1"
+    local enter_file
+    local exit_file
+
+    ensure_tmp_dir
+    enter_file="${TMP_DIR}/observe.enter"
+    exit_file="${TMP_DIR}/observe.exit"
+    nft_read_observe_counters "${NFT_OBSERVE_ENTER_CHAIN}" >"${enter_file}"
+    nft_read_observe_counters "${NFT_OBSERVE_EXIT_CHAIN}" >"${exit_file}"
+
+    # 用 FILENAME 区分两个文件，不能用 NR == FNR：出口文件为空时那个判断
+    # 对入口文件也成立，入口的每一行都会被当成出口数据吞掉，什么都不输出。
+    awk -v exit_file="${exit_file}" '
+        FILENAME == exit_file { out[$1] = $2; next }
+        $2 > 0 { print $1, $2, (($1 in out) ? out[$1] : 0) }
+    ' "${exit_file}" "${enter_file}" >"${out_file}"
+}
+
+# 给观测到的地址找回白名单里的域名，拼成可读的来源描述。
+# 只能按精确地址反查：v6prefix 掩出来的网段在解析缓存里没有对应项，照原样显示。
+observe_source_label() {
+    local addr="$1"
+    local domains=""
+
+    if [ -f "${RESOLVE_CACHE_FILE}" ]; then
+        domains="$(awk -F'|' -v a="${addr}" '$3 == a { print $1 }' "${RESOLVE_CACHE_FILE}" |
+            sort -u | paste -sd, -)"
+    fi
+    if [ -n "${domains}" ]; then
+        printf '%s (%s)\n' "${domains}" "${addr}"
+    else
+        printf '%s\n' "${addr}"
+    fi
+}
+
+# 把观测键翻译成 status 里可读的描述。
+observe_tag_label() {
+    local tag="$1"
+    local rest
+    local addr
+    local proto
+
+    case "${tag}" in
+        src\|*)
+            rest="${tag#src|}"
+            addr="${rest%%|*}"
+            rest="${rest#*|}"
+            proto="${rest%%|*}"
+            printf 'src %s %s/%s\n' "$(observe_source_label "${addr}")" "${proto}" "${rest#*|}"
+            ;;
+        pub\|*)
+            printf 'public %s\n' "${tag#pub|}"
+            ;;
+        full\|*)
+            printf 'full-access %s\n' "${tag#full|}"
+            ;;
+        *)
+            printf '%s\n' "${tag}"
+            ;;
+    esac
+}
+
+# 报出上一个刷新窗口里被下游防火墙丢掉的限源端口连接。
+# 只看「来源 + 端口」条目：这是运维明确声明过的「这个来源要能访问这个端口」，
+# 被下游丢掉几乎一定是两层配置没对齐——典型如白名单写了 dport、ufw 却没开这个端口，
+# 而两边各自看都没有毛病。公开端口和来源全端口不告警，理由见 nft_emit_observe_chain。
+# 第一个参数是日志函数：定时刷新用 log_change（--quiet 下也会落进日志），
+# 交互式的 status 用 log_warn。
+report_downstream_drops() {
+    local logger="$1"
+    local rows_file
+    local tag
+    local entered
+    local exited
+    local rest
+    local addr
+    local proto
+
+    ensure_tmp_dir
+    rows_file="${TMP_DIR}/observe.rows"
+    observe_rows_to_file "${rows_file}"
+
+    while read -r tag entered exited || [ -n "${tag:-}" ]; do
+        [ -z "${tag:-}" ] && continue
+        case "${tag}" in
+            src\|*) ;;
+            *) continue ;;
+        esac
+        [ "${exited}" -lt "${entered}" ] || continue
+        rest="${tag#src|}"
+        addr="${rest%%|*}"
+        rest="${rest#*|}"
+        proto="${rest%%|*}"
+        "${logger}" "Downstream firewall dropped $((entered - exited)) of ${entered} new connection(s) from $(observe_source_label "${addr}") to ${proto}/${rest#*|} since the last refresh; domain-whitelist let them through, so check ufw/firewalld/iptables for this port"
+    done <"${rows_file}"
+}
+
 # 执行一次完整刷新：解析白名单、生成规则、原子提交。
 refresh_now() {
     local backend="$1"
@@ -3446,6 +3632,11 @@ refresh_now() {
     fi
 
     require_port_support "${backend}" "${v4_port_file}" "${v6_port_file}"
+    # 必须赶在 apply_firewall 之前读：nft 后端是整表原子替换，提交之后计数器全部归零。
+    # 这样每次读到的恰好是「上一次刷新到现在」这个窗口，不用自己维护差值。
+    if [ "${backend}" = "nft" ]; then
+        report_downstream_drops log_change
+    fi
     apply_firewall "${backend}" "${v4_file}" "${v6_file}" \
         "${v4_port_file}" "${v6_port_file}" "${pub_tcp_file}" "${pub_udp_file}"
     log_resolved_delta "${v4_file}" "${v6_file}"
@@ -3738,10 +3929,16 @@ status_command() {
     local scheduler_status
     local installed
     local snapshot_age
+    local observe_state
+    local observe_file
+    local tag
+    local entered
+    local exited
 
     ensure_default_config
     load_config
     load_state
+    ensure_tmp_dir
     backend="${STATE_BACKEND:-${CONFIG_BACKEND}}"
     entries="$(allowlist_count)"
     scheduler="$(detect_scheduler || true)"
@@ -3778,12 +3975,32 @@ status_command() {
     printf 'last_v4_file=%s\n' "${LAST_V4_FILE}"
     printf 'last_v6_file=%s\n' "${LAST_V6_FILE}"
 
+    # 下游放行观测只有 nft 后端有：iptables 后端的 filter 表之后没有干净的挂载点。
+    # 计数窗口从上一次刷新开始（刷新会整表替换、计数归零），只列有新连接的条目。
+    observe_state="off"
+    if [ "${runtime_backend}" = "nft" ] &&
+        nft list chain "${NFT_FAMILY}" "${NFT_TABLE}" "${NFT_OBSERVE_EXIT_CHAIN}" >/dev/null 2>&1; then
+        observe_state="on"
+    fi
+    printf 'downstream_observe=%s\n' "$(format_enum "${observe_state}" on off)"
+    if [ "${observe_state}" = "on" ]; then
+        observe_file="${TMP_DIR}/status.observe"
+        observe_rows_to_file "${observe_file}"
+        while read -r tag entered exited || [ -n "${tag:-}" ]; do
+            [ -z "${tag:-}" ] && continue
+            printf 'observe=%s in=%s out=%s\n' "$(observe_tag_label "${tag}")" "${entered}" "${exited}"
+        done <"${observe_file}"
+    fi
+
     if [ "${installed}" != "not-installed" ] && [ "${installed}" != "${DWL_VERSION}" ]; then
         log_warn "Installed copy is ${installed} but this script is ${DWL_VERSION}; run install.sh to deploy it"
     fi
     # 刷新任务停摆不再会自动清空集合，但规则会逐渐过期，仍然需要及时发现。
     if [ "${snapshot_age}" -gt 0 ] && [ "${snapshot_age}" -gt $((REFRESH_INTERVAL * 4)) ]; then
         log_warn "Last successful refresh was ${snapshot_age}s ago, far beyond the ${REFRESH_INTERVAL}s interval; check the scheduler"
+    fi
+    if [ "${observe_state}" = "on" ]; then
+        report_downstream_drops log_warn
     fi
 }
 
