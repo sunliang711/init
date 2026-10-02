@@ -2143,6 +2143,8 @@ nft_emit_observe_chain() {
     local v6_port_file="$4"
 
     printf '    chain %s {\n' "${chain}"
+    # policy 同样必须是 accept：下面两条 return 在基础链里等于执行 policy，
+    # 改成 drop 就会丢掉全部回环和已建立连接的流量。原因见 nft_build_ruleset 门禁链处。
     printf '        type filter hook input priority %s; policy accept;\n' "${priority}"
     # 只数新连接：本机回环和已建立连接的后续包与「有没有被下游拦」无关。
     printf '        iifname "lo" return\n'
@@ -2205,6 +2207,12 @@ nft_build_ruleset() {
     nft_emit_set "${NFT_SET_PUB_UDP}" "inet_service" "${pub_udp_file}"
 
     printf '    chain %s {\n' "${NFT_CHAIN}"
+    # policy 必须是 accept，它不是一个可以随手「改严」的默认值。
+    # 基础链里的 return 等价于执行本链的 policy，而门禁放行的一切用的都是 return：
+    # 回环、已建立连接、公开端口、白名单来源（门禁只拦不放，最终放行交给后面的防火墙）。
+    # policy 一旦改成 drop，这些 return 全部变成丢弃：执行改动的 SSH 会话当场断开，
+    # 本机发出的连接收不到回包，整机断网并锁门，只能走云控制台。
+    # 默认拒绝靠的是链尾显式的 counter drop，不靠 policy；只有一路走到底的包才会到那里。
     printf '        type filter hook input priority %s; policy accept;\n' "${NFT_PRIORITY}"
     printf '        iifname "lo" return\n'
     printf '        ct state established,related return\n'
